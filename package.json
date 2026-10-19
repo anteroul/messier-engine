@@ -1,0 +1,19 @@
+{
+  "name": "vertek-engine",
+  "version": "0.1.0",
+  "description": "Browser-based WebGPU 3D engine with dynamic lights, glTF/OBJ loading and a real-time scene editor",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "generate:sample": "node scripts/generate-sample-glb.mjs"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.54",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  }
+}

@@ -1,0 +1,10 @@
+# Materials for icosahedron.obj
+newmtl Crystal
+Kd 0.55 0.25 0.9
+Ke 0.08 0.02 0.15
+Ns 250
+Pm 0.2
+
+newmtl CrystalDark
+Kd 0.18 0.08 0.35
+Ns 60

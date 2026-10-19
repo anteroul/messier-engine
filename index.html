@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vertek Engine — WebGPU Editor</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><path d='M16 2 29 9.5v13L16 30 3 22.5v-13z' fill='%23ff9f26'/></svg>" />
+  </head>
+  <body>
+    <div id="app">
+      <header id="toolbar">
+        <div class="brand">◆ Vertek</div>
+
+        <div class="group" role="group" aria-label="Transform tool">
+          <button class="btn" data-action="translate" title="Move (W)">✥ Move</button>
+          <button class="btn" data-action="rotate" title="Rotate (E)">⟳ Rotate</button>
+          <button class="btn" data-action="scale" title="Scale (R)">⤢ Scale</button>
+          <button class="btn" data-action="snap" title="Toggle snapping (X)">⌗ Snap</button>
+        </div>
+
+        <div class="group">
+          <details class="menu">
+            <summary class="btn">＋ Add</summary>
+            <div class="menu-items">
+              <div class="menu-title">Mesh</div>
+              <button data-action="add-cube">Cube</button>
+              <button data-action="add-sphere">Sphere</button>
+              <button data-action="add-plane">Plane</button>
+              <button data-action="add-cylinder">Cylinder</button>
+              <button data-action="add-torus">Torus</button>
+              <button data-action="add-empty">Empty</button>
+              <div class="menu-title">Light</div>
+              <button data-action="add-point">Point Light</button>
+              <button data-action="add-spot">Spot Light</button>
+              <button data-action="add-directional">Directional Light</button>
+            </div>
+          </details>
+          <button class="btn" data-action="import" title="Import .glb / .gltf / .obj (or drop files on the viewport)">⇪ Import</button>
+        </div>
+
+        <div class="group">
+          <button class="btn" data-action="undo" title="Undo (Ctrl+Z)">↶</button>
+          <button class="btn" data-action="redo" title="Redo (Ctrl+Shift+Z)">↷</button>
+          <button class="btn" data-action="duplicate" title="Duplicate (Ctrl+D)">⧉</button>
+          <button class="btn" data-action="delete" title="Delete (Del)">🗑</button>
+          <button class="btn" data-action="focus" title="Focus selection (F)">◎</button>
+        </div>
+
+        <div class="group spacer"></div>
+
+        <div class="group">
+          <button class="btn" data-action="grid" title="Toggle grid (G)">Grid</button>
+          <button class="btn" data-action="helpers" title="Toggle light helpers (H)">Helpers</button>
+          <button class="btn play" data-action="play" title="Play / Stop (P)">▶ Play</button>
+          <button class="btn" data-action="help" title="Shortcuts (?)">?</button>
+        </div>
+      </header>
+
+      <aside id="hierarchy-panel" class="panel">
+        <div class="panel-title">Hierarchy</div>
+        <div id="hierarchy" class="panel-body"></div>
+      </aside>
+
+      <main id="viewport">
+        <canvas id="gpu-canvas" tabindex="0"></canvas>
+        <div id="stats"></div>
+        <div id="drop-overlay" hidden><div>Drop .glb / .gltf / .obj files<br /><small>(include .bin, .mtl and textures)</small></div></div>
+        <div id="toasts"></div>
+        <div id="error" hidden></div>
+      </main>
+
+      <aside id="inspector-panel" class="panel">
+        <div class="panel-title">Inspector</div>
+        <div id="inspector" class="panel-body"></div>
+      </aside>
+    </div>
+
+    <div id="help" hidden>
+      <div class="help-card">
+        <h2>Controls</h2>
+        <table>
+          <tr><td>Left click</td><td>Select (click again to drill into a model)</td></tr>
+          <tr><td>Left drag on empty space / Alt + drag</td><td>Orbit</td></tr>
+          <tr><td>Middle drag / Shift + left drag</td><td>Pan</td></tr>
+          <tr><td>Wheel</td><td>Zoom</td></tr>
+          <tr><td>Right drag + WASD / Q E</td><td>Fly (Shift = faster)</td></tr>
+          <tr><td>W / E / R</td><td>Move / Rotate / Scale gizmo</td></tr>
+          <tr><td>X</td><td>Toggle snapping</td></tr>
+          <tr><td>F / double-click in hierarchy</td><td>Focus selection</td></tr>
+          <tr><td>Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y</td><td>Undo / Redo</td></tr>
+          <tr><td>Ctrl+D</td><td>Duplicate</td></tr>
+          <tr><td>Del</td><td>Delete</td></tr>
+          <tr><td>P</td><td>Play / Stop behaviours</td></tr>
+          <tr><td>G / H</td><td>Toggle grid / light helpers</td></tr>
+          <tr><td>Esc</td><td>Deselect</td></tr>
+        </table>
+        <p>Drag the X/Y/Z labels in the inspector to scrub values. Drag rows in the hierarchy to re-parent.</p>
+      </div>
+    </div>
+
+    <input id="import-input" type="file" multiple accept=".glb,.gltf,.obj,.mtl,.bin,.png,.jpg,.jpeg,.webp" hidden />
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

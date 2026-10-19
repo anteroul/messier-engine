@@ -1,0 +1,16 @@
+{
+  "name": "vertek-engine-tests",
+  "private": true,
+  "type": "module",
+  "description": "Optional GPU smoke tests: headless renderer (Dawn) and editor UI (Chromium). Kept separate so the app has no native test dependencies.",
+  "scripts": {
+    "test": "npm run test:render && npm run test:ui",
+    "test:render": "node render/run.mjs",
+    "test:ui": "node ui/run.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.12",
+    "puppeteer-core": "^24.43.1",
+    "webgpu": "^0.3.10"
+  }
+}

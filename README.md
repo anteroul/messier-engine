@@ -1,0 +1,218 @@
+# Vertek Engine
+
+A browser-based 3D engine written in TypeScript on **WebGPU**, with a built-in
+real-time scene editor.
+
+- **Forward PBR renderer**: metallic-roughness GGX shading, ACES tone mapping,
+  4× MSAA, reversed-Z depth, base-color textures with GPU-generated mipmaps.
+- **Dynamic lights**: up to 128 directional, point and spot lights, all
+  updated every frame from the scene graph. The first shadow-casting
+  directional light gets a 2048² PCF shadow map.
+- **Model loading**: glTF 2.0 (`.gltf` + `.bin` + images, or binary `.glb`)
+  and Wavefront OBJ + MTL, either from a URL or by dragging files onto the
+  viewport.
+- **Real-time editor**: hierarchy tree with drag-and-drop re-parenting, live
+  inspector, move/rotate/scale gizmos with snapping, undo/redo, duplicate and
+  delete, and a Play mode that runs behaviours (scripts) and restores the scene
+  when you stop.
+- **No runtime dependencies**: the math, loaders, renderer and UI are all in
+  this repo. The only npm packages are build tools (Vite, TypeScript, WebGPU types).
+
+![Editor overview: hierarchy, viewport with gizmo, inspector](docs/screenshot.png)
+
+## Running on NixOS (flake)
+
+The flake provides Node.js 22 and everything else you need. You don't have to
+install Node globally.
+
+```sh
+# Start the dev server (runs `npm install` on first use), then open http://localhost:5173
+nix run
+
+# Or work inside a dev shell with node/npm on PATH
+nix develop
+npm install
+npm run dev
+
+# Reproducible production build (static files in ./result/share/vertek-engine)
+nix build
+
+# Serve that production build on http://localhost:8080
+nix run .#serve
+```
+
+> **Tip:** Flakes copy the *whole directory* into the Nix store when it isn't a
+> git repository, including `node_modules`. Run `git init && git add -A`
+> first. After that, Nix only sees tracked files, which is much faster.
+
+After changing npm dependencies, update `npmDepsHash` in `flake.nix`:
+
+```sh
+nix run nixpkgs#prefetch-npm-deps -- package-lock.json
+```
+
+### Other systems
+
+Any machine with Node.js ≥ 18:
+
+```sh
+npm install
+npm run dev        # dev server with hot reload
+npm run build      # type-check + production build into dist/
+npm run preview    # serve dist/
+```
+
+## Browser requirements
+
+WebGPU needs a secure context. `localhost` counts as one.
+
+| Browser | Notes |
+| --- | --- |
+| Chrome / Edge 113+ | Works out of the box on Windows, macOS and ChromeOS. |
+| Chromium on Linux | Enable `chrome://flags/#enable-unsafe-webgpu`, or start it with `--enable-unsafe-webgpu --enable-features=Vulkan`. |
+| Firefox 141+ | Enabled on Windows. On Linux/macOS set `dom.webgpu.enabled` in `about:config` (or use Nightly). |
+| Safari 26+ | Supported. |
+
+If WebGPU isn't available, the viewport shows an explanation instead of the scene.
+
+## Using the editor
+
+| Input | Action |
+| --- | --- |
+| Left click | Select. The first click on a model selects its root; click again to drill into the part under the cursor. |
+| Left drag on empty space / Alt + left drag | Orbit |
+| Middle drag / Shift + left drag | Pan |
+| Mouse wheel | Zoom |
+| Right drag + `W` `A` `S` `D` / `Q` `E` | Fly (hold Shift to go faster) |
+| `W` / `E` / `R` | Move / rotate / scale gizmo |
+| `X` | Toggle snapping (0.25 units, 15°, 0.1 scale) |
+| `F` (or double-click in hierarchy) | Focus selection |
+| `Ctrl+Z` / `Ctrl+Shift+Z` / `Ctrl+Y` | Undo / redo |
+| `Ctrl+D` / `Del` | Duplicate / delete |
+| `P` | Play / stop |
+| `G` / `H` | Toggle grid / light helpers |
+| `Esc` | Deselect |
+| `?` | Shortcut overview |
+
+- **Gizmo handles:** drag an arrow (move), ring (rotate) or cube (scale) to
+  constrain to one axis. Drag the center handle to move in the screen plane,
+  or to scale uniformly.
+- **Inspector:** drag the colored `X`/`Y`/`Z` tags (or any number label) left
+  and right to scrub a value. Hold Shift for ×10, Alt for ×0.1. Values update
+  live while objects move or animate.
+- **Environment:** with nothing selected, the inspector edits ambient light,
+  background, exposure, shadow extent and the grid.
+- **Importing:** click **Import** or drop files onto the viewport. For
+  multi-file assets, select or drop the `.gltf`/`.obj` *together with* its
+  `.bin`, `.mtl` and texture files. Very large or very small models are rescaled
+  to about 3 m and placed on the ground.
+- **Play mode:** behaviours (Rotator, Bobber, Orbiter, LightPulse, ColorCycle)
+  only run while playing. When you press Stop, every transform and light
+  color/intensity goes back to its value from before Play.
+
+Objects are also reachable from the browser console as `engine` and `editor`,
+for example `engine.scene.findByName('Sun').light.intensity = 5`.
+
+## Using the engine in code
+
+```ts
+import { Engine, GameObject, Light, Material, Rotator, createCube, loadModelFromURL } from './engine';
+
+const engine = await Engine.create(document.querySelector('canvas')!);
+
+const cube = new GameObject('Cube');
+cube.mesh = createCube(1);
+cube.material = new Material('Red', { baseColor: [0.8, 0.1, 0.1, 1], roughness: 0.4 });
+cube.transform.position = [0, 0.5, 0];
+cube.behaviours.push(new Rotator({ speedY: 90 }));
+engine.scene.add(cube);
+
+const sun = new GameObject('Sun');
+sun.light = new Light('directional', [1, 0.95, 0.9], 2);
+sun.light.castShadows = true;
+sun.transform.setEulerDeg(-50, 30, 0); // lights shine along local -Z
+engine.scene.add(sun);
+
+engine.scene.add(await loadModelFromURL('/models/lantern.glb'));
+engine.setPlaying(true); // run behaviours
+engine.start();
+```
+
+To write your own behaviour, subclass `Behaviour` in `src/engine/behaviours.ts`
+and register it in `BEHAVIOURS`. It then shows up in the inspector's
+**Add…** menu, and its numeric `params` become editable fields automatically.
+
+## Project layout
+
+```
+flake.nix               Nix: dev shell, `nix run` dev server, static build, `.#serve`, `.#tests` shell
+index.html              Editor shell (toolbar, panels, canvas)
+src/main.ts             Entry point: creates the engine, demo scene and editor, loads sample models
+src/demo.ts             Demo scene content
+src/engine/             The engine (no DOM dependencies except the canvas)
+  engine.ts             Main loop: behaviours → world matrices → hooks → render
+  renderer.ts           WebGPU device, pipelines, shadow + main passes, uploads
+  shaders/*.wgsl        common (shared structs), mesh (PBR), shadow, grid, overlay, mipmap
+  scene.ts              Transform, GameObject (scene graph node), Scene
+  mesh.ts material.ts light.ts camera.ts behaviours.ts primitives.ts
+  overlay.ts            Immediate-mode helper geometry (gizmos, icons, boxes)
+  raycast.ts            Ray/AABB/triangle/sphere tests, scene picking, world bounds
+  math.ts               vec3 / quat / mat4 (column-major), color helpers
+  loaders/              glTF 2.0 / GLB, OBJ + MTL, resource resolvers
+src/editor/             Editor UI (plain DOM, no framework)
+  editor.ts             Input, selection, commands, play mode, import, overlay
+  gizmo.ts              Move/rotate/scale manipulator (picking + dragging + drawing)
+  hierarchy.ts inspector.ts ui.ts history.ts orbitControls.ts editor.css
+public/models/          Sample assets (lantern.glb, icosahedron.obj/.mtl)
+scripts/                generate-sample-glb.mjs (regenerates lantern.glb)
+tests/                  Optional GPU smoke tests (separate package.json)
+```
+
+## Tests
+
+The app itself only needs `npm run typecheck` / `npm run build`. The optional
+smoke tests in `tests/` exercise the real GPU:
+
+- **`test:render`** runs the engine under Node with Dawn (the `webgpu` npm
+  package). It checks the math, loaders, picking and gizmo logic, checks that
+  rendering the demo scene produces no WebGPU validation errors, and writes
+  `tests/.out/frame.png`.
+- **`test:ui`** starts Vite and drives the editor in headless Chromium:
+  selection, gizmo drag, undo/redo, inspector edits, the Add menu,
+  duplicate/delete, Play/Stop, drill-down picking and re-parenting. It also
+  fails on any console error.
+
+```sh
+nix develop .#tests          # provides Chromium + the Vulkan loader for Dawn
+npm install                  # app deps (needed by test:ui)
+cd tests && npm install && npm test
+```
+
+The tests need a working Vulkan driver. On NixOS that means
+`hardware.graphics.enable = true`.
+
+## Supported formats and limitations
+
+- **glTF 2.0:** node hierarchy, TRS or matrix transforms, triangle primitives,
+  indexed and non-indexed geometry, normalized/sparse accessors,
+  metallic-roughness factors, base color texture, emissive (plus
+  `KHR_materials_emissive_strength`), alpha mask, double-sided,
+  `KHR_materials_unlit` and `KHR_lights_punctual`. **Not supported:** skins,
+  morph targets, animations, cameras, normal/occlusion/metal-rough textures,
+  texture transforms, Draco/meshopt/Basis compression (the loader reports a
+  clear error).
+- **OBJ/MTL:** `v/vt/vn/f` (polygons are fan-triangulated, negative indices
+  allowed), `o`/`g`/`usemtl` groups, `Kd`, `Ke`, `Ns`, `d`/`Tr`, `Pm`/`Pr`
+  and `map_Kd`.
+- **Rendering:** opaque only. Alpha *blend* materials render opaque; alpha
+  *mask* works. One directional shadow map, no point or spot shadows.
+  Environment lighting is a sky/ground gradient approximation, not
+  image-based lighting.
+- **Editor:** no scene save/load yet. Objects added or deleted during Play
+  stay that way after Stop (only transforms and light values are restored).
+  Material and light edits aren't part of undo.
+
+## License
+
+No license has been chosen yet. Add a `LICENSE` file before distributing.
+# Vertek-Engine
