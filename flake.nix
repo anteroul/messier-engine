@@ -1,5 +1,5 @@
 {
-  description = "Vertek Engine - browser-based WebGPU 3D engine and real-time scene editor";
+  description = "Messier Engine - browser-based WebGPU 3D engine and real-time scene editor";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -22,11 +22,11 @@
         # `nix run` - start the Vite dev server from the current checkout.
         # Installs node_modules on first run (or when package-lock.json changes).
         dev = pkgs.writeShellApplication {
-          name = "vertek-dev";
+          name = "messier-dev";
           runtimeInputs = [ nodejs ];
           text = ''
-            if [ ! -f package.json ] || ! grep -q '"name": "vertek-engine"' package.json; then
-              echo "vertek-dev: run this from the vertek-engine project root" >&2
+            if [ ! -f package.json ] || ! grep -q '"name": "messier-engine"' package.json; then
+              echo "messier-dev: run this from the messier-engine project root" >&2
               exit 1
             fi
             if [ ! -d node_modules ] || [ package-lock.json -nt node_modules/.package-lock.json ]; then
@@ -36,9 +36,9 @@
           '';
         };
 
-        # Reproducible production build (static files in $out/share/vertek-engine).
-        vertek-engine = pkgs.buildNpmPackage {
-          pname = "vertek-engine";
+        # Reproducible production build (static files in $out/share/messier-engine).
+        messier-engine = pkgs.buildNpmPackage {
+          pname = "messier-engine";
           version = "0.1.0";
           inherit nodejs;
           src = lib.fileset.toSource {
@@ -55,12 +55,12 @@
           };
           # Update after changing dependencies:
           #   nix run nixpkgs#prefetch-npm-deps -- package-lock.json
-          npmDepsHash = "sha256-j8a6NOKr+HARrnVSIjlC+/NX1Sd/60j/x7kGa2KseCQ=";
+          npmDepsHash = "sha256-t8Y8DVftGg2ScVg7KpGklfjqbBcy2yRDE8BcKezcHZU=";
           npmBuildScript = "build";
           installPhase = ''
             runHook preInstall
-            mkdir -p $out/share/vertek-engine
-            cp -r dist/. $out/share/vertek-engine/
+            mkdir -p $out/share/messier-engine
+            cp -r dist/. $out/share/messier-engine/
             runHook postInstall
           '';
           meta = {
@@ -72,32 +72,32 @@
         # `nix run .#serve` - serve the production build on http://localhost:8080
         # (localhost counts as a secure context, which WebGPU requires).
         serve = pkgs.writeShellApplication {
-          name = "vertek-serve";
+          name = "messier-serve";
           runtimeInputs = [ pkgs.python3 ];
           text = ''
             port="''${1:-8080}"
-            echo "Serving Vertek Engine on http://localhost:$port"
-            exec python3 -m http.server "$port" --bind 127.0.0.1 --directory ${vertek-engine}/share/vertek-engine
+            echo "Serving Messier Engine on http://localhost:$port"
+            exec python3 -m http.server "$port" --bind 127.0.0.1 --directory ${messier-engine}/share/messier-engine
           '';
         };
       in
       {
         packages = {
-          default = vertek-engine;
-          inherit vertek-engine;
+          default = messier-engine;
+          inherit messier-engine;
         };
 
         apps = {
           default = {
             type = "app";
             program = lib.getExe dev;
-            meta.description = "Run the Vertek Engine Vite dev server";
+            meta.description = "Run the Messier Engine Vite dev server";
           };
           dev = self.apps.${system}.default;
           serve = {
             type = "app";
             program = lib.getExe serve;
-            meta.description = "Serve the production build of Vertek Engine";
+            meta.description = "Serve the production build of Messier Engine";
           };
         };
 
@@ -108,7 +108,7 @@
             pkgs.prefetch-npm-deps
           ];
           shellHook = ''
-            echo "Vertek Engine dev shell - node $(node --version), npm $(npm --version)"
+            echo "Messier Engine dev shell - node $(node --version), npm $(npm --version)"
             echo "  npm install    install dependencies"
             echo "  npm run dev    start the dev server (http://localhost:5173)"
             echo "  npm run build  type-check and build to dist/"
@@ -123,9 +123,9 @@
             pkgs.chromium
           ];
           LD_LIBRARY_PATH = lib.makeLibraryPath [ pkgs.vulkan-loader ];
-          VERTEK_CHROMIUM = lib.getExe pkgs.chromium;
+          MESSIER_CHROMIUM = lib.getExe pkgs.chromium;
           shellHook = ''
-            echo "Vertek Engine test shell - run: (cd tests && npm install && npm test)"
+            echo "Messier Engine test shell - run: (cd tests && npm install && npm test)"
           '';
         };
 

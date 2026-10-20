@@ -98,6 +98,23 @@ check('Add > Cube creates and selects', (await state(() => window.editor.selecte
 check('hierarchy lists new cube', (await page.$$eval('.tree-name', (els) => els.map((e) => e.textContent))).includes('Cube'));
 check('menu closed after choice', (await page.$('details.menu[open]')) === null);
 
+// --- Rigid body component: add via inspector, undo/redo
+await page.click('#inspector .add-rigidbody');
+await sleep(50);
+check('add rigid body', (await state(() => window.editor.selected.rigidBody?.type)) === 'dynamic' && (await page.$eval('#inspector', (e) => e.innerText.includes('Mass'))));
+await sleep(100);
+await page.screenshot({ path: `${OUT}/ui-rigidbody.png` });
+await page.$eval('#gpu-canvas', (e) => e.focus());
+await page.keyboard.down('Control');
+await page.keyboard.press('KeyZ');
+await page.keyboard.up('Control');
+check('undo add rigid body', (await state(() => window.editor.selected.rigidBody)) === null);
+await page.keyboard.down('Control');
+await page.keyboard.press('KeyY');
+await page.keyboard.up('Control');
+check('redo add rigid body', (await state(() => !!window.editor.selected.rigidBody)));
+await state(() => { window.editor.selected.transform.position[1] = 3; });
+
 // --- Add light, change type in inspector
 await page.click('summary.btn');
 await page.click('[data-action="add-point"]');
@@ -125,11 +142,14 @@ await page.click('[data-action="play"]');
 await sleep(800);
 const rot1 = await state(() => [...window.engine.scene.findByName('Spinning Cube').transform.rotation]);
 check('play animates behaviours', rot0.some((v, i) => Math.abs(v - rot1[i]) > 1e-3));
+const fallen = await state(() => window.engine.scene.findByName('Cube').transform.position[1]);
+check('play simulates rigid bodies', Math.abs(fallen - 0.5) < 0.05, `y=${fallen.toFixed(3)}`);
 await page.screenshot({ path: `${OUT}/ui-playing.png` });
 await page.click('[data-action="play"]');
 await sleep(50);
 const rot2 = await state(() => [...window.engine.scene.findByName('Spinning Cube').transform.rotation]);
 check('stop restores transforms', rot0.every((v, i) => Math.abs(v - rot2[i]) < 1e-6));
+check('stop restores rigid body pose', (await state(() => window.engine.scene.findByName('Cube').transform.position[1])) === 3);
 
 await state(() => { window.engine.scene.findByName('Lantern').transform.position = [2.6, 0, 3.4]; });
 await sleep(100);

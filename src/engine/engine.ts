@@ -13,7 +13,7 @@ export interface FrameInfo {
 
 type FrameCallback = (frame: FrameInfo) => void;
 
-/** Owns the main loop: update behaviours -> world matrices -> hooks -> render. */
+/** Owns the main loop: update behaviours + physics -> world matrices -> hooks -> render. */
 export class Engine {
   readonly scene = new Scene();
   readonly camera = new Camera();
@@ -50,6 +50,7 @@ export class Engine {
     if (playing === this.playing) return;
     this.playing = playing;
     this.playTime = 0;
+    if (playing) this.scene.physics.reset(this.scene);
   }
 
   start(): void {

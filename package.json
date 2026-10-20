@@ -1,7 +1,8 @@
 {
-  "name": "vertek-engine",
+  "name": "messier-engine",
   "version": "0.1.0",
   "description": "Browser-based WebGPU 3D engine with dynamic lights, glTF/OBJ loading and a real-time scene editor",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "scripts": {

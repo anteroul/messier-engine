@@ -7,15 +7,25 @@ import {
   Orbiter,
   Rotator,
   Bobber,
+  RigidBody,
   createCube,
+  fitCollider,
   createCylinder,
   createPlane,
   createSphere,
   createTorus,
+  type BodyType,
   type Mesh,
   type Scene,
   type Vec3,
 } from './engine';
+
+function addBody(o: GameObject, type: BodyType, opts: ConstructorParameters<typeof RigidBody>[1] = {}): GameObject {
+  o.rigidBody = new RigidBody(type);
+  fitCollider(o.rigidBody, o.mesh);
+  Object.assign(o.rigidBody, opts);
+  return o;
+}
 
 function meshObject(name: string, mesh: Mesh, material: Material, position: Vec3): GameObject {
   const o = new GameObject(name);
@@ -37,7 +47,7 @@ function lightObject(name: string, light: Light, position: Vec3, eulerDeg?: Vec3
 export function buildDemoScene(scene: Scene): void {
   const floorMat = new Material('Floor', { baseColor: [0.22, 0.23, 0.25, 1], roughness: 0.8 });
   const floor = meshObject('Floor', createPlane(30, 1), floorMat, [0, 0, 0]);
-  scene.add(floor);
+  scene.add(addBody(floor, 'static'));
 
   const cube = meshObject('Spinning Cube', createCube(1), new Material('Copper', { baseColor: [0.95, 0.64, 0.54, 1], metallic: 1, roughness: 0.3 }), [-2.5, 0.75, 0]);
   cube.transform.scale = [1.5, 1.5, 1.5];
@@ -59,9 +69,21 @@ export function buildDemoScene(scene: Scene): void {
   for (let i = 0; i < 4; i++) {
     const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
     const p = meshObject(`Pillar ${i + 1}`, createCylinder(0.3, 3), pillarMat, [Math.cos(a) * 6, 1.5, Math.sin(a) * 6]);
-    pillars.add(p);
+    pillars.add(addBody(p, 'static'));
   }
   scene.add(pillars);
+
+  // Physics: in Play mode the ball drops onto the crate stack and knocks it over.
+  const crateMat = new Material('Wood', { baseColor: [0.55, 0.36, 0.2, 1], roughness: 0.7 });
+  const crates = new GameObject('Crates');
+  for (let i = 0; i < 3; i++) {
+    const c = meshObject(`Crate ${i + 1}`, createCube(0.8), crateMat, [4.2, 0.4 + i * 0.8, 0.6]);
+    crates.add(addBody(c, 'dynamic', { mass: 2 }));
+  }
+  scene.add(crates);
+  const ball = meshObject('Ball', createSphere(0.3), new Material('Rubber', { baseColor: [0.9, 0.85, 0.1, 1], roughness: 0.5 }), [3.95, 5, 0.75]);
+  addBody(ball, 'dynamic', { shape: 'sphere', mass: 3, restitution: 0.5, angularDamping: 1.5 });
+  scene.add(ball);
 
   const glow = meshObject('Glow Orb', createSphere(0.25), new Material('Emissive', { baseColor: [0.2, 0.6, 1, 1], emissive: [0.2, 0.6, 1], emissiveStrength: 4 }), [-1, 2.6, 2.5]);
   glow.castShadows = false;

@@ -3,6 +3,7 @@ import type { Mesh } from './mesh';
 import type { Material } from './material';
 import type { Light } from './light';
 import type { Behaviour } from './behaviours';
+import { PhysicsWorld, type RigidBody } from './physics';
 
 let nextId = 1;
 
@@ -50,6 +51,7 @@ export class GameObject {
   castShadows = true;
   light: Light | null = null;
   behaviours: Behaviour[] = [];
+  rigidBody: RigidBody | null = null;
 
   /** Updated by Scene.updateMatrices(). */
   readonly worldMatrix: Mat4 = mat4.create();
@@ -145,7 +147,7 @@ export class GameObject {
     this.transform.scale = s;
   }
 
-  /** Deep copy. Meshes and textures are shared; materials, lights and behaviours are copied. */
+  /** Deep copy. Meshes and textures are shared; materials, lights, behaviours and rigid bodies are copied. */
   clone(): GameObject {
     const o = new GameObject(this.name);
     o.transform.copyFrom(this.transform);
@@ -155,6 +157,7 @@ export class GameObject {
     o.castShadows = this.castShadows;
     o.light = this.light?.clone() ?? null;
     o.behaviours = this.behaviours.map((b) => b.clone());
+    o.rigidBody = this.rigidBody?.clone() ?? null;
     for (const c of this.children) o.add(c.clone());
     return o;
   }
@@ -171,6 +174,7 @@ export class Scene {
   exposure = 1;
   /** Half extent (world units) of the directional shadow frustum. */
   shadowExtent = 16;
+  readonly physics = new PhysicsWorld();
 
   add(obj: GameObject, parent: GameObject = this.root): GameObject {
     return parent.add(obj);
@@ -201,12 +205,13 @@ export class Scene {
     for (const c of this.root.children) c.updateWorldMatrix(null);
   }
 
-  /** Runs behaviours (when playing) and refreshes world matrices. */
+  /** Runs behaviours and physics (when playing) and refreshes world matrices. */
   update(dt: number, time: number, playing: boolean): void {
     if (playing) {
       this.traverse((o) => {
         for (const b of o.behaviours) if (b.enabled) b.update(o, dt, time);
       });
+      this.physics.update(this, dt);
     }
     this.updateMatrices();
   }

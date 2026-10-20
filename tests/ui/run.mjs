@@ -14,7 +14,7 @@ const PORT = Number(process.env.UI_TEST_PORT ?? 5199);
 const url = `http://localhost:${PORT}/`;
 
 function findChromium() {
-  const env = process.env.VERTEK_CHROMIUM ?? process.env.CHROMIUM;
+  const env = process.env.MESSIER_CHROMIUM ?? process.env.CHROMIUM;
   if (env) return env;
   for (const name of ['chromium', 'chromium-browser', 'google-chrome-stable', 'google-chrome']) {
     const r = spawnSync('sh', ['-c', `command -v ${name}`], { encoding: 'utf8' });
@@ -25,7 +25,7 @@ function findChromium() {
 
 const chromium = findChromium();
 if (!chromium) {
-  console.error('No Chromium found. Set VERTEK_CHROMIUM or use `nix develop .#tests`.');
+  console.error('No Chromium found. Set MESSIER_CHROMIUM or use `nix develop .#tests`.');
   process.exit(1);
 }
 const viteBin = resolve(root, 'node_modules/vite/bin/vite.js');

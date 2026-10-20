@@ -1,4 +1,4 @@
-# Vertek Engine
+# Messier Engine
 
 A browser-based 3D engine written in TypeScript on **WebGPU**, with a built-in
 real-time scene editor.
@@ -11,6 +11,9 @@ real-time scene editor.
 - **Model loading**: glTF 2.0 (`.gltf` + `.bin` + images, or binary `.glb`)
   and Wavefront OBJ + MTL, either from a URL or by dragging files onto the
   viewport.
+- **Rigid body physics**: a `RigidBody` component with box and sphere
+  colliders, dynamic / static / kinematic bodies, friction, restitution,
+  damping and sleeping, solved with fixed-step sequential impulses.
 - **Real-time editor**: hierarchy tree with drag-and-drop re-parenting, live
   inspector, move/rotate/scale gizmos with snapping, undo/redo, duplicate and
   delete, and a Play mode that runs behaviours (scripts) and restores the scene
@@ -34,7 +37,7 @@ nix develop
 npm install
 npm run dev
 
-# Reproducible production build (static files in ./result/share/vertek-engine)
+# Reproducible production build (static files in ./result/share/messier-engine)
 nix build
 
 # Serve that production build on http://localhost:8080
@@ -107,8 +110,20 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
   `.bin`, `.mtl` and texture files. Very large or very small models are rescaled
   to about 3 m and placed on the ground.
 - **Play mode:** behaviours (Rotator, Bobber, Orbiter, LightPulse, ColorCycle)
-  only run while playing. When you press Stop, every transform and light
-  color/intensity goes back to its value from before Play.
+  and physics only run while playing. When you press Stop, every transform,
+  light color/intensity and rigid body velocity goes back to its value from
+  before Play.
+- **Physics:** select an object and click **Add** in the inspector's *Rigid
+  Body* section. The collider is fitted to the mesh (spheres get a sphere
+  collider, flat meshes like planes become static slabs) and drawn in green.
+  - **Dynamic** bodies fall and collide.
+  - **Static** bodies never move.
+  - **Kinematic** bodies follow their transform, for example when driven by a
+    behaviour, and push dynamic bodies out of the way.
+  
+  Moving a dynamic body with the gizmo during Play teleports it and restarts
+  it from rest. Gravity and solver iterations are in the scene settings.
+  In the demo, press Play to drop the ball onto the crate stack.
 
 Objects are also reachable from the browser console as `engine` and `editor`,
 for example `engine.scene.findByName('Sun').light.intensity = 5`.
@@ -116,7 +131,7 @@ for example `engine.scene.findByName('Sun').light.intensity = 5`.
 ## Using the engine in code
 
 ```ts
-import { Engine, GameObject, Light, Material, Rotator, createCube, loadModelFromURL } from './engine';
+import { Engine, GameObject, Light, Material, RigidBody, Rotator, createCube, createPlane, createSphere, fitCollider, loadModelFromURL } from './engine';
 
 const engine = await Engine.create(document.querySelector('canvas')!);
 
@@ -133,8 +148,21 @@ sun.light.castShadows = true;
 sun.transform.setEulerDeg(-50, 30, 0); // lights shine along local -Z
 engine.scene.add(sun);
 
+const floor = new GameObject('Floor');
+floor.mesh = createPlane(20);
+floor.rigidBody = new RigidBody('static');
+fitCollider(floor.rigidBody, floor.mesh); // plane -> 0.2 m slab below y = 0
+engine.scene.add(floor);
+
+const ball = new GameObject('Ball');
+ball.mesh = createSphere(0.5);
+ball.transform.position = [0, 4, 0];
+ball.rigidBody = new RigidBody('dynamic', { shape: 'sphere', radius: 0.5, restitution: 0.6 });
+engine.scene.add(ball);
+// From a behaviour or anywhere else: ball.rigidBody.addImpulse([2, 0, 0]);
+
 engine.scene.add(await loadModelFromURL('/models/lantern.glb'));
-engine.setPlaying(true); // run behaviours
+engine.setPlaying(true); // run behaviours and physics
 engine.start();
 ```
 
@@ -150,11 +178,12 @@ index.html              Editor shell (toolbar, panels, canvas)
 src/main.ts             Entry point: creates the engine, demo scene and editor, loads sample models
 src/demo.ts             Demo scene content
 src/engine/             The engine (no DOM dependencies except the canvas)
-  engine.ts             Main loop: behaviours → world matrices → hooks → render
+  engine.ts             Main loop: behaviours + physics → world matrices → hooks → render
   renderer.ts           WebGPU device, pipelines, shadow + main passes, uploads
   shaders/*.wgsl        common (shared structs), mesh (PBR), shadow, grid, overlay, mipmap
   scene.ts              Transform, GameObject (scene graph node), Scene
   mesh.ts material.ts light.ts camera.ts behaviours.ts primitives.ts
+  physics.ts            RigidBody component, colliders, contact generation, impulse solver
   overlay.ts            Immediate-mode helper geometry (gizmos, icons, boxes)
   raycast.ts            Ray/AABB/triangle/sphere tests, scene picking, world bounds
   math.ts               vec3 / quat / mat4 (column-major), color helpers
@@ -174,7 +203,7 @@ The app itself only needs `npm run typecheck` / `npm run build`. The optional
 smoke tests in `tests/` exercise the real GPU:
 
 - **`test:render`** runs the engine under Node with Dawn (the `webgpu` npm
-  package). It checks the math, loaders, picking and gizmo logic, checks that
+  package). It checks the math, loaders, picking, gizmo and physics logic, checks that
   rendering the demo scene produces no WebGPU validation errors, and writes
   `tests/.out/frame.png`.
 - **`test:ui`** starts Vite and drives the editor in headless Chromium:
@@ -208,11 +237,16 @@ The tests need a working Vulkan driver. On NixOS that means
   *mask* works. One directional shadow map, no point or spot shadows.
   Environment lighting is a sky/ground gradient approximation, not
   image-based lighting.
+- **Physics:** box and sphere colliders only (no mesh, capsule or compound
+  colliders). Only objects with a rigid body collide; use a static body for
+  scenery. There's no continuous collision detection, so very fast, small
+  bodies can tunnel through thin colliders. Joints, triggers and collision
+  layers aren't implemented. The broadphase is brute force, which is fine for
+  a few hundred bodies.
 - **Editor:** no scene save/load yet. Objects added or deleted during Play
   stay that way after Stop (only transforms and light values are restored).
   Material and light edits aren't part of undo.
 
 ## License
 
-No license has been chosen yet. Add a `LICENSE` file before distributing.
-# Vertek-Engine
+MIT. See [LICENSE](LICENSE).

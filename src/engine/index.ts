@@ -6,6 +6,7 @@ export * from './light';
 export * from './scene';
 export * from './camera';
 export * from './behaviours';
+export * from './physics';
 export * from './primitives';
 export * from './overlay';
 export * from './raycast';

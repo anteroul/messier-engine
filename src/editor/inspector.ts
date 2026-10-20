@@ -1,17 +1,25 @@
 import {
   BEHAVIOURS,
+  BODY_TYPES,
+  COLLIDER_SHAPES,
+  DEG2RAD,
+  RAD2DEG,
   Texture,
   createBehaviour,
+  fitCollider,
   hexToLinear,
   hexToRgb,
   linearToHex,
   quat,
   rgbToHex,
+  vec3,
+  type BodyType,
+  type ColliderShape,
   type GameObject,
   type LightType,
   type Vec3,
 } from '../engine';
-import { button, checkboxRow, colorRow, el, numberRow, section, selectRow, sliderRow, textRow, vec3Row, type Binding } from './ui';
+import { button, checkboxRow, colorRow, el, numberRow, row, section, selectRow, sliderRow, textRow, vec3Row, type Binding } from './ui';
 import type { Editor } from './editor';
 
 /** Property editor for the selected object (or scene settings when nothing is selected). */
@@ -64,6 +72,12 @@ export class InspectorPanel {
     env.body.append(ambientColor.row, ambientI.row, bg.row, exposure.row, shadow.row, grid.row);
     this.add(ambientColor.binding, ambientI.binding, bg.binding, exposure.binding, shadow.binding, grid.binding);
 
+    const physics = section('Physics');
+    const gravity = vec3Row('Gravity', () => scene.physics.gravity, (v) => (scene.physics.gravity = v), { step: 0.1 });
+    const iterations = numberRow('Iterations', () => scene.physics.iterations, (v) => (scene.physics.iterations = Math.round(v)), { step: 1, min: 1, max: 50, precision: 0 });
+    physics.body.append(gravity.row, iterations.row);
+    this.add(gravity.bindings, iterations.binding);
+
     const info = section('Scene');
     let objects = 0, lights = 0;
     scene.traverse((o) => {
@@ -74,7 +88,7 @@ export class InspectorPanel {
       el('p', { class: 'hint', text: `${objects} objects, ${lights} lights.` }),
       el('p', { class: 'hint', text: 'Select an object in the viewport or hierarchy to edit it. Drop .glb / .gltf / .obj files onto the viewport to import.' }),
     );
-    return [env.root, info.root];
+    return [env.root, physics.root, info.root];
   }
 
   private buildObject(obj: GameObject): HTMLElement[] {
@@ -205,6 +219,8 @@ export class InspectorPanel {
       out.push(s.root);
     }
 
+    out.push(this.buildRigidBody(obj));
+
     // --- Behaviours
     const addSelect = el('select', { class: 'add-behaviour' }, [
       el('option', { value: '', text: '+ Add…' }),
@@ -239,6 +255,77 @@ export class InspectorPanel {
     });
     out.push(beh.root);
     return out;
+  }
+
+  private buildRigidBody(obj: GameObject): HTMLElement {
+    const ed = this.editor;
+    const rb = obj.rigidBody;
+    const s = section(
+      'Rigid Body',
+      rb ? button('✕', () => ed.removeRigidBody(obj), 'btn btn-small') : button('Add', () => ed.addRigidBody(obj), 'btn btn-small add-rigidbody'),
+    );
+    if (!rb) {
+      s.body.append(el('p', { class: 'hint', text: 'No rigid body. Add one to collide and (if dynamic) fall in Play mode.' }));
+      return s.root;
+    }
+    const type = selectRow('Type', [...BODY_TYPES], () => rb.type, (v) => {
+      rb.type = v as BodyType;
+      this.refresh();
+    });
+    const shape = selectRow('Collider', [...COLLIDER_SHAPES], () => rb.shape, (v) => {
+      rb.shape = v as ColliderShape;
+      this.refresh();
+    });
+    const fit = row('', button('Fit to mesh', () => fitCollider(rb, obj.mesh), 'btn btn-small'));
+    const center = vec3Row('Center', () => rb.center, (v) => (rb.center = v), { step: 0.05 });
+    s.body.append(type.row, shape.row, center.row);
+    this.add(type.binding, shape.binding, center.bindings);
+    if (rb.shape === 'box') {
+      const size = vec3Row('Size', () => vec3.scale(rb.halfExtents, 2), (v) => (rb.halfExtents = vec3.max(vec3.scale(v, 0.5), [1e-3, 1e-3, 1e-3])), { step: 0.05 });
+      s.body.append(size.row);
+      this.add(size.bindings);
+    } else {
+      const radius = numberRow('Radius', () => rb.radius, (v) => (rb.radius = v), { step: 0.05, min: 1e-3 });
+      s.body.append(radius.row);
+      this.add(radius.binding);
+    }
+    s.body.append(fit);
+
+    const friction = sliderRow('Friction', () => rb.friction, (v) => (rb.friction = v), 0, 1);
+    const restitution = sliderRow('Bounciness', () => rb.restitution, (v) => (rb.restitution = v), 0, 1);
+    s.body.append(friction.row, restitution.row);
+    this.add(friction.binding, restitution.binding);
+
+    if (rb.type === 'dynamic') {
+      const mass = numberRow('Mass', () => rb.mass, (v) => (rb.mass = v), { step: 0.1, min: 0.01, max: 1e6 });
+      const gravity = checkboxRow('Use gravity', () => rb.useGravity, (v) => (rb.useGravity = v));
+      const linDamp = numberRow('Linear damping', () => rb.linearDamping, (v) => (rb.linearDamping = v), { step: 0.01, min: 0, max: 100 });
+      const angDamp = numberRow('Angular damping', () => rb.angularDamping, (v) => (rb.angularDamping = v), { step: 0.01, min: 0, max: 100 });
+      const vel = vec3Row('Velocity', () => rb.velocity, (v) => {
+        rb.velocity = v;
+        rb.wake();
+      }, { step: 0.1 });
+      const angVel = vec3Row('Spin °/s', () => vec3.scale(rb.angularVelocity, RAD2DEG), (v) => {
+        rb.angularVelocity = vec3.scale(v, DEG2RAD);
+        rb.wake();
+      }, { step: 5, precision: 1 });
+      s.body.append(mass.row, gravity.row, linDamp.row, angDamp.row, vel.row, angVel.row);
+      this.add(mass.binding, gravity.binding, linDamp.binding, angDamp.binding, vel.bindings, angVel.bindings);
+      const state = el('p', { class: 'hint' });
+      this.add({
+        sync: () => {
+          const text = ed.engine.playing ? (rb.sleeping ? 'Sleeping (at rest).' : 'Simulating.') : 'Velocities set here are the initial velocities for Play.';
+          if (state.textContent !== text) state.textContent = text;
+        },
+      });
+      s.body.append(state);
+    } else {
+      s.body.append(el('p', {
+        class: 'hint',
+        text: rb.type === 'static' ? 'Static bodies never move but block dynamic ones.' : 'Kinematic bodies follow their transform (move them with behaviours) and push dynamic bodies.',
+      }));
+    }
+    return s.root;
   }
 }
 

@@ -1,5 +1,5 @@
 {
-  "name": "vertek-engine-tests",
+  "name": "messier-engine-tests",
   "private": true,
   "type": "module",
   "description": "Optional GPU smoke tests: headless renderer (Dawn) and editor UI (Chromium). Kept separate so the app has no native test dependencies.",

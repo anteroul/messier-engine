@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guidance for AI coding agents (and humans) working on Vertek Engine. Read
+Guidance for AI coding agents (and humans) working on Messier Engine. Read
 `README.md` for the user-facing overview. This file covers the invariants
 and workflows you need before changing code.
 
@@ -53,6 +53,13 @@ Engine.step(dt)                         src/engine/engine.ts
   `worldMatrix`/`normalMatrix` are cached and refreshed by
   `Scene.updateMatrices()`. Use `computeWorldMatrix()`/`worldPosition()` when
   you need fresh values mid-frame (for example right after a gizmo edit).
+- **Physics** (`physics.ts`): `GameObject.rigidBody` plus `scene.physics`
+  (`PhysicsWorld`), stepped at a fixed 60 Hz from `Scene.update` after
+  behaviours, only while playing. Each step reads world poses from transforms
+  and writes them back, and `Engine.setPlaying(true)` calls `physics.reset()`.
+  A dynamic body whose pose changed outside the solver counts as teleported:
+  it wakes and its velocity is zeroed. Kinematic velocity is derived from
+  transform deltas.
 - **Engine vs editor:** `src/engine/**` must not import from `src/editor/**`
   and must not touch the DOM beyond the canvas passed to `Renderer`. That
   boundary is what lets `tests/render` run the engine under Node. The editor
@@ -110,7 +117,7 @@ Engine.step(dt)                         src/engine/engine.ts
 `src/engine/behaviours.ts`, give it a unique `readonly type` string and numeric
 defaults in `super({...})`, and add it to `BEHAVIOURS`. The inspector picks it
 up automatically. Capture start state in `start()`, because Play/Stop only
-restores transforms and light color/intensity.
+restores transforms, light color/intensity and rigid body velocities.
 
 **Add a material or light property.** Add the field (and copy it in `clone()`),
 extend the WGSL struct and the TS packing (keep 16-byte alignment, and grow

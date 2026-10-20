@@ -133,7 +133,7 @@ const meshes = [
 ];
 
 const gltf = {
-  asset: { version: '2.0', generator: 'vertek-engine sample generator' },
+  asset: { version: '2.0', generator: 'messier-engine sample generator' },
   extensionsUsed: ['KHR_lights_punctual', 'KHR_materials_emissive_strength'],
   extensions: { KHR_lights_punctual: { lights: [{ name: 'LanternLight', type: 'point', color: [1, 0.72, 0.4], intensity: 6, range: 6 }] } },
   scene: 0,

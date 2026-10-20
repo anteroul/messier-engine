@@ -1,4 +1,4 @@
-# Icosahedron sample for the Vertek OBJ loader (flat shaded, two materials)
+# Icosahedron sample for the Messier OBJ loader (flat shaded, two materials)
 mtllib icosahedron.mtl
 o Icosahedron
 v -0.473158 0.765586 0.000000

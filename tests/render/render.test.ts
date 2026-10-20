@@ -49,6 +49,47 @@ const check = (name: string, ok: boolean, info = '') => {
   check('lookRotation', vec3.equals(f, vec3.normalize([1, -1, 0]), 1e-5));
 }
 
+// ---- physics (CPU only): resting contacts, stacking, bouncing, sleeping
+{
+  const { GameObject, RigidBody, fitCollider, createCube, createSphere, createPlane } = engine;
+  const body = (name: string, mesh: any, pos: number[], type = 'dynamic', opts: any = {}) => {
+    const o = new GameObject(name);
+    o.mesh = mesh;
+    o.transform.position = pos;
+    o.rigidBody = new RigidBody(type, opts);
+    fitCollider(o.rigidBody, mesh);
+    Object.assign(o.rigidBody, opts);
+    return o;
+  };
+  const world = new Scene();
+  world.add(body('Floor', createPlane(30, 1), [0, 0, 0], 'static'));
+  const box = world.add(body('Box', createCube(1), [0, 2, 0]));
+  box.transform.setEulerDeg(25, 10, 15);
+  const ball = world.add(body('Ball', createSphere(0.5), [3, 3, 0], 'dynamic', { shape: 'sphere' }));
+  const bouncy = world.add(body('Bouncy', createSphere(0.5), [-3, 3, 0], 'dynamic', { shape: 'sphere', restitution: 0.8 }));
+  const stack = [0, 1, 2].map((i) => world.add(body(`Stack ${i}`, createCube(1), [0, 0.5 + i, 4])));
+  const pushed = world.add(body('Pushed', createCube(1), [-4, 0.5, 4], 'dynamic', { velocity: [3, 0, 0] }));
+  world.physics.reset(world);
+  let bounced = false, apex = 0;
+  for (let i = 0; i < 360; i++) {
+    world.update(1 / 60, i / 60, true);
+    if (bouncy.rigidBody.velocity[1] > 0.5) bounced = true;
+    if (bounced) apex = Math.max(apex, bouncy.transform.position[1]);
+  }
+  const p = (o: any) => o.transform.position;
+  const up = (o: any) => Math.max(...[[1, 0, 0], [0, 1, 0], [0, 0, 1]].map((a) => Math.abs(quat.rotateVec3(o.transform.rotation, a)[1])));
+  const finite = [box, ball, bouncy, pushed, ...stack].every((o) => [...p(o), ...o.transform.rotation].every(Number.isFinite));
+  check('physics finite', finite);
+  check('physics box lands flat', Math.abs(p(box)[1] - 0.5) < 0.03 && up(box) > 0.999, `y=${p(box)[1].toFixed(4)} up=${up(box).toFixed(5)}`);
+  check('physics sphere rests', Math.abs(p(ball)[1] - 0.5) < 0.03 && Math.abs(p(ball)[0] - 3) < 1e-3, p(ball).map((x: number) => x.toFixed(4)).join(','));
+  check('physics restitution bounces', apex > 1.4 && apex < 3, `apex=${apex.toFixed(3)}`);
+  const top = p(stack[2]);
+  check('physics stack is stable', Math.abs(top[1] - 2.5) < 0.05 && Math.hypot(top[0], top[2] - 4) < 0.05, top.map((x: number) => x.toFixed(4)).join(','));
+  check('physics friction stops slide', pushed.rigidBody.velocity[0] < 1e-3 && p(pushed)[0] > -3.6 && p(pushed)[0] < -2.5, `x=${p(pushed)[0].toFixed(3)}`);
+  const awake = [box, ...stack].filter((o: any) => !o.rigidBody.sleeping);
+  check('physics bodies sleep', awake.length === 0, awake.map((o: any) => `${o.name} v=${vec3.length(o.rigidBody.velocity).toFixed(4)} w=${vec3.length(o.rigidBody.angularVelocity).toFixed(4)}`).join('; '));
+}
+
 // ---- fake canvas
 const W = 960, H = 540;
 let current: GPUTexture | null = null;

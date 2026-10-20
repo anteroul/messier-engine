@@ -2,8 +2,13 @@ import {
   GameObject,
   Light,
   Material,
+  RigidBody,
   Transform,
+  colliderCorners,
+  fitCollider,
   getPrimitive,
+  isFlatMesh,
+  worldCollider,
   loadModelsFromFiles,
   raySphere,
   raycastScene,
@@ -31,9 +36,12 @@ interface PlaySnapshot {
   transform: Transform;
   lightColor?: Vec3;
   lightIntensity?: number;
+  velocity?: Vec3;
+  angularVelocity?: Vec3;
 }
 
 const SELECTION_COLOR: Vec4 = [1, 0.62, 0.15, 0.9];
+const COLLIDER_COLOR: Vec4 = [0.35, 1, 0.45, 0.85];
 const LIGHT_ICON_PX = 7;
 const CLICK_SLOP_PX = 4;
 
@@ -210,6 +218,29 @@ export class Editor {
     });
   }
 
+  /** Adds a rigid body fitted to the object's mesh. Flat meshes (planes) default to static. Undoable. */
+  addRigidBody(obj: GameObject): void {
+    if (obj.rigidBody) return;
+    const rb = new RigidBody(isFlatMesh(obj.mesh) ? 'static' : 'dynamic');
+    fitCollider(rb, obj.mesh);
+    if (obj.mesh?.name === 'Sphere') rb.shape = 'sphere';
+    this.setRigidBody(obj, rb, `Add rigid body to ${obj.name}`);
+  }
+
+  removeRigidBody(obj: GameObject): void {
+    if (obj.rigidBody) this.setRigidBody(obj, null, `Remove rigid body from ${obj.name}`);
+  }
+
+  private setRigidBody(obj: GameObject, rb: RigidBody | null, label: string): void {
+    const before = obj.rigidBody;
+    const apply = (value: RigidBody | null) => {
+      obj.rigidBody = value;
+      if (this.selected === obj) this.inspector.refresh();
+    };
+    apply(rb);
+    this.history.push({ label, undo: () => apply(before), redo: () => apply(rb) });
+  }
+
   focusSelected(): void {
     const obj = this.selected;
     if (!obj) {
@@ -311,6 +342,8 @@ export class Editor {
         transform: o.transform.clone(),
         lightColor: o.light ? vec3.clone(o.light.color) : undefined,
         lightIntensity: o.light?.intensity,
+        velocity: o.rigidBody ? vec3.clone(o.rigidBody.velocity) : undefined,
+        angularVelocity: o.rigidBody ? vec3.clone(o.rigidBody.angularVelocity) : undefined,
       });
     });
     this.playSnapshot = snap;
@@ -329,6 +362,11 @@ export class Editor {
       o.transform.copyFrom(s.transform);
       if (o.light && s.lightColor) o.light.color = s.lightColor;
       if (o.light && s.lightIntensity !== undefined) o.light.intensity = s.lightIntensity;
+      if (o.rigidBody) {
+        if (s.velocity) o.rigidBody.velocity = s.velocity;
+        if (s.angularVelocity) o.rigidBody.angularVelocity = s.angularVelocity;
+        o.rigidBody.resetState();
+      }
     }
     this.playSnapshot = null;
     document.body.classList.remove('playing');
@@ -419,6 +457,9 @@ export class Editor {
     if (sel) {
       const b = worldBounds(sel);
       if (b) overlay.wireBox(boxCorners(b.min, b.max), SELECTION_COLOR, 1.5, true);
+      const col = worldCollider(sel);
+      if (col?.shape === 'box') overlay.wireBox(colliderCorners(col), COLLIDER_COLOR, 1.5, true);
+      else if (col) for (const axis of col.axes) overlay.circle(col.center, axis, col.radius, COLLIDER_COLOR, 1.5, true, 48);
       this.gizmo.draw(overlay, sel, vh);
     }
   }
