@@ -97,7 +97,7 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
 | `F` (or double-click in hierarchy) | Focus selection |
 | `Ctrl+Z` / `Ctrl+Shift+Z` / `Ctrl+Y` | Undo / redo |
 | `Ctrl+D` / `Del` | Duplicate / delete |
-| `P` | Play / stop |
+| `P` | Play / stop (during Play, plain keys go to scripts; `Esc` stops) |
 | `Ctrl+E` | Switch between the **Scene** and **Scripts** tabs |
 | `Ctrl+S` / `Ctrl+/` / `Tab` | In the code editor: compile now / toggle comment / indent (`Shift+Tab` outdents) |
 | `G` / `H` | Toggle grid / light helpers |
@@ -226,6 +226,58 @@ export default class Hover extends Script {
   constructor parameter properties) is reported as an error. This is the same
   rule as Node's `--experimental-strip-types`.
 
+### Keyboard input
+
+`input` (from `'messier'`) holds the keyboard state. Keys are named by
+[`KeyboardEvent.code`](https://developer.mozilla.org/docs/Web/API/UI_Events/Keyboard_event_code_values)
+(`'KeyW'`, `'ArrowUp'`, `'Space'`, `'ShiftLeft'`…), so they stay in the same
+place on any keyboard layout.
+
+```ts
+import { Script, input } from 'messier';
+
+export default class Player extends Script {
+  speed = 3; // meters per second
+  jump = 5;
+
+  update(dt: number): void {
+    // A/D or ←/→, and S/W or ↓/↑: -1, 0 or 1
+    let x = input.axis('horizontal');
+    let z = -input.axis('vertical'); // forward is −Z
+    const len = Math.hypot(x, z);
+    if (len > 1) [x, z] = [x / len, z / len]; // diagonals aren't faster
+
+    const speed = input.isDown('ShiftLeft', 'ShiftRight') ? this.speed * 2 : this.speed;
+    const body = this.object.rigidBody;
+    if (body?.type === 'dynamic') {
+      // Set the velocity: moving a dynamic body's transform counts as a teleport.
+      body.velocity = [x * speed, body.velocity[1], z * speed];
+      if (input.pressed('Space')) body.velocity = [body.velocity[0], this.jump, body.velocity[2]];
+      if (x || z) body.wake(); // a resting body sleeps and ignores velocity changes
+    } else {
+      const p = this.object.transform.position;
+      this.object.transform.position = [p[0] + x * speed * dt, p[1], p[2] + z * speed * dt];
+    }
+  }
+}
+```
+
+| Call | Returns |
+| --- | --- |
+| `input.isDown(...codes)` | `true` while any of the keys is held |
+| `input.pressed(...codes)` / `input.released(...codes)` | `true` for one frame after any of the keys went down / up (key repeat doesn't count) |
+| `input.axis('horizontal' \| 'vertical')` | -1, 0 or 1 from A/D + ←/→ or S/W + ↓/↑ (up is positive) |
+| `input.axis(negativeKeys, positiveKeys)` | the same for your own keys, e.g. `input.axis(['KeyQ'], ['KeyE'])` |
+
+While playing, the viewport has the keyboard: plain keys go to scripts
+instead of the editor's shortcuts (so `W` doesn't switch the gizmo), and
+**Esc** stops Play. Ctrl shortcuts and right-drag fly still work, and typing
+in an inspector field or the code editor never reaches the game. Key state is
+cleared on Play, Stop and when the window loses focus. Outside the editor,
+forward events yourself with `input.keyDown(e.code)` / `input.keyUp(e.code)`.
+
+### Scripts from code
+
 From code, scripts are assets in `scene.scripts`:
 
 ```ts
@@ -245,6 +297,7 @@ src/main.ts             Entry point: creates the engine, demo scene and editor, 
 src/demo.ts             Demo scene content
 src/engine/             The engine (no DOM dependencies except the canvas)
   engine.ts             Main loop: behaviours + physics → world matrices → hooks → render
+  input.ts              Keyboard state for scripts (isDown / pressed / axis); the host forwards key events
   scripting.ts          Script base class, ScriptAsset (compile, diagnostics), ScriptBehaviour (hot reload)
   typescript.ts         Tokenizer + position-preserving TypeScript type stripper
   renderer.ts           WebGPU device, pipelines, shadow + main passes, uploads
@@ -318,7 +371,8 @@ The tests need a working Vulkan driver. On NixOS that means
   a few hundred bodies.
 - **Scripts:** no type checking or autocompletion. Scripts run on the main
   thread, so an infinite loop freezes the page. Scripts can only import from
-  `'messier'` (not from each other), and there's no input API yet.
+  `'messier'` (not from each other). Input is keyboard only (no mouse or
+  gamepad API yet).
 - **Editor:** no scene save/load yet (only script sources persist). Objects added or deleted during Play
   stay that way after Stop (only transforms and light values are restored).
   Material and light edits aren't part of undo.

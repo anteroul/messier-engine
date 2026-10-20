@@ -74,6 +74,11 @@ Engine.step(dt)                         src/engine/engine.ts
   `ScriptLibrary.locateSyntaxError` hook, which the editor implements.
   `scripting.ts` imports `./index` for the script API. That import is
   circular and only read lazily, so keep it that way.
+- **Input** (`input.ts`): the `input` singleton holds keyboard state by
+  `KeyboardEvent.code`. The engine never listens to the DOM. The editor
+  forwards keydown/keyup in `bindKeyboard()`. `Engine.step` calls
+  `input.endFrame()` after `scene.update` (so `pressed`/`released` last one
+  update), and `setPlaying` resets it.
 - **Engine vs editor:** `src/engine/**` must not import from `src/editor/**`
   and must not touch the DOM beyond the canvas passed to `Renderer`. That
   boundary is what lets `tests/render` run the engine under Node. The editor
@@ -158,7 +163,9 @@ in the glTF/OBJ loaders if a standard field exists.
 **Add a toolbar action or shortcut.** Toolbar buttons use `data-action` and
 are dispatched in `Editor.bindToolbar()`. Shortcuts live in
 `Editor.bindKeyboard()` (ignored while an input or select is focused, and
-while flying with right mouse).
+while flying with right mouse). During Play, plain keys go to `input` instead
+and only Esc (stop) and Ctrl shortcuts reach the editor, so new single-key
+shortcuts are automatically unavailable while playing.
 Update the help table in `index.html` and the README controls table.
 
 **Make an edit undoable.** Push a `Command` with `undo`/`redo` closures to

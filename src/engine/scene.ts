@@ -171,7 +171,7 @@ export class Scene {
   ambientColor: Vec3 = [0.55, 0.62, 0.75];
   ambientIntensity = 0.25;
   /** Clear color (display space). */
-  background: Vec3 = [0.07, 0.075, 0.09];
+  background: Vec3 = [0.06, 0.062, 0.065];
   exposure = 1;
   /** Half extent (world units) of the directional shadow frustum. */
   shadowExtent = 16;

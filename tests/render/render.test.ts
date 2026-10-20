@@ -264,6 +264,59 @@ scene.add(ico);
 check('OBJ groups/materials', ico.children.length === 2 && ico.children[0].material.name === 'Crystal', `${ico.children.length} children`);
 check('OBJ triangles', ico.children.reduce((n: number, c: any) => n + c.mesh.triangleCount, 0) === 20);
 
+// ---- keyboard input: edge state lasts one update, axes, and a script reading it
+{
+  const { GameObject, ScriptAsset, ScriptBehaviour, InputState, input } = engine;
+  const k = new InputState();
+  k.keyDown('KeyW');
+  k.keyDown('KeyW'); // auto-repeat
+  const first = k.isDown('KeyW') && k.pressed('KeyW', 'KeyX') && k.axis('vertical') === 1 && k.axis('horizontal') === 0;
+  k.endFrame();
+  const held = k.isDown('KeyW') && !k.pressed('KeyW');
+  k.keyDown('KeyS'); // both sides cancel
+  const cancel = k.axis('vertical') === 0;
+  k.keyUp('KeyW');
+  k.keyUp('KeyS');
+  const up = !k.isDown('KeyW') && k.released('KeyW') && k.axis(['KeyQ'], ['KeyE']) === 0;
+  k.keyDown('Space');
+  k.keyUp('Space'); // a tap between two frames still counts as pressed once
+  const tap = k.pressed('Space') && !k.isDown('Space');
+  k.endFrame();
+  k.keyDown('ArrowLeft');
+  k.reset();
+  check('input state', first && held && cancel && up && tap && !k.pressed('Space') && k.keys.length === 0, JSON.stringify({ first, held, cancel, up, tap }));
+
+  const world = new Scene();
+  const asset = world.scripts.add(new ScriptAsset('Player', `import { Script, input } from 'messier';
+export default class Player extends Script {
+  speed = 2;
+  jumps = 0;
+  update(dt: number): void {
+    const p = this.object.transform.position;
+    this.object.transform.position = [p[0] + input.axis('horizontal') * this.speed * dt, p[1], p[2] - input.axis('vertical') * this.speed * dt];
+    if (input.pressed('Space')) this.jumps++;
+  }
+}
+`));
+  check('input script compiles', asset.compile(), JSON.stringify(asset.diagnostics));
+  const obj = world.add(new GameObject('Player'));
+  const b = new ScriptBehaviour(asset);
+  obj.behaviours.push(b);
+  b.start(obj);
+  input.reset();
+  input.keyDown('KeyD');
+  input.keyDown('ArrowUp');
+  input.keyDown('Space');
+  for (let i = 0; i < 5; i++) {
+    world.update(0.1, i * 0.1, true);
+    input.endFrame(); // what Engine.step does
+  }
+  input.reset();
+  const [x, , z] = obj.transform.position;
+  const jumps = (b.instance as any).jumps;
+  check('input drives a script', Math.abs(x - 1) < 1e-6 && Math.abs(z + 1) < 1e-6 && jumps === 1 && !b.error, `x=${x} z=${z} jumps=${jumps}`);
+}
+
 // Animate a bit so behaviours run.
 scene.traverse((o: any) => o.behaviours.forEach((b: any) => b.start(o)));
 for (let i = 0; i < 30; i++) scene.update(1 / 60, i / 60, true);

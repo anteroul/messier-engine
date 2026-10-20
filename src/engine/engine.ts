@@ -2,6 +2,7 @@ import { Renderer, type RenderStats } from './renderer';
 import { Scene } from './scene';
 import { Camera } from './camera';
 import { OverlayBuilder } from './overlay';
+import { input } from './input';
 
 export interface FrameInfo {
   dt: number;
@@ -50,6 +51,8 @@ export class Engine {
     if (playing === this.playing) return;
     this.playing = playing;
     this.playTime = 0;
+    // Keys held across Play/Stop would otherwise stay down in the next session.
+    input.reset();
     if (playing) this.scene.physics.reset(this.scene);
   }
 
@@ -82,6 +85,7 @@ export class Engine {
     }
 
     this.scene.update(dt, this.playTime, this.playing);
+    input.endFrame();
     const canvas = this.renderer.canvas;
     // Hidden viewport (e.g. the editor's Scripts tab): keep simulating, skip drawing.
     if (canvas.clientWidth === 0 || canvas.clientHeight === 0) return;

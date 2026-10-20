@@ -1,14 +1,17 @@
 :root {
-  --bg: #15171c;
-  --panel: #1c1f26;
-  --panel-2: #232731;
-  --border: #2d323d;
-  --text: #d9dce3;
-  --muted: #8a909e;
-  --accent: #ff9f26;
-  --accent-dim: #ff9f2633;
+  --bg: #0e0f10;
+  --panel: #151617;
+  --panel-2: #1b1c1e;
+  --border: #2a2c2e;
+  --text: #dcdfe1;
+  --muted: #878d91;
+  --accent: #22d3ee;
+  --accent-dim: #22d3ee2b;
+  --accent-text: #a5f3fc;
+  --accent-2: #3ee08f;
+  --accent-2-dim: #3ee08f2b;
   --danger: #ff5c5c;
-  --ok: #4fd18b;
+  --ok: #3ee08f;
   --x: #f0525a;
   --y: #74d64d;
   --z: #528cff;
@@ -53,6 +56,10 @@ body {
 .brand {
   font-weight: 700;
   color: var(--accent);
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
   letter-spacing: 0.04em;
   margin-right: 6px;
 }
@@ -80,22 +87,22 @@ body {
   display: none;
 }
 .btn:hover:not(:disabled) {
-  border-color: #454c5b;
-  background: #2a2f3b;
+  border-color: #3c3f42;
+  background: #232527;
 }
 .btn.active {
   background: var(--accent-dim);
   border-color: var(--accent);
-  color: #ffd29a;
+  color: var(--accent-text);
 }
 .btn:disabled {
   opacity: 0.4;
   cursor: default;
 }
 .btn.play.active {
-  background: #4fd18b33;
+  background: var(--accent-2-dim);
   border-color: var(--ok);
-  color: #b8f5d2;
+  color: #c4f7dc;
 }
 .btn-small {
   padding: 2px 6px;
@@ -168,7 +175,7 @@ body {
   color: var(--text);
   background: var(--bg);
   border-color: var(--border);
-  box-shadow: inset 0 2px 0 var(--accent);
+  box-shadow: inset 0 2px 0 var(--accent-2);
 }
 .tab-badge:not(:empty) {
   display: inline-block;
@@ -233,14 +240,14 @@ body.view-scripts #inspector-panel {
   border-left: 2px solid transparent;
 }
 .tree-row:hover {
-  background: #262a34;
+  background: #202224;
 }
 .tree-row.selected {
   background: var(--accent-dim);
   border-left-color: var(--accent);
 }
 .tree-row.drop-target {
-  outline: 1px dashed var(--accent);
+  outline: 1px dashed var(--accent-2);
   outline-offset: -1px;
 }
 .tree-row.hidden-obj .tree-name {
@@ -261,7 +268,7 @@ body.view-scripts #inspector-panel {
   color: #ffd166;
 }
 .icon-mesh {
-  color: #7fb2ff;
+  color: #67e8f9;
 }
 .icon-empty {
   color: var(--muted);
@@ -285,7 +292,7 @@ body.view-scripts #inspector-panel {
   align-items: center;
   padding: 7px 10px;
   font-weight: 600;
-  background: #20232b;
+  background: #18191b;
 }
 .section-body {
   padding: 6px 10px 10px;
@@ -320,7 +327,7 @@ input.text,
 select {
   width: 100%;
   min-width: 0;
-  background: #14161b;
+  background: #0b0c0d;
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -460,7 +467,7 @@ body.playing #viewport {
   place-items: center;
   text-align: center;
   font-size: 18px;
-  background: #ff9f2618;
+  background: #22d3ee14;
   border: 2px dashed var(--accent);
   pointer-events: none;
 }
@@ -536,7 +543,7 @@ body.playing #viewport {
   padding: 3px 12px 3px 0;
 }
 .help-card td:first-child {
-  color: var(--accent);
+  color: var(--accent-2);
   white-space: nowrap;
 }
 
@@ -575,7 +582,7 @@ body.view-scripts #scripts-view {
   border-left: 2px solid transparent;
 }
 .script-row:hover {
-  background: #262a34;
+  background: #202224;
 }
 .script-row.selected {
   background: var(--accent-dim);
@@ -701,7 +708,7 @@ input.script-name {
 }
 .problem:hover,
 .usage:hover {
-  background: #262a34;
+  background: #202224;
 }
 .problem-loc {
   flex: none;
@@ -726,7 +733,7 @@ input.script-name {
   color: var(--muted);
 }
 .ref-item code {
-  color: #ffd29a;
+  color: var(--accent-text);
   font-size: 11.5px;
 }
 .behaviour-script {
@@ -743,7 +750,7 @@ input.script-name {
   min-width: 0;
   min-height: 0;
   display: flex;
-  background: #121419;
+  background: #0b0c0d;
   --code-font: 13px/20px ui-monospace, 'JetBrains Mono', 'Cascadia Code', Menlo, Consolas, monospace;
 }
 .code-scroll {
@@ -763,9 +770,9 @@ input.script-name {
   min-width: 52px;
   text-align: right;
   font: var(--code-font);
-  color: #505664;
-  background: #121419;
-  border-right: 1px solid #22262f;
+  color: #4b5054;
+  background: #0b0c0d;
+  border-right: 1px solid #1e1f21;
   user-select: none;
 }
 .ln-error {
@@ -810,11 +817,11 @@ input.script-name {
   overflow: hidden;
   background: transparent;
   color: transparent;
-  caret-color: #ffd29a;
+  caret-color: var(--accent-2);
   outline: none;
 }
 .code-input::selection {
-  background: #ff9f2640;
+  background: #22d3ee40;
   color: transparent;
 }
 .code-marks {

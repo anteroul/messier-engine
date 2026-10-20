@@ -6,6 +6,7 @@ export * from './light';
 export * from './scene';
 export * from './camera';
 export * from './behaviours';
+export * from './input';
 export * from './scripting';
 export * from './typescript';
 export * from './physics';

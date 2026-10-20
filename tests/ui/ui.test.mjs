@@ -266,6 +266,47 @@ await page.click('[data-action="view-scene"]');
 await sleep(50);
 check('scripts persist to localStorage', (await state(() => JSON.parse(localStorage.getItem('messier.scripts.v1')).map((x) => x.name).join())) === 'Hover,EmptyScript');
 
+// --- Keyboard input: during Play, keys drive scripts instead of editor shortcuts; Esc stops
+await state(() => {
+  const ed = window.editor;
+  const s = ed.createScript('Walker', `import { Script, input } from 'messier';
+export default class Walker extends Script {
+  speed = 2;
+  update(dt: number): void {
+    const p = this.object.transform.position;
+    this.object.transform.position = [p[0] + input.axis('horizontal') * this.speed * dt, p[1], p[2]];
+  }
+}
+`);
+  ed.compileScript(s);
+  const o = ed.engine.scene.findByName('Empty');
+  const ScriptBehaviour = o.behaviours[0].constructor; // EmptyScript's
+  ed.addBehaviour(o, new ScriptBehaviour(s));
+  ed.setMode('translate');
+});
+await page.click('[data-action="play"]');
+await sleep(50);
+const focused = await state(() => document.activeElement?.id);
+const x0 = await state(() => window.engine.scene.findByName('Empty').transform.position[0]);
+await page.keyboard.down('KeyD');
+await page.keyboard.press('KeyE'); // would switch the gizmo to rotate outside Play
+await sleep(400);
+await page.keyboard.up('KeyD');
+await sleep(50);
+const emptyX = () => state(() => window.engine.scene.findByName('Empty').transform.position[0]);
+const walk = { x: await emptyX(), mode: await state(() => window.editor.gizmo.mode) };
+await sleep(150);
+walk.stopped = (await emptyX()) === walk.x; // the key was released
+check('play gives the viewport focus', focused === 'gpu-canvas', String(focused));
+check('keys drive scripts during play', walk.x - x0 > 0.3 && walk.stopped, JSON.stringify({ x0, ...walk }));
+check('editor shortcuts off during play', walk.mode === 'translate', walk.mode);
+await page.keyboard.press('Escape');
+await sleep(50);
+check('Esc stops play', (await state(() => !window.engine.playing)) && (await emptyX()) === x0);
+await page.keyboard.press('KeyE');
+check('shortcuts back after stop', (await state(() => window.editor.gizmo.mode)) === 'rotate');
+await page.keyboard.press('KeyW');
+
 await state(() => { window.engine.scene.findByName('Lantern').transform.position = [2.6, 0, 3.4]; });
 await sleep(100);
 await page.$eval('#gpu-canvas', (e) => e.focus());

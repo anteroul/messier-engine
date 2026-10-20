@@ -9,6 +9,7 @@ import {
   colliderCorners,
   fitCollider,
   getPrimitive,
+  input,
   isFlatMesh,
   worldCollider,
   loadModelsFromFiles,
@@ -38,6 +39,8 @@ type PointerMode = 'none' | 'click' | 'orbit' | 'pan' | 'gizmo' | 'fly';
 export type EditorView = 'scene' | 'scripts';
 
 const SCRIPT_STORAGE_KEY = 'messier.scripts.v1';
+/** Game keys whose browser default (scrolling, activating the focused button) would fight the game. */
+const SCROLL_KEYS = new Set(['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End']);
 
 interface PlaySnapshot {
   transform: Transform;
@@ -47,7 +50,7 @@ interface PlaySnapshot {
   angularVelocity?: Vec3;
 }
 
-const SELECTION_COLOR: Vec4 = [1, 0.62, 0.15, 0.9];
+const SELECTION_COLOR: Vec4 = [0.13, 0.83, 0.93, 0.9]; // --accent
 const COLLIDER_COLOR: Vec4 = [0.35, 1, 0.45, 0.85];
 const LIGHT_ICON_PX = 7;
 const CLICK_SLOP_PX = 4;
@@ -526,6 +529,8 @@ export class Editor {
       for (const b of o.behaviours) b.start(o);
     });
     this.engine.setPlaying(true);
+    // Take focus off the Play button (Space would click it again) and off any panel, so keys reach the game.
+    if (this.view === 'scene') this.ui.canvas.focus();
     document.body.classList.add('playing');
     this.updateToolbar();
   }
@@ -799,6 +804,18 @@ export class Editor {
       }
       this.keys.add(e.code);
       if (this.pointerMode === 'fly') return; // WASD flies the camera
+      // While playing, plain keys belong to the game's scripts (`input`), not to the editor's single-key
+      // shortcuts, so a WASD player doesn't also switch gizmo modes. Esc stops Play; Ctrl shortcuts still work.
+      if (this.engine.playing) {
+        if (e.code === 'Escape' && !mod) {
+          e.preventDefault();
+          this.stopPlay();
+          return;
+        }
+        input.keyDown(e.code);
+        if (SCROLL_KEYS.has(e.code)) e.preventDefault();
+        if (!mod) return;
+      }
       if (mod && e.code === 'KeyZ') {
         e.preventDefault();
         if (e.shiftKey) this.history.redo();
@@ -840,8 +857,14 @@ export class Editor {
       }
       e.preventDefault();
     });
-    window.addEventListener('keyup', (e) => this.keys.delete(e.code));
-    window.addEventListener('blur', () => this.keys.clear());
+    window.addEventListener('keyup', (e) => {
+      this.keys.delete(e.code);
+      input.keyUp(e.code); // even if focus moved since the keydown, or the key would stick
+    });
+    window.addEventListener('blur', () => {
+      this.keys.clear();
+      input.reset();
+    });
   }
 
   private bindToolbar(): void {
