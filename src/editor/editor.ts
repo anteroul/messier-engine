@@ -3,6 +3,8 @@ import {
   Light,
   Material,
   RigidBody,
+  ScriptAsset,
+  ScriptBehaviour,
   Transform,
   colliderCorners,
   fitCollider,
@@ -15,6 +17,7 @@ import {
   vec3,
   worldBounds,
   boxCorners,
+  type Behaviour,
   type Engine,
   type FrameInfo,
   type LightType,
@@ -29,8 +32,12 @@ import { History } from './history';
 import { HierarchyPanel } from './hierarchy';
 import { InspectorPanel } from './inspector';
 import { OrbitControls } from './orbitControls';
+import { ScriptsView } from './scriptsView';
 
 type PointerMode = 'none' | 'click' | 'orbit' | 'pan' | 'gizmo' | 'fly';
+export type EditorView = 'scene' | 'scripts';
+
+const SCRIPT_STORAGE_KEY = 'messier.scripts.v1';
 
 interface PlaySnapshot {
   transform: Transform;
@@ -56,6 +63,7 @@ export interface EditorElements {
   dropOverlay: HTMLElement;
   importInput: HTMLInputElement;
   help: HTMLElement;
+  scriptsView: HTMLElement;
 }
 
 /** Real-time scene editor: selection, gizmos, panels, undo/redo, play mode, import. */
@@ -67,8 +75,10 @@ export class Editor {
   readonly history = new History();
   readonly hierarchy: HierarchyPanel;
   readonly inspector: InspectorPanel;
+  readonly scripts: ScriptsView;
   selected: GameObject | null = null;
   showHelpers = true;
+  view: EditorView = 'scene';
 
   private pointerMode: PointerMode = 'none';
   private pointerStart: [number, number] = [0, 0];
@@ -89,7 +99,9 @@ export class Editor {
     this.gizmo = new Gizmo(this.camera);
     this.hierarchy = new HierarchyPanel(this, ui.hierarchy);
     this.inspector = new InspectorPanel(this, ui.inspector);
+    this.scripts = new ScriptsView(this, ui.scriptsView);
     this.history.onChange = () => this.updateToolbar();
+    this.initScripts();
 
     this.bindViewport();
     this.bindKeyboard();
@@ -241,6 +253,159 @@ export class Editor {
     this.history.push({ label, undo: () => apply(before), redo: () => apply(rb) });
   }
 
+  /** Attaches a behaviour (built-in or script). Undoable. */
+  addBehaviour(obj: GameObject, b: Behaviour): void {
+    const apply = (on: boolean) => {
+      const i = obj.behaviours.indexOf(b);
+      if (on && i < 0) obj.behaviours.push(b);
+      else if (!on && i >= 0) obj.behaviours.splice(i, 1);
+      this.behavioursChanged(obj);
+    };
+    apply(true);
+    // Added during Play: start it now, as Play would have.
+    if (this.engine.playing) b.start(obj);
+    this.history.push({ label: `Add ${b.type} to ${obj.name}`, undo: () => apply(false), redo: () => apply(true) });
+  }
+
+  removeBehaviour(obj: GameObject, b: Behaviour): void {
+    const index = obj.behaviours.indexOf(b);
+    if (index < 0) return;
+    const apply = (on: boolean) => {
+      const i = obj.behaviours.indexOf(b);
+      if (on && i < 0) obj.behaviours.splice(Math.min(index, obj.behaviours.length), 0, b);
+      else if (!on && i >= 0) obj.behaviours.splice(i, 1);
+      this.behavioursChanged(obj);
+    };
+    apply(false);
+    this.history.push({ label: `Remove ${b.type} from ${obj.name}`, undo: () => apply(true), redo: () => apply(false) });
+  }
+
+  private behavioursChanged(obj: GameObject): void {
+    if (this.selected === obj) this.inspector.refresh();
+    this.scripts.refresh();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Scripts
+
+  setView(view: EditorView, script?: ScriptAsset): void {
+    if (view === this.view && !script) return;
+    if (this.view === 'scripts' && view !== 'scripts') this.scripts.compileNow();
+    if (view !== this.view) this.endActiveGesture();
+    this.view = view;
+    document.body.classList.toggle('view-scripts', view === 'scripts');
+    if (view === 'scripts') this.scripts.show(script);
+    // Script fields may have changed while editing code.
+    else this.inspector.refresh();
+    this.updateToolbar();
+  }
+
+  /** Creates a script from the template (or `source`). Undoable. */
+  createScript(name = 'NewScript', source?: string): ScriptAsset {
+    const lib = this.scene.scripts;
+    const asset = new ScriptAsset(lib.uniqueName(sanitizeScriptName(name)), '');
+    asset.source = source ?? scriptTemplate(identifierFor(asset.name));
+    const index = lib.scripts.length;
+    lib.add(asset, index);
+    this.compileScript(asset);
+    this.history.push({
+      label: `Create script ${asset.name}`,
+      undo: () => {
+        lib.remove(asset);
+        this.scriptsChanged();
+      },
+      redo: () => {
+        lib.add(asset, Math.min(index, lib.scripts.length));
+        this.scriptsChanged();
+      },
+    });
+    this.scriptsChanged();
+    return asset;
+  }
+
+  /** Deletes a script and detaches it from every object using it. Undoable. */
+  deleteScript(asset: ScriptAsset): void {
+    const lib = this.scene.scripts;
+    const index = lib.scripts.indexOf(asset);
+    if (index < 0) return;
+    const attached: [GameObject, number, Behaviour][] = [];
+    this.scene.traverse((o) => {
+      o.behaviours.forEach((b, i) => {
+        if (b instanceof ScriptBehaviour && b.asset === asset) attached.push([o, i, b]);
+      });
+    });
+    const apply = (remove: boolean) => {
+      if (remove) {
+        lib.remove(asset);
+        for (const [o, , b] of attached) o.behaviours.splice(o.behaviours.indexOf(b), 1);
+      } else {
+        lib.add(asset, Math.min(index, lib.scripts.length));
+        for (const [o, i, b] of attached) o.behaviours.splice(Math.min(i, o.behaviours.length), 0, b);
+      }
+      this.scriptsChanged();
+      if (this.selected) this.inspector.refresh();
+    };
+    apply(true);
+    this.history.push({ label: `Delete script ${asset.name}`, undo: () => apply(false), redo: () => apply(true) });
+    this.notify(`Deleted ${asset.name}.ts${attached.length ? ` (removed from ${attached.length} object${attached.length > 1 ? 's' : ''})` : ''}. Undo with Ctrl+Z.`);
+  }
+
+  renameScript(asset: ScriptAsset, name: string): void {
+    const clean = sanitizeScriptName(name);
+    if (!clean || clean === asset.name) return;
+    const before = asset.name;
+    const after = this.scene.scripts.uniqueName(clean, asset);
+    const apply = (n: string) => {
+      asset.name = n;
+      this.scriptsChanged();
+      if (this.selected) this.inspector.refresh();
+    };
+    apply(after);
+    this.history.push({ label: `Rename script ${before}`, undo: () => apply(before), redo: () => apply(after) });
+  }
+
+  /** Compiles a script (running objects pick up the new class) and persists the sources. */
+  compileScript(asset: ScriptAsset): boolean {
+    const ok = asset.compile();
+    this.saveScripts();
+    this.updateToolbar();
+    return ok;
+  }
+
+  private scriptsChanged(): void {
+    this.saveScripts();
+    this.scripts.refresh();
+    this.updateToolbar();
+  }
+
+  private initScripts(): void {
+    const lib = this.scene.scripts;
+    lib.locateSyntaxError = locateSyntaxError;
+    lib.onRuntimeError = (asset, diag, isNew) => {
+      if (isNew) this.notify(`${asset.name}.ts${diag.line ? `:${diag.line}` : ''} — ${diag.message}${diag.object ? ` (on ${diag.object})` : ''}`, 'error');
+      this.scripts.diagnosticsChanged(asset);
+      if (this.selected) this.inspector.refresh();
+      this.updateToolbar();
+    };
+    // Restore sources edited in earlier sessions. Scripts the scene already
+    // defines (like the demo's) are matched by name.
+    for (const { name, source } of loadStoredScripts()) {
+      const existing = lib.get(name);
+      if (existing) existing.source = source;
+      else lib.add(new ScriptAsset(name, source));
+    }
+    for (const s of lib.scripts) if (s.compiledSource !== s.source) s.compile();
+    this.scripts.refresh();
+  }
+
+  private saveScripts(): void {
+    try {
+      localStorage.setItem(SCRIPT_STORAGE_KEY, JSON.stringify(this.scene.scripts.scripts.map((s) => ({ name: s.name, source: s.source }))));
+    } catch {
+      /* storage unavailable (private mode, quota): scripts just won't persist */
+    }
+  }
+
   focusSelected(): void {
     const obj = this.selected;
     if (!obj) {
@@ -291,6 +456,14 @@ export class Editor {
   }
 
   async importFiles(files: File[]): Promise<void> {
+    const scripts = files.filter((f) => /\.ts$/i.test(f.name));
+    files = files.filter((f) => !scripts.includes(f));
+    let lastScript: ScriptAsset | null = null;
+    for (const f of scripts) {
+      lastScript = this.createScript(f.name.replace(/\.ts$/i, ''), await f.text());
+      this.notify(`Imported script ${lastScript.name}.ts`, 'success');
+    }
+    if (lastScript) this.setView('scripts', lastScript);
     if (files.length === 0) return;
     this.notify(`Importing ${files.map((f) => f.name).join(', ')}…`);
     try {
@@ -347,6 +520,8 @@ export class Editor {
       });
     });
     this.playSnapshot = snap;
+    for (const s of this.scene.scripts.scripts) s.clearRuntimeErrors();
+    this.scripts.refresh();
     this.scene.traverse((o) => {
       for (const b of o.behaviours) b.start(o);
     });
@@ -602,11 +777,28 @@ export class Editor {
 
   private bindKeyboard(): void {
     window.addEventListener('keydown', (e) => {
+      const mod = e.ctrlKey || e.metaKey;
+      // Works everywhere, including inside the code editor.
+      if (mod && !e.shiftKey && !e.altKey && e.code === 'KeyE') {
+        e.preventDefault();
+        this.setView(this.view === 'scene' ? 'scripts' : 'scene');
+        return;
+      }
       const target = e.target as HTMLElement;
       if (target.closest('input, select, textarea')) return;
+      // Scene shortcuts (W/E/R, Delete…) would act on an invisible scene; undo and Play still work.
+      if (this.view !== 'scene') {
+        if (e.code === 'KeyP' && !mod) this.togglePlay();
+        else if (mod && (e.code === 'KeyZ' || e.code === 'KeyY')) {
+          e.preventDefault();
+          if (e.code === 'KeyY' || e.shiftKey) this.history.redo();
+          else this.history.undo();
+          this.hierarchy.markDirty();
+        }
+        return;
+      }
       this.keys.add(e.code);
       if (this.pointerMode === 'fly') return; // WASD flies the camera
-      const mod = e.ctrlKey || e.metaKey;
       if (mod && e.code === 'KeyZ') {
         e.preventDefault();
         if (e.shiftKey) this.history.redo();
@@ -683,6 +875,8 @@ export class Editor {
       },
       import: () => this.ui.importInput.click(),
       help: () => (this.ui.help.hidden = !this.ui.help.hidden),
+      'view-scene': () => this.setView('scene'),
+      'view-scripts': () => this.setView('scripts'),
       'add-cube': () => this.createPrimitive('cube'),
       'add-sphere': () => this.createPrimitive('sphere'),
       'add-plane': () => this.createPrimitive('plane'),
@@ -752,6 +946,14 @@ export class Editor {
     set('grid', this.engine.showGrid);
     set('helpers', this.showHelpers);
     set('play', this.engine.playing);
+    set('view-scene', this.view === 'scene');
+    set('view-scripts', this.view === 'scripts');
+    const broken = this.scene.scripts.scripts.filter((s) => s.diagnostics.length > 0).length;
+    const badge = tb.querySelector<HTMLElement>('[data-action="view-scripts"] .tab-badge');
+    if (badge) {
+      badge.textContent = broken ? String(broken) : '';
+      badge.title = broken ? `${broken} script${broken > 1 ? 's have' : ' has'} problems` : '';
+    }
     const play = tb.querySelector<HTMLElement>('[data-action="play"]');
     if (play) play.textContent = this.engine.playing ? '■ Stop' : '▶ Play';
     const undo = tb.querySelector<HTMLButtonElement>('[data-action="undo"]');
@@ -770,6 +972,70 @@ export class Editor {
       setTimeout(() => toast.remove(), 400);
     }, kind === 'error' ? 6000 : 2800);
   }
+}
+
+/** Valid script names: letters, digits and underscores, starting with a letter. */
+function sanitizeScriptName(name: string): string {
+  const words = name.trim().replace(/\.ts$/i, '').split(/[^A-Za-z0-9_]+/).filter(Boolean);
+  const joined = words.map((w) => w[0].toUpperCase() + w.slice(1)).join('');
+  return /^[0-9]/.test(joined) ? `Script${joined}` : joined;
+}
+
+function identifierFor(name: string): string {
+  return sanitizeScriptName(name) || 'NewScript';
+}
+
+function scriptTemplate(className: string): string {
+  return `import { Script, quat } from 'messier';
+
+/** Spins the object around its Y axis. */
+export default class ${className} extends Script {
+  /** Degrees per second. Public number fields show up in the inspector. */
+  speed = 90;
+
+  start(): void {
+    // Called once when Play starts.
+  }
+
+  update(dt: number, time: number): void {
+    const t = this.object.transform;
+    t.rotation = quat.multiply(t.rotation, quat.fromEulerDeg(0, this.speed * dt, 0));
+  }
+}
+`;
+}
+
+function loadStoredScripts(): { name: string; source: string }[] {
+  try {
+    const raw = localStorage.getItem(SCRIPT_STORAGE_KEY);
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list.filter((s) => typeof s?.name === 'string' && typeof s?.source === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Finds the position of a JavaScript syntax error. Function() reports none, but
+ * an inline script element does, through the window error event (cancelled so
+ * it doesn't reach the console). The code is wrapped in a function that never runs.
+ */
+function locateSyntaxError(code: string): { line: number; column: number } | null {
+  let found: { line: number; column: number } | null = null;
+  const onError = (e: ErrorEvent) => {
+    found = { line: e.lineno, column: e.colno };
+    e.preventDefault();
+  };
+  window.addEventListener('error', onError);
+  try {
+    const s = document.createElement('script');
+    s.textContent = `(function(){${code}\n})`;
+    document.head.append(s);
+    s.remove();
+  } finally {
+    window.removeEventListener('error', onError);
+  }
+  return found;
 }
 
 function formatCount(n: number): string {

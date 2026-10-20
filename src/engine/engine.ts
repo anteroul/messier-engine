@@ -83,6 +83,8 @@ export class Engine {
 
     this.scene.update(dt, this.playTime, this.playing);
     const canvas = this.renderer.canvas;
+    // Hidden viewport (e.g. the editor's Scripts tab): keep simulating, skip drawing.
+    if (canvas.clientWidth === 0 || canvas.clientHeight === 0) return;
     this.camera.aspect = canvas.clientWidth / Math.max(1, canvas.clientHeight);
     this.overlay.begin(this.camera, canvas.clientHeight);
     const frame: FrameInfo = { dt, time: this.time, playTime: this.playTime };

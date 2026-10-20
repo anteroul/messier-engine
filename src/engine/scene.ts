@@ -4,6 +4,7 @@ import type { Material } from './material';
 import type { Light } from './light';
 import type { Behaviour } from './behaviours';
 import { PhysicsWorld, type RigidBody } from './physics';
+import { ScriptLibrary } from './scripting';
 
 let nextId = 1;
 
@@ -175,6 +176,8 @@ export class Scene {
   /** Half extent (world units) of the directional shadow frustum. */
   shadowExtent = 16;
   readonly physics = new PhysicsWorld();
+  /** TypeScript behaviour scripts available to this scene's objects. */
+  readonly scripts = new ScriptLibrary();
 
   add(obj: GameObject, parent: GameObject = this.root): GameObject {
     return parent.add(obj);

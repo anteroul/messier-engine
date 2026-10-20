@@ -60,11 +60,28 @@ Engine.step(dt)                         src/engine/engine.ts
   A dynamic body whose pose changed outside the solver counts as teleported:
   it wakes and its velocity is zeroed. Kinematic velocity is derived from
   transform deltas.
+- **Scripting** (`scripting.ts`, `typescript.ts`): a `ScriptAsset` (in
+  `scene.scripts`) holds TypeScript source. `compile()` runs `stripTypes()`,
+  which blanks types with spaces so every token keeps its line and column.
+  It then rewrites `import … from 'messier'` into destructuring of the engine
+  barrel, evaluates the result with `new Function` (with a `sourceURL`), and
+  probes the class's public number fields for `defaults`. A `ScriptBehaviour`
+  wraps one asset per object. Its `params` is a Proxy (override ?? default),
+  and it hot-swaps a running instance's prototype when `asset.version`
+  changes. Errors become `ScriptDiagnostic`s. Stack lines are mapped back
+  with a calibrated `Function` header offset, and JS syntax errors (which
+  `Function` reports without a position) are located through the
+  `ScriptLibrary.locateSyntaxError` hook, which the editor implements.
+  `scripting.ts` imports `./index` for the script API. That import is
+  circular and only read lazily, so keep it that way.
 - **Engine vs editor:** `src/engine/**` must not import from `src/editor/**`
   and must not touch the DOM beyond the canvas passed to `Renderer`. That
   boundary is what lets `tests/render` run the engine under Node. The editor
   imports only through the barrel `src/engine/index.ts`.
-- **Editor** (`src/editor/editor.ts`) owns selection, pointer modes
+  `Engine.step` skips rendering while the canvas has zero size (Scripts tab),
+  but keeps updating the scene.
+- **Editor** (`src/editor/editor.ts`) owns the Scene/Scripts view tabs
+  (`setView`; scene shortcuts are off in the Scripts tab), selection, pointer modes
   (`click` → `orbit` after a 4 px slop, `gizmo`, `pan`, `fly`), keyboard
   shortcuts, play-mode snapshots and the undo `History`. Panels
   (`hierarchy.ts`, `inspector.ts`) call back into `Editor`.
@@ -118,6 +135,15 @@ Engine.step(dt)                         src/engine/engine.ts
 defaults in `super({...})`, and add it to `BEHAVIOURS`. The inspector picks it
 up automatically. Capture start state in `start()`, because Play/Stop only
 restores transforms, light color/intensity and rigid body velocities.
+User-written behaviours don't need this: they're TypeScript `Script` classes
+edited in the Scripts tab (see README).
+
+**Change the type stripper.** Add a snippet to `tests/render/ts-corpus.ts`.
+`test:render` checks that the stripper's output, after minification, is
+identical to esbuild's on that corpus and on every `src/**/*.ts` file without
+parameter properties. Erase code with `blank()`/`replaceRange()`, which keep
+widths. Never insert characters, because diagnostics rely on unchanged
+positions.
 
 **Add a material or light property.** Add the field (and copy it in `clone()`),
 extend the WGSL struct and the TS packing (keep 16-byte alignment, and grow
@@ -162,6 +188,14 @@ counts, so update it too.
 - WGSL: `textureSample` must stay in uniform control flow (it sits at the top
   of `fs_main`, before `discard`). Inside loops and branches use
   `textureSampleCompareLevel`/`textureSampleLevel`.
+- The code editor inserts text with `document.execCommand('insertText')`.
+  It's deprecated, but it's the only way to keep the textarea's native undo
+  stack. Don't replace it with `value =` or `setRangeText` (those are
+  fallbacks only).
+- `locateSyntaxError` cancels the window `error` event so a script's syntax
+  error never reaches the console, which would fail `test:ui`. Script
+  runtime errors aren't logged to the console either. The editor shows them
+  instead.
 - Dawn under Node prints `maxDynamic…BuffersPerPipelineLayout artificially
   reduced` warnings. They're harmless.
 

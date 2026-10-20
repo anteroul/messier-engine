@@ -30,7 +30,8 @@ await esbuild.build({
   format: 'esm',
   target: 'node22',
   outfile: bundle,
-  external: ['webgpu'],
+  // esbuild is also the reference compiler for the type-stripper test.
+  external: ['webgpu', 'esbuild'],
   alias: { '@root': root },
   plugins: [rawPlugin],
   logLevel: 'warning',

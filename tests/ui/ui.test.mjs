@@ -115,6 +115,72 @@ await page.keyboard.up('Control');
 check('redo add rigid body', (await state(() => !!window.editor.selected.rigidBody)));
 await state(() => { window.editor.selected.transform.position[1] = 3; });
 
+// --- Scripts: create from the inspector, edit in the Scripts tab, attach
+await page.click('summary.btn');
+await page.click('[data-action="add-empty"]');
+await sleep(50);
+await page.select('#inspector select.add-behaviour', 'new-script');
+await sleep(300);
+const scriptState = () =>
+  state(() => {
+    const ed = window.editor;
+    const s = ed.scripts.current;
+    return { view: ed.view, name: s?.name, ok: !!s && s.diagnostics.length === 0, defaults: s?.defaults, status: document.querySelector('.script-status')?.textContent, badge: document.querySelector('.tab-badge')?.textContent };
+  });
+let ss = await scriptState();
+check('new script opens Scripts tab', ss.view === 'scripts' && ss.name === 'EmptyScript' && (await state(() => document.querySelector('.view-tab.active')?.dataset.action)) === 'view-scripts', JSON.stringify(ss));
+check('script template compiles', ss.ok && ss.status.includes('Compiled'), ss.status);
+/** Puts the caret at the end of the first line containing `text`. */
+const caretAfter = (text) =>
+  page.evaluate((text) => {
+    const ta = document.querySelector('.code-input');
+    ta.focus();
+    const i = ta.value.indexOf('\n', ta.value.indexOf(text));
+    ta.setSelectionRange(i, i);
+  }, text);
+const lineOf = (text) => state(() => document.querySelector('.code-input').value).then((v) => v.split('\n').find((l) => l.includes(text)));
+await caretAfter('speed = 90;');
+await page.keyboard.press('Enter');
+await page.keyboard.type('rise = 2;');
+await caretAfter('update(dt: number, time: number): void {');
+await page.keyboard.press('Enter');
+await page.keyboard.type('this.object.transform.position[1] = time * this.rise;');
+check('editor auto-indents', (await lineOf('rise = 2;')) === '  rise = 2;' && (await lineOf('time * this.rise')) === '    this.object.transform.position[1] = time * this.rise;', JSON.stringify(await lineOf('time * this.rise')));
+await caretAfter('rise = 2;');
+await page.keyboard.down('Control');
+await page.keyboard.press('Slash');
+await page.keyboard.up('Control');
+const commented = await lineOf('rise = 2;');
+await page.keyboard.down('Control');
+await page.keyboard.press('Slash');
+await page.keyboard.up('Control');
+check('Ctrl+/ toggles comment', commented === '  // rise = 2;' && (await lineOf('rise = 2;')) === '  rise = 2;', commented);
+await sleep(600);
+ss = await scriptState();
+check('edits compile live', ss.ok && JSON.stringify(ss.defaults) === '{"speed":90,"rise":2}', JSON.stringify(ss.defaults));
+// A syntax error marks the line; the textarea's own undo (kept by execCommand) fixes it.
+await caretAfter('rise = 2;');
+await page.keyboard.type(')');
+await sleep(600);
+ss = await scriptState();
+const errLine = await state(() => document.querySelector('.code-gutter .ln-error')?.textContent);
+const riseLine = await state(() => document.querySelector('.code-input').value.split('\n').findIndex((l) => l.includes('rise = 2;')) + 1);
+check('syntax error is marked', !ss.ok && ss.status.startsWith('✗') && ss.badge === '1' && errLine === String(riseLine), `${ss.status} gutter=${errLine} expected=${riseLine}`);
+await page.screenshot({ path: `${OUT}/ui-scripts-error.png` });
+await page.keyboard.down('Control');
+await page.keyboard.press('KeyZ');
+await page.keyboard.up('Control');
+await sleep(600);
+ss = await scriptState();
+check('undo in code editor', ss.ok && ss.badge === '' && (await lineOf('rise = 2;')) === '  rise = 2;', ss.status);
+await page.screenshot({ path: `${OUT}/ui-scripts.png` });
+await page.keyboard.down('Control');
+await page.keyboard.press('KeyE');
+await page.keyboard.up('Control');
+await sleep(100);
+const inspectorScript = await page.$eval('#inspector', (e) => e.innerText);
+check('Ctrl+E back to scene, script in inspector', (await state(() => window.editor.view)) === 'scene' && inspectorScript.includes('EmptyScript.ts') && inspectorScript.includes('rise'), inspectorScript.slice(-200));
+
 // --- Add light, change type in inspector
 await page.click('summary.btn');
 await page.click('[data-action="add-point"]');
@@ -145,11 +211,60 @@ check('play animates behaviours', rot0.some((v, i) => Math.abs(v - rot1[i]) > 1e
 const fallen = await state(() => window.engine.scene.findByName('Cube').transform.position[1]);
 check('play simulates rigid bodies', Math.abs(fallen - 0.5) < 0.05, `y=${fallen.toFixed(3)}`);
 await page.screenshot({ path: `${OUT}/ui-playing.png` });
+check('play runs scripts', (await state(() => window.engine.scene.findByName('Empty').transform.position[1])) > 0.5);
 await page.click('[data-action="play"]');
 await sleep(50);
 const rot2 = await state(() => [...window.engine.scene.findByName('Spinning Cube').transform.rotation]);
 check('stop restores transforms', rot0.every((v, i) => Math.abs(v - rot2[i]) < 1e-6));
 check('stop restores rigid body pose', (await state(() => window.engine.scene.findByName('Cube').transform.position[1])) === 3);
+check('stop restores scripted object', (await state(() => window.engine.scene.findByName('Empty').transform.position[1])) === 0);
+
+// --- Script runtime error: reported with its source line, behaviour paused, nothing on the console
+await state(() => {
+  const ed = window.editor;
+  const s = ed.engine.scene.scripts.get('EmptyScript');
+  s.source = s.source.replace('this.object.transform.position[1] = time * this.rise;', "if (time > 0.1) throw new Error('kaboom');");
+  ed.compileScript(s);
+});
+await page.click('[data-action="play"]');
+await sleep(500);
+const rt = await state(() => {
+  const s = window.engine.scene.scripts.get('EmptyScript');
+  const d = s.diagnostics.find((x) => x.kind === 'runtime');
+  const line = s.source.split('\n').findIndex((l) => l.includes('kaboom')) + 1;
+  return { msg: d?.message, line: d?.line, expected: line, toast: [...document.querySelectorAll('.toast-error')].some((t) => t.textContent.includes('kaboom')) };
+});
+check('script runtime error reported', rt.msg === 'Error: kaboom' && rt.line === rt.expected && rt.toast, JSON.stringify(rt));
+await page.click('[data-action="play"]');
+await sleep(50);
+check('play clears old runtime errors', await (async () => {
+  await page.click('[data-action="play"]');
+  await sleep(50);
+  const fresh = await state(() => window.engine.scene.scripts.get('EmptyScript').diagnostics.length === 0);
+  await page.click('[data-action="play"]');
+  await sleep(50);
+  return fresh;
+})());
+
+// --- Delete a script (detaches it) and undo from the Scripts tab
+await page.click('[data-action="view-scripts"]');
+await sleep(100);
+await page.evaluate(() => [...document.querySelectorAll('.script-row')].find((r) => r.textContent.includes('EmptyScript'))?.click());
+await sleep(50);
+await page.click('.delete-script');
+await sleep(50);
+const afterDelete = await state(() => [!window.engine.scene.scripts.get('EmptyScript'), window.engine.scene.findByName('Empty').behaviours.length]);
+await page.$eval('.script-list', (e) => e.focus());
+await page.evaluate(() => document.activeElement?.blur());
+await page.keyboard.down('Control');
+await page.keyboard.press('KeyZ');
+await page.keyboard.up('Control');
+await sleep(50);
+const afterUndo = await state(() => [!!window.engine.scene.scripts.get('EmptyScript'), window.engine.scene.findByName('Empty').behaviours.length]);
+check('delete script detaches, undo restores', afterDelete[0] && afterDelete[1] === 0 && afterUndo[0] && afterUndo[1] === 1, JSON.stringify([afterDelete, afterUndo]));
+await page.click('[data-action="view-scene"]');
+await sleep(50);
+check('scripts persist to localStorage', (await state(() => JSON.parse(localStorage.getItem('messier.scripts.v1')).map((x) => x.name).join())) === 'Hover,EmptyScript');
 
 await state(() => { window.engine.scene.findByName('Lantern').transform.position = [2.6, 0, 3.4]; });
 await sleep(100);

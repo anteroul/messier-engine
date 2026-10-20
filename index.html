@@ -11,14 +11,19 @@
       <header id="toolbar">
         <div class="brand">◆ Messier</div>
 
-        <div class="group" role="group" aria-label="Transform tool">
+        <nav class="view-tabs" role="tablist" aria-label="View">
+          <button class="view-tab" role="tab" data-action="view-scene" title="Scene editor (Ctrl+E toggles)">◆ Scene</button>
+          <button class="view-tab" role="tab" data-action="view-scripts" title="Script editor (Ctrl+E toggles)">{ } Scripts<span class="tab-badge"></span></button>
+        </nav>
+
+        <div class="group scene-only" role="group" aria-label="Transform tool">
           <button class="btn" data-action="translate" title="Move (W)">✥ Move</button>
           <button class="btn" data-action="rotate" title="Rotate (E)">⟳ Rotate</button>
           <button class="btn" data-action="scale" title="Scale (R)">⤢ Scale</button>
           <button class="btn" data-action="snap" title="Toggle snapping (X)">⌗ Snap</button>
         </div>
 
-        <div class="group">
+        <div class="group scene-only">
           <details class="menu">
             <summary class="btn">＋ Add</summary>
             <div class="menu-items">
@@ -35,10 +40,10 @@
               <button data-action="add-directional">Directional Light</button>
             </div>
           </details>
-          <button class="btn" data-action="import" title="Import .glb / .gltf / .obj (or drop files on the viewport)">⇪ Import</button>
+          <button class="btn" data-action="import" title="Import .glb / .gltf / .obj models or .ts scripts (or drop files on the viewport)">⇪ Import</button>
         </div>
 
-        <div class="group">
+        <div class="group scene-only">
           <button class="btn" data-action="undo" title="Undo (Ctrl+Z)">↶</button>
           <button class="btn" data-action="redo" title="Redo (Ctrl+Shift+Z)">↷</button>
           <button class="btn" data-action="duplicate" title="Duplicate (Ctrl+D)">⧉</button>
@@ -49,8 +54,8 @@
         <div class="group spacer"></div>
 
         <div class="group">
-          <button class="btn" data-action="grid" title="Toggle grid (G)">Grid</button>
-          <button class="btn" data-action="helpers" title="Toggle light helpers (H)">Helpers</button>
+          <button class="btn scene-only" data-action="grid" title="Toggle grid (G)">Grid</button>
+          <button class="btn scene-only" data-action="helpers" title="Toggle light helpers (H)">Helpers</button>
           <button class="btn play" data-action="play" title="Play / Stop (P)">▶ Play</button>
           <button class="btn" data-action="help" title="Shortcuts (?)">?</button>
         </div>
@@ -73,6 +78,8 @@
         <div class="panel-title">Inspector</div>
         <div id="inspector" class="panel-body"></div>
       </aside>
+
+      <section id="scripts-view" aria-label="Script editor"></section>
     </div>
 
     <div id="help" hidden>
@@ -91,6 +98,8 @@
           <tr><td>Ctrl+D</td><td>Duplicate</td></tr>
           <tr><td>Del</td><td>Delete</td></tr>
           <tr><td>P</td><td>Play / Stop behaviours</td></tr>
+          <tr><td>Ctrl+E</td><td>Switch between the Scene and Scripts tabs</td></tr>
+          <tr><td>Ctrl+S / Ctrl+/</td><td>Scripts: compile now / toggle comment</td></tr>
           <tr><td>G / H</td><td>Toggle grid / light helpers</td></tr>
           <tr><td>Esc</td><td>Deselect</td></tr>
         </table>
@@ -98,7 +107,7 @@
       </div>
     </div>
 
-    <input id="import-input" type="file" multiple accept=".glb,.gltf,.obj,.mtl,.bin,.png,.jpg,.jpeg,.webp" hidden />
+    <input id="import-input" type="file" multiple accept=".glb,.gltf,.obj,.mtl,.bin,.png,.jpg,.jpeg,.webp,.ts" hidden />
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

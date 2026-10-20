@@ -14,6 +14,11 @@ real-time scene editor.
 - **Rigid body physics**: a `RigidBody` component with box and sphere
   colliders, dynamic / static / kinematic bodies, friction, restitution,
   damping and sleeping, solved with fixed-step sequential impulses.
+- **TypeScript behaviour scripts**: write behaviours as TypeScript classes in
+  the editor's built-in code editor (syntax highlighting, live error markers,
+  auto-indent). Scripts compile as you type and hot-reload into a running
+  scene. The TypeScript-to-JavaScript step is a small built-in type stripper,
+  so there's no compiler dependency.
 - **Real-time editor**: hierarchy tree with drag-and-drop re-parenting, live
   inspector, move/rotate/scale gizmos with snapping, undo/redo, duplicate and
   delete, and a Play mode that runs behaviours (scripts) and restores the scene
@@ -93,6 +98,8 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
 | `Ctrl+Z` / `Ctrl+Shift+Z` / `Ctrl+Y` | Undo / redo |
 | `Ctrl+D` / `Del` | Duplicate / delete |
 | `P` | Play / stop |
+| `Ctrl+E` | Switch between the **Scene** and **Scripts** tabs |
+| `Ctrl+S` / `Ctrl+/` / `Tab` | In the code editor: compile now / toggle comment / indent (`Shift+Tab` outdents) |
 | `G` / `H` | Toggle grid / light helpers |
 | `Esc` | Deselect |
 | `?` | Shortcut overview |
@@ -124,6 +131,10 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
   Moving a dynamic body with the gizmo during Play teleports it and restarts
   it from rest. Gravity and solver iterations are in the scene settings.
   In the demo, press Play to drop the ball onto the crate stack.
+- **Scripts:** the tabs at the top switch between the scene editor and the
+  script editor. To start a script, pick **＋ New script…** in an object's
+  *Behaviours* menu (or **＋ New** in the Scripts tab, then attach it from the
+  menu). See [Behaviour scripts](#behaviour-scripts) below.
 
 Objects are also reachable from the browser console as `engine` and `editor`,
 for example `engine.scene.findByName('Sun').light.intensity = 5`.
@@ -166,9 +177,64 @@ engine.setPlaying(true); // run behaviours and physics
 engine.start();
 ```
 
-To write your own behaviour, subclass `Behaviour` in `src/engine/behaviours.ts`
+To add a built-in behaviour, subclass `Behaviour` in `src/engine/behaviours.ts`
 and register it in `BEHAVIOURS`. It then shows up in the inspector's
 **Add…** menu, and its numeric `params` become editable fields automatically.
+
+## Behaviour scripts
+
+A script is a TypeScript file whose default export is a class extending
+`Script`. It imports engine API from the `'messier'` module:
+
+```ts
+import { Script, vec3, type Vec3 } from 'messier';
+
+export default class Hover extends Script {
+  /** Public number fields are inspector parameters. */
+  size = 0.8;
+  speed = 0.2;
+  private home: Vec3 = [0, 0, 0]; // private, protected and _-prefixed fields stay hidden
+
+  start(): void {
+    this.home = vec3.clone(this.object.transform.position);
+  }
+
+  update(dt: number, time: number): void {
+    const a = time * this.speed * Math.PI * 2;
+    this.object.transform.position = vec3.add(this.home, [Math.sin(a) * this.size, 0, Math.sin(a * 2) * this.size * 0.5]);
+  }
+}
+```
+
+- `this.object` is the `GameObject`, and `this.find(name)` looks up another
+  object. `start()` runs when Play starts, `update(dt, time)` every frame.
+- Scripts compile while you type. Errors are underlined in the editor, listed
+  under *Problems* and counted on the Scripts tab. Runtime errors are mapped
+  back to the source line, and the throwing behaviour pauses until the script
+  changes.
+- A script that compiles replaces the class on every object using it, even
+  during Play. Running instances keep their state (fields) and get the new
+  methods.
+- Inspector values are stored as overrides. Changing a field's default in code
+  updates every object that hasn't overridden it.
+- Scripts are saved in the browser's `localStorage` and restored on reload.
+  Download them with **⤓ Download**, or import `.ts` files with **Import** or by
+  dropping them on the viewport.
+- Types are erased, not checked: annotations, generics, `as`, `satisfies`, `!`,
+  interfaces, type aliases, overloads, `declare` and modifiers are supported.
+  Syntax that needs code generation (enums, namespaces, decorators,
+  constructor parameter properties) is reported as an error. This is the same
+  rule as Node's `--experimental-strip-types`.
+
+From code, scripts are assets in `scene.scripts`:
+
+```ts
+import { ScriptAsset, ScriptBehaviour } from './engine';
+
+const hover = engine.scene.scripts.add(new ScriptAsset('Hover', source));
+hover.compile(); // false on errors; see hover.diagnostics
+obj.behaviours.push(new ScriptBehaviour(hover, { speed: 0.5 })); // optional overrides
+```
 
 ## Project layout
 
@@ -179,6 +245,8 @@ src/main.ts             Entry point: creates the engine, demo scene and editor, 
 src/demo.ts             Demo scene content
 src/engine/             The engine (no DOM dependencies except the canvas)
   engine.ts             Main loop: behaviours + physics → world matrices → hooks → render
+  scripting.ts          Script base class, ScriptAsset (compile, diagnostics), ScriptBehaviour (hot reload)
+  typescript.ts         Tokenizer + position-preserving TypeScript type stripper
   renderer.ts           WebGPU device, pipelines, shadow + main passes, uploads
   shaders/*.wgsl        common (shared structs), mesh (PBR), shadow, grid, overlay, mipmap
   scene.ts              Transform, GameObject (scene graph node), Scene
@@ -189,7 +257,9 @@ src/engine/             The engine (no DOM dependencies except the canvas)
   math.ts               vec3 / quat / mat4 (column-major), color helpers
   loaders/              glTF 2.0 / GLB, OBJ + MTL, resource resolvers
 src/editor/             Editor UI (plain DOM, no framework)
-  editor.ts             Input, selection, commands, play mode, import, overlay
+  editor.ts             Input, selection, commands, play mode, import, overlay, Scene/Scripts tabs
+  scriptsView.ts        Scripts tab: script list, problems, usages, reference
+  codeEditor.ts         Textarea-over-highlight code editor (indent, comments, error markers)
   gizmo.ts              Move/rotate/scale manipulator (picking + dragging + drawing)
   hierarchy.ts inspector.ts ui.ts history.ts orbitControls.ts editor.css
 public/models/          Sample assets (lantern.glb, icosahedron.obj/.mtl)
@@ -203,13 +273,16 @@ The app itself only needs `npm run typecheck` / `npm run build`. The optional
 smoke tests in `tests/` exercise the real GPU:
 
 - **`test:render`** runs the engine under Node with Dawn (the `webgpu` npm
-  package). It checks the math, loaders, picking, gizmo and physics logic, checks that
+  package). It checks the math, loaders, picking, gizmo and physics logic,
+  compares the type stripper's output with esbuild on a snippet corpus and on
+  the repo's own sources, runs behaviour scripts (errors, hot reload), checks that
   rendering the demo scene produces no WebGPU validation errors, and writes
   `tests/.out/frame.png`.
 - **`test:ui`** starts Vite and drives the editor in headless Chromium:
   selection, gizmo drag, undo/redo, inspector edits, the Add menu,
-  duplicate/delete, Play/Stop, drill-down picking and re-parenting. It also
-  fails on any console error.
+  duplicate/delete, Play/Stop, drill-down picking, re-parenting, and the
+  Scripts tab (creating, editing, error markers, undo, running and deleting
+  scripts). It also fails on any console error.
 
 ```sh
 nix develop .#tests          # provides Chromium + the Vulkan loader for Dawn
@@ -243,7 +316,10 @@ The tests need a working Vulkan driver. On NixOS that means
   bodies can tunnel through thin colliders. Joints, triggers and collision
   layers aren't implemented. The broadphase is brute force, which is fine for
   a few hundred bodies.
-- **Editor:** no scene save/load yet. Objects added or deleted during Play
+- **Scripts:** no type checking or autocompletion. Scripts run on the main
+  thread, so an infinite loop freezes the page. Scripts can only import from
+  `'messier'` (not from each other), and there's no input API yet.
+- **Editor:** no scene save/load yet (only script sources persist). Objects added or deleted during Play
   stay that way after Stop (only transforms and light values are restored).
   Material and light edits aren't part of undo.
 

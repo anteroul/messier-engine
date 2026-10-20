@@ -4,6 +4,7 @@ import {
   COLLIDER_SHAPES,
   DEG2RAD,
   RAD2DEG,
+  ScriptBehaviour,
   Texture,
   createBehaviour,
   fitCollider,
@@ -222,28 +223,40 @@ export class InspectorPanel {
     out.push(this.buildRigidBody(obj));
 
     // --- Behaviours
-    const addSelect = el('select', { class: 'add-behaviour' }, [
+    const scripts = ed.scene.scripts.scripts;
+    const addSelect = el('select', { class: 'add-behaviour', 'aria-label': 'Add behaviour' }, [
       el('option', { value: '', text: '+ Add…' }),
-      ...Object.keys(BEHAVIOURS).map((k) => el('option', { value: k, text: k })),
+      el('optgroup', { label: 'Built-in' }, Object.keys(BEHAVIOURS).map((k) => el('option', { value: `builtin:${k}`, text: k }))),
+      el('optgroup', { label: 'Scripts' }, [
+        ...scripts.map((sc) => el('option', { value: `script:${sc.id}`, text: `${sc.name}.ts` })),
+        el('option', { value: 'new-script', text: '＋ New script…' }),
+      ]),
     ]);
     addSelect.addEventListener('change', () => {
-      if (!addSelect.value) return;
-      obj.behaviours.push(createBehaviour(addSelect.value));
-      this.refresh();
+      const v = addSelect.value;
+      addSelect.value = '';
+      if (v.startsWith('builtin:')) ed.addBehaviour(obj, createBehaviour(v.slice(8)));
+      else if (v.startsWith('script:')) {
+        const asset = scripts.find((sc) => `script:${sc.id}` === v);
+        if (asset) ed.addBehaviour(obj, new ScriptBehaviour(asset));
+      } else if (v === 'new-script') {
+        const asset = ed.createScript(`${obj.name} Script`);
+        ed.addBehaviour(obj, new ScriptBehaviour(asset));
+        ed.setView('scripts', asset);
+      }
     });
     const beh = section('Behaviours', addSelect);
-    if (obj.behaviours.length === 0) beh.body.append(el('p', { class: 'hint', text: 'No behaviours. Behaviours run in Play mode.' }));
-    obj.behaviours.forEach((b, i) => {
+    if (obj.behaviours.length === 0) beh.body.append(el('p', { class: 'hint', text: 'No behaviours. Behaviours run in Play mode; scripts are written in the Scripts tab.' }));
+    for (const b of obj.behaviours) {
       const enabled = el('input', { type: 'checkbox', title: 'Enabled' });
       enabled.checked = b.enabled;
       enabled.addEventListener('change', () => (b.enabled = enabled.checked));
+      const isScript = b instanceof ScriptBehaviour;
       const header = el('div', { class: 'behaviour-header' }, [
         enabled,
-        el('span', { text: b.type }),
-        button('✕', () => {
-          obj.behaviours.splice(i, 1);
-          this.refresh();
-        }, 'btn btn-small'),
+        el('span', { class: isScript ? 'behaviour-script' : undefined, text: isScript ? `${b.type}.ts` : b.type }),
+        isScript ? button('Edit', () => ed.setView('scripts', b.asset), 'btn btn-small edit-script') : null,
+        button('✕', () => ed.removeBehaviour(obj, b), 'btn btn-small'),
       ]);
       const box = el('div', { class: 'behaviour' }, [header]);
       for (const key of Object.keys(b.params)) {
@@ -251,8 +264,32 @@ export class InspectorPanel {
         box.append(r.row);
         this.add(r.binding);
       }
+      if (b instanceof ScriptBehaviour) {
+        const status = el('p', { class: 'hint behaviour-status' });
+        this.add({
+          sync: () => {
+            const a = b.asset;
+            const compile = a.compileError;
+            let text = '', cls = 'hint behaviour-status';
+            if (b.error) {
+              text = `Paused: ${b.error.message}${b.error.line ? ` (line ${b.error.line})` : ''}`;
+              cls += ' status-error';
+            } else if (compile && !a.ctor) {
+              text = `Doesn’t compile: ${compile.message}`;
+              cls += ' status-error';
+            } else if (compile) {
+              text = 'Has compile errors; running the last version that compiled.';
+              cls += ' status-warning';
+            } else if (Object.keys(b.params).length === 0) text = 'No public number fields.';
+            if (status.textContent !== text) status.textContent = text;
+            if (status.className !== cls) status.className = cls;
+            status.hidden = !text;
+          },
+        });
+        box.append(status);
+      }
       beh.body.append(box);
-    });
+    }
     out.push(beh.root);
     return out;
   }

@@ -34,6 +34,7 @@ async function main(): Promise<void> {
     dropOverlay: $('drop-overlay'),
     importInput: $<HTMLInputElement>('import-input'),
     help: $('help'),
+    scriptsView: $('scripts-view'),
   });
 
   // Sample assets exercising the glTF and OBJ loaders.

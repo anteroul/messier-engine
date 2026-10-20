@@ -90,6 +90,137 @@ const check = (name: string, ok: boolean, info = '') => {
   check('physics bodies sleep', awake.length === 0, awake.map((o: any) => `${o.name} v=${vec3.length(o.rigidBody.velocity).toFixed(4)} w=${vec3.length(o.rigidBody.angularVelocity).toFixed(4)}`).join('; '));
 }
 
+// ---- TypeScript type stripper: compare against esbuild on a corpus and on the repo's own sources
+{
+  const esbuild = await import('esbuild');
+  const { readdirSync, statSync } = await import('node:fs');
+  const { CORPUS } = await import('./ts-corpus');
+  const { stripTypes, TranspileError } = engine;
+  const tsconfigRaw = { compilerOptions: { useDefineForClassFields: true, verbatimModuleSyntax: true, target: 'es2022' } };
+  // minifyIdentifiers is left off: esbuild picks short names by character frequency, which types change.
+  const min = async (code: string, loader: 'js' | 'ts') => (await esbuild.transform(code, { loader, minifySyntax: true, minifyWhitespace: true, tsconfigRaw, target: 'es2022' })).code;
+  const compare = async (src: string): Promise<string | null> => {
+    let out: string;
+    try {
+      out = stripTypes(src).code;
+    } catch (e: any) {
+      return `strip error: ${e.message} @${e.line}:${e.column}`;
+    }
+    if (out.length !== src.length || out.split('\n').length !== src.split('\n').length) return 'positions not preserved';
+    let mine: string;
+    try {
+      mine = await min(out, 'js');
+    } catch (e: any) {
+      return `invalid JS: ${e.errors?.[0]?.text} @${e.errors?.[0]?.location?.line}`;
+    }
+    return mine === (await min(src, 'ts')) ? null : 'output differs from esbuild';
+  };
+  const corpusFails: string[] = [];
+  for (const [i, src] of CORPUS.entries()) {
+    const r = await compare(src);
+    if (r) corpusFails.push(`#${i} ${r}`);
+  }
+  check('ts strip corpus matches esbuild', corpusFails.length === 0, corpusFails.join('; ') || `${CORPUS.length} snippets`);
+  // Parameter properties aren't erasable, so files using them are skipped.
+  const walk = (d: string): string[] => readdirSync(d).flatMap((f: string) => (statSync(`${d}/${f}`).isDirectory() ? walk(`${d}/${f}`) : f.endsWith('.ts') ? [`${d}/${f}`] : []));
+  const srcFails: string[] = [];
+  let compared = 0;
+  for (const f of walk(ROOT + '/src')) {
+    const src = readFileSync(f, 'utf8');
+    try {
+      stripTypes(src);
+    } catch (e) {
+      if (e instanceof TranspileError && e.message.startsWith('Parameter properties')) continue;
+    }
+    compared++;
+    const r = await compare(src);
+    if (r) srcFails.push(`${f.slice(ROOT.length + 1)}: ${r}`);
+  }
+  check('ts strip engine sources match esbuild', srcFails.length === 0 && compared >= 15, srcFails.join('; ') || `${compared} files`);
+  const errorAt = (src: string) => {
+    try {
+      stripTypes(src);
+      return 'no error';
+    } catch (e: any) {
+      return `${e.line}:${e.column}`;
+    }
+  };
+  check(
+    'ts strip rejects non-erasable syntax',
+    errorAt('let a = 1;\nenum E { A }') === '2:1' && errorAt('namespace N { }') === '1:1' && errorAt('class A {\n  constructor(private x: number) {}\n}') === '2:15' && errorAt('@dec class A {}') === '1:1',
+    [errorAt('let a = 1;\nenum E { A }'), errorAt('class A {\n  constructor(private x: number) {}\n}')].join(' '),
+  );
+  check('ts strip reports syntax errors', errorAt('function f(a: number {\n}') === '1:22' && errorAt('let s = "abc') === '1:9', `${errorAt('function f(a: number {\n}')} ${errorAt('let s = "abc')}`);
+}
+
+// ---- behaviour scripts: compile, parameters, runtime errors, hot reload
+{
+  const { GameObject, ScriptAsset, ScriptBehaviour } = engine;
+  const source = `import { Script, vec3, type Vec3 } from 'messier';
+
+export default class Mover extends Script {
+  speed: number = 2;
+  private steps = 0;
+  _internal = 1;
+  label = 'not a number';
+
+  update(dt: number): void {
+    this.steps++;
+    const p: Vec3 = this.object.transform.position;
+    this.object.transform.position = vec3.add(p, [this.speed * dt, 0, 0]);
+    if (p[0] > 1) (null as any).boom();
+  }
+}
+`;
+  const world = new Scene();
+  const asset = world.scripts.add(new ScriptAsset('Mover', source));
+  const ok = asset.compile();
+  check('script compiles', ok && asset.diagnostics.length === 0, JSON.stringify(asset.diagnostics));
+  check('script fields become params', JSON.stringify(asset.defaults) === '{"speed":2}', JSON.stringify(asset.defaults));
+  const obj = world.add(new GameObject('Mover obj'));
+  const b = new ScriptBehaviour(asset, { speed: 4 });
+  obj.behaviours.push(b);
+  check('script param overrides', b.params.speed === 4 && Object.keys(b.params).join() === 'speed' && b.clone().params.speed === 4);
+  const reported: any[] = [];
+  world.scripts.onRuntimeError = (_s: any, d: any) => reported.push(d);
+  b.start(obj);
+  // 0.4 per step; the 4th update moves to 1.6 and then throws, which pauses the behaviour.
+  for (let i = 0; i < 10; i++) world.update(0.1, i * 0.1, true);
+  const x = obj.transform.position[0];
+  check('script runs and pauses on error', b.error !== null && Math.abs(x - 1.6) < 1e-6 && reported.length === 1, `x=${x} err=${b.error?.message}`);
+  check('script runtime error maps to source line', b.error?.line === 13 && reported[0]?.object === 'Mover obj', `line ${b.error?.line}:${b.error?.column}`);
+
+  // A broken edit keeps the last good class; a fixed one hot-swaps and keeps instance state.
+  asset.source = source.replace('this.steps++;', 'this.steps++ +;');
+  check('script compile error keeps old class', !asset.compile() && asset.compileError?.message !== undefined && asset.ctor !== null);
+  asset.source = source.replace('if (p[0] > 1) (null as any).boom();', 'this.object.transform.position[1] = this.steps;');
+  check('script recompiles', asset.compile());
+  world.update(0.1, 1, true);
+  const steps = (b.instance as any).steps;
+  check('script hot reload keeps state', b.error === null && steps === 5 && obj.transform.position[1] === 5, `steps=${steps} y=${obj.transform.position[1]}`);
+
+  const bad = (src: string) => {
+    const a = new ScriptAsset('Bad', src);
+    a.compile();
+    return a.compileError?.message ?? 'none';
+  };
+  const forms = new ScriptAsset('Forms', `import * as M from 'messier';
+import { Script as Base, type GameObject } from 'messier';
+export const K: number = 3;
+export function helper<T>(x: T): T { return x; }
+export interface Shape { k: number }
+export default class extends Base { k = helper(K) * (M.DEG2RAD > 0 ? 1 : 0); }
+`);
+  check('script module forms', forms.compile() && forms.defaults.k === 3, JSON.stringify(forms.diagnostics));
+  check(
+    'script rejects bad modules',
+    bad(`import { Nope } from 'messier';`).includes("'Nope' is not exported") &&
+      bad(`import { x } from 'fs';`).includes('only import') &&
+      bad(`const a = 1;`).includes('export default') &&
+      bad(`export default class A {}`).includes('extends Script'),
+  );
+}
+
 // ---- fake canvas
 const W = 960, H = 540;
 let current: GPUTexture | null = null;
@@ -136,6 +267,11 @@ check('OBJ triangles', ico.children.reduce((n: number, c: any) => n + c.mesh.tri
 // Animate a bit so behaviours run.
 scene.traverse((o: any) => o.behaviours.forEach((b: any) => b.start(o)));
 for (let i = 0; i < 30; i++) scene.update(1 / 60, i / 60, true);
+{
+  const glow = scene.findByName('Glow Orb');
+  const hover = glow.behaviours[0];
+  check('demo script runs', hover?.type === 'Hover' && !hover.error && Math.abs(glow.transform.position[0] - -1) > 0.05, glow.transform.position.map((v: number) => v.toFixed(3)).join(','));
+}
 
 const camera = new Camera();
 camera.aspect = W / H;

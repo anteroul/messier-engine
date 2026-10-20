@@ -6,6 +6,8 @@ export * from './light';
 export * from './scene';
 export * from './camera';
 export * from './behaviours';
+export * from './scripting';
+export * from './typescript';
 export * from './physics';
 export * from './primitives';
 export * from './overlay';

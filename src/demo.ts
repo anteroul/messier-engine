@@ -8,6 +8,8 @@ import {
   Rotator,
   Bobber,
   RigidBody,
+  ScriptAsset,
+  ScriptBehaviour,
   createCube,
   fitCollider,
   createCylinder,
@@ -19,6 +21,29 @@ import {
   type Scene,
   type Vec3,
 } from './engine';
+
+// A TypeScript behaviour script, editable in the editor's Scripts tab.
+const HOVER_SCRIPT = `import { Script, vec3, type Vec3 } from 'messier';
+
+/** Floats the object along a figure-eight around where it starts. */
+export default class Hover extends Script {
+  /** Width of the loop in meters. */
+  size = 0.8;
+  /** Loops per second. */
+  speed = 0.2;
+  private home: Vec3 = [0, 0, 0];
+
+  start(): void {
+    this.home = vec3.clone(this.object.transform.position);
+  }
+
+  update(dt: number, time: number): void {
+    const a = time * this.speed * Math.PI * 2;
+    const offset: Vec3 = [Math.sin(a) * this.size, Math.sin(a * 2) * 0.15, Math.sin(a * 2) * this.size * 0.5];
+    this.object.transform.position = vec3.add(this.home, offset);
+  }
+}
+`;
 
 function addBody(o: GameObject, type: BodyType, opts: ConstructorParameters<typeof RigidBody>[1] = {}): GameObject {
   o.rigidBody = new RigidBody(type);
@@ -87,6 +112,9 @@ export function buildDemoScene(scene: Scene): void {
 
   const glow = meshObject('Glow Orb', createSphere(0.25), new Material('Emissive', { baseColor: [0.2, 0.6, 1, 1], emissive: [0.2, 0.6, 1], emissiveStrength: 4 }), [-1, 2.6, 2.5]);
   glow.castShadows = false;
+  const hover = scene.scripts.add(new ScriptAsset('Hover', HOVER_SCRIPT));
+  hover.compile();
+  glow.behaviours.push(new ScriptBehaviour(hover));
   scene.add(glow);
 
   // Lights
