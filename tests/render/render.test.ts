@@ -22,7 +22,7 @@ Object.defineProperty(globalThis.navigator, 'gpu', { value: gpu, configurable: t
 const engine = await import('@root/src/engine/index.ts');
 const { Gizmo } = await import('@root/src/editor/gizmo.ts');
 const { buildDemoScene } = await import('@root/src/demo.ts');
-const { Renderer, Scene, Camera, OverlayBuilder, loadGLTF, loadOBJ, quat, mat4, vec3, raycastScene, worldBounds, boxCorners } = engine;
+const { Renderer, Scene, Camera, CameraComponent, GameObject, OverlayBuilder, loadGLTF, loadOBJ, quat, mat4, vec3, raycastScene, worldBounds, boxCorners } = engine;
 
 let failures = 0;
 const check = (name: string, ok: boolean, info = '') => {
@@ -47,6 +47,37 @@ const check = (name: string, ok: boolean, info = '') => {
   const lr = quat.lookRotation([1, -1, 0]);
   const f = quat.rotateVec3(lr, [0, 0, -1]);
   check('lookRotation', vec3.equals(f, vec3.normalize([1, -1, 0]), 1e-5));
+  const o = mat4.orthoReversedZ(-2, 2, -1, 1, 0.5, 20);
+  const zn = vec3.transformPoint(o, [0, 0, -0.5])[2], zf = vec3.transformPoint(o, [0, 0, -20])[2];
+  check('orthoReversedZ', Math.abs(zn - 1) < 1e-6 && Math.abs(zf) < 1e-6, `${zn}, ${zf}`);
+}
+
+// ---- cameras: active camera selection, view from the owning object, orthographic rays
+{
+  const s = new Scene();
+  const a = s.add(new GameObject('A'));
+  a.camera = new CameraComponent();
+  const rig = s.add(new GameObject('Rig'));
+  rig.transform.position = [0, 2, 0];
+  rig.transform.rotation = quat.fromEulerDeg(0, 90, 0);
+  const b = rig.add(new GameObject('B'));
+  b.camera = new CameraComponent({ projection: 'orthographic', orthoSize: 3, priority: 1 });
+  b.transform.position = [0, 0, 5];
+  s.updateMatrices();
+  check('active camera by priority', s.activeCamera() === b);
+  b.visible = false;
+  check('hidden camera inactive', s.activeCamera() === a);
+  b.visible = true;
+  const view = b.camera.applyTo(new Camera(), b.worldMatrix, 4);
+  // The rig's 90° yaw turns B's local +Z offset into world +X and its -Z view direction into world -X.
+  const ok = vec3.equals(view.position, [5, 2, 0], 1e-5) && vec3.equals(view.forward(), [-1, 0, 0], 1e-5) && vec3.equals(view.target, [1, 2, 0], 1e-5);
+  check('camera view from object', ok && view.orthographic && view.orthoSize === 3, `${view.position} → ${view.target}`);
+  view.aspect = 2;
+  const r1 = view.screenRay(0, 0, 200, 100), r2 = view.screenRay(200, 100, 200, 100);
+  check('orthographic rays parallel', vec3.equals(r1.dir, r2.dir, 1e-4) && Math.abs(r1.origin[1] - r2.origin[1] - 6) < 1e-3, `${r1.origin} / ${r2.origin}`);
+  check('orthographic world per pixel', Math.abs(view.worldPerPixel([0, 0, 0], 100) - 0.06) < 1e-9);
+  const copy = b.clone();
+  check('camera clone', copy.camera !== b.camera && copy.camera.projection === 'orthographic' && copy.camera.priority === 1);
 }
 
 // ---- physics (CPU only): resting contacts, stacking, bouncing, sleeping
@@ -262,6 +293,22 @@ const ico = await loadOBJ(readFileSync(ROOT + '/public/models/icosahedron.obj', 
 ico.transform.position = [-3.2, 0.9, -3];
 scene.add(ico);
 check('OBJ groups/materials', ico.children.length === 2 && ico.children[0].material.name === 'Crystal', `${ico.children.length} children`);
+{
+  // Minimal glTF with an orthographic and a perspective camera (no buffers needed).
+  const json = {
+    asset: { version: '2.0' },
+    cameras: [
+      { type: 'perspective', perspective: { yfov: Math.PI / 3, znear: 0.2 } },
+      { type: 'orthographic', orthographic: { xmag: 4, ymag: 2, znear: 0.5, zfar: 50 } },
+    ],
+    nodes: [{ name: 'P', camera: 0 }, { name: 'O', camera: 1, translation: [0, 1, 0] }],
+  };
+  const bytes = new TextEncoder().encode(JSON.stringify(json));
+  const root = await loadGLTF(bytes.buffer, 'cams', async () => new ArrayBuffer(0));
+  const p = root.children[0].camera, o = root.children[1].camera;
+  check('glTF cameras', Math.abs(p.fovDeg - 60) < 1e-6 && p.near === 0.2 && p.far === 1000 && o.projection === 'orthographic' && o.orthoSize === 2 && o.far === 50,
+    JSON.stringify([p, o]));
+}
 check('OBJ triangles', ico.children.reduce((n: number, c: any) => n + c.mesh.triangleCount, 0) === 20);
 
 // ---- keyboard input: edge state lasts one update, axes, and a script reading it
@@ -365,6 +412,22 @@ g.draw(overlay, sel, H);
 scene.traverse((o: any) => {
   if (o.light) overlay.diamond([o.worldMatrix[12], o.worldMatrix[13], o.worldMatrix[14]], overlay.pixelSize([o.worldMatrix[12], o.worldMatrix[13], o.worldMatrix[14]]) * 7, [1, 1, 0.6, 1], true);
 });
+
+{
+  // Through the demo's scene camera, perspective and orthographic.
+  const main = scene.activeCamera();
+  check('demo has a camera', main?.name === 'Main Camera', main?.name ?? 'none');
+  const view = new Camera();
+  renderer.device.pushErrorScope('validation');
+  main.camera.applyTo(view, main.worldMatrix);
+  renderer.render(scene, view, { time: 0.5 });
+  main.camera.projection = 'orthographic';
+  main.camera.applyTo(view, main.worldMatrix);
+  renderer.render(scene, view, { time: 0.5 });
+  main.camera.projection = 'perspective';
+  const err = await renderer.device.popErrorScope();
+  check('render through scene camera', !err, err?.message ?? '');
+}
 
 renderer.device.pushErrorScope('validation');
 const stats = renderer.render(scene, camera, { grid: true, overlay, time: 0.5 });

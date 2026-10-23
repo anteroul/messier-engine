@@ -8,6 +8,9 @@ real-time scene editor.
 - **Dynamic lights**: up to 128 directional, point and spot lights, all
   updated every frame from the scene graph. The first shadow-casting
   directional light gets a 2048² PCF shadow map.
+- **Cameras**: perspective or orthographic camera components on scene
+  objects. Play renders through the active camera, and scripts can move it
+  or change its lens.
 - **Model loading**: glTF 2.0 (`.gltf` + `.bin` + images, or binary `.glb`)
   and Wavefront OBJ + MTL, either from a URL or by dragging files onto the
   viewport.
@@ -26,7 +29,7 @@ real-time scene editor.
 - **No runtime dependencies**: the math, loaders, renderer and UI are all in
   this repo. The only npm packages are build tools (Vite, TypeScript, WebGPU types).
 
-![Editor overview: hierarchy, viewport with gizmo, inspector](docs/screenshot.png)
+![Editor overview: hierarchy, viewport with gizmo, inspector](docs/messier-screenshot.png)
 
 ## Running on NixOS (flake)
 
@@ -100,7 +103,8 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
 | `P` | Play / stop (during Play, plain keys go to scripts; `Esc` stops) |
 | `Ctrl+E` | Switch between the **Scene** and **Scripts** tabs |
 | `Ctrl+S` / `Ctrl+/` / `Tab` | In the code editor: compile now / toggle comment / indent (`Shift+Tab` outdents) |
-| `G` / `H` | Toggle grid / light helpers |
+| `G` / `H` | Toggle grid / light and camera helpers |
+| `C` | Look through the scene camera (Play turns this on) |
 | `Esc` | Deselect |
 | `?` | Shortcut overview |
 
@@ -118,8 +122,17 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
   to about 3 m and placed on the ground.
 - **Play mode:** behaviours (Rotator, Bobber, Orbiter, LightPulse, ColorCycle)
   and physics only run while playing. When you press Stop, every transform,
-  light color/intensity and rigid body velocity goes back to its value from
-  before Play.
+  light color/intensity, camera setting and rigid body velocity goes back to
+  its value from before Play.
+- **Cameras:** add one with **＋ Add → Camera**, then click **Align to view**
+  in the inspector to give it the editor's current view. Cameras look along
+  their local −Z axis. The visible camera with the highest *Priority* is the
+  active one (ties go to the camera higher in the hierarchy). Play renders
+  through it and hides the grid, helpers and gizmos. Press **🎥 Camera** to
+  switch back to the editor camera during Play, or press `C` to look through
+  the camera while editing. While you look through a scene camera, the
+  viewport doesn't orbit or select. Stop restores camera settings that
+  scripts changed.
 - **Physics:** select an object and click **Add** in the inspector's *Rigid
   Body* section. The collider is fitted to the mesh (spheres get a sphere
   collider, flat meshes like planes become static slabs) and drawn in green.
@@ -142,7 +155,7 @@ for example `engine.scene.findByName('Sun').light.intensity = 5`.
 ## Using the engine in code
 
 ```ts
-import { Engine, GameObject, Light, Material, RigidBody, Rotator, createCube, createPlane, createSphere, fitCollider, loadModelFromURL } from './engine';
+import { CameraComponent, Engine, GameObject, Light, Material, RigidBody, Rotator, createCube, createPlane, createSphere, fitCollider, loadModelFromURL, quat, vec3 } from './engine';
 
 const engine = await Engine.create(document.querySelector('canvas')!);
 
@@ -171,6 +184,12 @@ ball.transform.position = [0, 4, 0];
 ball.rigidBody = new RigidBody('dynamic', { shape: 'sphere', radius: 0.5, restitution: 0.6 });
 engine.scene.add(ball);
 // From a behaviour or anywhere else: ball.rigidBody.addImpulse([2, 0, 0]);
+
+const cam = new GameObject('Main Camera');
+cam.camera = new CameraComponent({ fovDeg: 50 }); // or { projection: 'orthographic', orthoSize: 5 }
+cam.transform.position = [0, 4, 10];
+cam.transform.rotation = quat.lookRotation(vec3.sub([0, 1, 0], cam.transform.position)); // cameras look along local -Z
+engine.scene.add(cam); // the engine renders through scene.activeCamera(), or engine.camera when there is none
 
 engine.scene.add(await loadModelFromURL('/models/lantern.glb'));
 engine.setPlaying(true); // run behaviours and physics
@@ -207,7 +226,8 @@ export default class Hover extends Script {
 ```
 
 - `this.object` is the `GameObject`, and `this.find(name)` looks up another
-  object. `start()` runs when Play starts, `update(dt, time)` every frame.
+  object. For example, a follow camera can move `this.find('Main Camera')`
+  each frame, and `this.object.camera.fovDeg` changes a camera's zoom. `start()` runs when Play starts, `update(dt, time)` every frame.
 - Scripts compile while you type. Errors are underlined in the editor, listed
   under *Problems* and counted on the Scripts tab. Runtime errors are mapped
   back to the source line, and the throwing behaviour pauses until the script
@@ -303,7 +323,8 @@ src/engine/             The engine (no DOM dependencies except the canvas)
   renderer.ts           WebGPU device, pipelines, shadow + main passes, uploads
   shaders/*.wgsl        common (shared structs), mesh (PBR), shadow, grid, overlay, mipmap
   scene.ts              Transform, GameObject (scene graph node), Scene
-  mesh.ts material.ts light.ts camera.ts behaviours.ts primitives.ts
+  camera.ts             Camera (the view the renderer draws from) and CameraComponent (scene cameras)
+  mesh.ts material.ts light.ts behaviours.ts primitives.ts
   physics.ts            RigidBody component, colliders, contact generation, impulse solver
   overlay.ts            Immediate-mode helper geometry (gizmos, icons, boxes)
   raycast.ts            Ray/AABB/triangle/sphere tests, scene picking, world bounds
@@ -352,8 +373,8 @@ The tests need a working Vulkan driver. On NixOS that means
   indexed and non-indexed geometry, normalized/sparse accessors,
   metallic-roughness factors, base color texture, emissive (plus
   `KHR_materials_emissive_strength`), alpha mask, double-sided,
-  `KHR_materials_unlit` and `KHR_lights_punctual`. **Not supported:** skins,
-  morph targets, animations, cameras, normal/occlusion/metal-rough textures,
+  `KHR_materials_unlit`, `KHR_lights_punctual` and cameras. **Not supported:** skins,
+  morph targets, animations, normal/occlusion/metal-rough textures,
   texture transforms, Draco/meshopt/Basis compression (the loader reports a
   clear error).
 - **OBJ/MTL:** `v/vt/vn/f` (polygons are fan-triangulated, negative indices
@@ -374,7 +395,7 @@ The tests need a working Vulkan driver. On NixOS that means
   `'messier'` (not from each other). Input is keyboard only (no mouse or
   gamepad API yet).
 - **Editor:** no scene save/load yet (only script sources persist). Objects added or deleted during Play
-  stay that way after Stop (only transforms and light values are restored).
+  stay that way after Stop (only transforms, light and camera settings and velocities are restored).
   Material and light edits aren't part of undo.
 
 ## License

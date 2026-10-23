@@ -42,7 +42,8 @@ export class OverlayBuilder {
     const dir = vec3.sub(b, a);
     if (vec3.length(dir) < 1e-9) return;
     const sideAt = (p: Readonly<Vec3>) => {
-      let side = vec3.cross(dir, vec3.sub(cam, p));
+      const toCamera = this.camera!.orthographic ? vec3.scale(this.camera!.forward(), -1) : vec3.sub(cam, p);
+      let side = vec3.cross(dir, toCamera);
       if (vec3.length(side) < 1e-9) side = vec3.cross(dir, [0, 1, 0]);
       return vec3.scale(vec3.normalize(side), (this.pixelSize(p) * widthPx) / 2);
     };

@@ -2,13 +2,14 @@ import { GameObject } from '../scene';
 import { Mesh, computeNormals } from '../mesh';
 import { Material, Texture } from '../material';
 import { Light } from '../light';
+import { CameraComponent } from '../camera';
 import { mat4 } from '../math';
 import { mimeFromName, type ResourceResolver } from './resources';
 
 // glTF 2.0 loader (.gltf + .bin + images, or binary .glb).
 // Supported: node hierarchy, TRS/matrix transforms, triangle primitives,
 // metallic-roughness materials with base color textures, alpha mask,
-// double-sided, KHR_lights_punctual, KHR_materials_emissive_strength.
+// double-sided, cameras, KHR_lights_punctual, KHR_materials_emissive_strength.
 // Not supported: skins, morph targets, animations, Draco/meshopt compression.
 
 const GLB_MAGIC = 0x46546c67;
@@ -221,6 +222,19 @@ export async function loadGLTF(data: ArrayBuffer, name: string, resolve: Resourc
     return light;
   };
 
+  // --- Cameras --------------------------------------------------------------
+  const makeCamera = (index: number): CameraComponent | null => {
+    const def = json.cameras?.[index];
+    if (!def) return null;
+    if (def.type === 'orthographic') {
+      const o = def.orthographic ?? {};
+      return new CameraComponent({ projection: 'orthographic', orthoSize: o.ymag ?? 5, near: o.znear ?? 0.1, far: o.zfar ?? 500 });
+    }
+    const p = def.perspective ?? {};
+    // zfar is optional (infinite projection); use a large finite far plane instead.
+    return new CameraComponent({ fovDeg: ((p.yfov ?? 1) * 180) / Math.PI, near: p.znear ?? 0.1, far: p.zfar ?? 1000 });
+  };
+
   // --- Nodes ----------------------------------------------------------------
   const buildNode = (index: number, depth: number): GameObject => {
     if (depth > 256) throw new Error('glTF node hierarchy too deep (cycle?)');
@@ -252,6 +266,7 @@ export async function loadGLTF(data: ArrayBuffer, name: string, resolve: Resourc
     }
     const lightIndex = n.extensions?.KHR_lights_punctual?.light;
     if (lightIndex !== undefined) obj.light = makeLight(lightIndex);
+    if (n.camera !== undefined) obj.camera = makeCamera(n.camera);
     for (const c of n.children ?? []) obj.add(buildNode(c, depth + 1));
     return obj;
   };

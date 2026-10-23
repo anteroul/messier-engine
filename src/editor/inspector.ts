@@ -3,6 +3,7 @@ import {
   BODY_TYPES,
   COLLIDER_SHAPES,
   DEG2RAD,
+  PROJECTIONS,
   RAD2DEG,
   ScriptBehaviour,
   Texture,
@@ -18,6 +19,7 @@ import {
   type ColliderShape,
   type GameObject,
   type LightType,
+  type Projection,
   type Vec3,
 } from '../engine';
 import { button, checkboxRow, colorRow, el, numberRow, row, section, selectRow, sliderRow, textRow, vec3Row, type Binding } from './ui';
@@ -80,13 +82,14 @@ export class InspectorPanel {
     this.add(gravity.bindings, iterations.binding);
 
     const info = section('Scene');
-    let objects = 0, lights = 0;
+    let objects = 0, lights = 0, cameras = 0;
     scene.traverse((o) => {
       objects++;
       if (o.light) lights++;
+      if (o.camera) cameras++;
     });
     info.body.append(
-      el('p', { class: 'hint', text: `${objects} objects, ${lights} lights.` }),
+      el('p', { class: 'hint', text: `${objects} objects, ${lights} lights, ${cameras} camera${cameras === 1 ? '' : 's'}.` }),
       el('p', { class: 'hint', text: 'Select an object in the viewport or hierarchy to edit it. Drop .glb / .gltf / .obj files onto the viewport to import.' }),
     );
     return [env.root, physics.root, info.root];
@@ -220,6 +223,8 @@ export class InspectorPanel {
       out.push(s.root);
     }
 
+    if (obj.camera) out.push(this.buildCamera(obj));
+
     out.push(this.buildRigidBody(obj));
 
     // --- Behaviours
@@ -292,6 +297,47 @@ export class InspectorPanel {
     }
     out.push(beh.root);
     return out;
+  }
+
+  private buildCamera(obj: GameObject): HTMLElement {
+    const ed = this.editor;
+    const cam = obj.camera!;
+    const s = section('Camera', button('Align to view', () => ed.alignToView(obj), 'btn btn-small align-camera'));
+    const projection = selectRow('Projection', [...PROJECTIONS], () => cam.projection, (v) => {
+      cam.projection = v as Projection;
+      this.refresh();
+    });
+    s.body.append(projection.row);
+    this.add(projection.binding);
+    if (cam.projection === 'perspective') {
+      const fov = sliderRow('Field of view', () => cam.fovDeg, (v) => (cam.fovDeg = v), 5, 150, 0.5);
+      s.body.append(fov.row);
+      this.add(fov.binding);
+    } else {
+      const size = numberRow('Size', () => cam.orthoSize, (v) => (cam.orthoSize = v), { step: 0.1, min: 0.01, max: 10000 });
+      s.body.append(size.row);
+      this.add(size.binding);
+    }
+    const near = numberRow('Near', () => cam.near, (v) => (cam.near = Math.min(v, cam.far * 0.999)), { step: 0.01, min: 0.001, max: 10000, precision: 3 });
+    const far = numberRow('Far', () => cam.far, (v) => (cam.far = Math.max(v, cam.near * 1.001)), { step: 1, min: 0.01, max: 100000 });
+    const priority = numberRow('Priority', () => cam.priority, (v) => (cam.priority = Math.round(v)), { step: 1, min: -1000, max: 1000, precision: 0 });
+    s.body.append(near.row, far.row, priority.row);
+    this.add(near.binding, far.binding, priority.binding);
+    const state = el('p', { class: 'hint camera-status' });
+    this.add({
+      sync: () => {
+        const active = ed.scene.activeCamera();
+        const text =
+          active === obj
+            ? 'Active camera: Play renders through it. Press C (or 🎥 Camera) to look through it now.'
+            : active
+              ? `Inactive: ${active.name} is the active camera. The visible camera with the highest priority is used.`
+              : 'Inactive: the object is hidden.';
+        if (state.textContent !== text) state.textContent = text;
+      },
+    });
+    s.body.append(state, el('p', { class: 'hint', text: 'Cameras look along the object’s local −Z axis, with local +Y up.' }));
+    return s.root;
   }
 
   private buildRigidBody(obj: GameObject): HTMLElement {

@@ -267,6 +267,9 @@ body.view-scripts #inspector-panel {
 .icon-light {
   color: #ffd166;
 }
+.icon-camera {
+  color: #c4b5fd;
+}
 .icon-mesh {
   color: #67e8f9;
 }

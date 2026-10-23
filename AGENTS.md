@@ -53,6 +53,16 @@ Engine.step(dt)                         src/engine/engine.ts
   `worldMatrix`/`normalMatrix` are cached and refreshed by
   `Scene.updateMatrices()`. Use `computeWorldMatrix()`/`worldPosition()` when
   you need fresh values mid-frame (for example right after a gizmo edit).
+- **Cameras** (`camera.ts`): `Camera` is the view the renderer draws from
+  (look-at, perspective or orthographic, always reversed-Z). `engine.camera` is
+  the free view the editor drives. A `CameraComponent` (`GameObject.camera`)
+  holds lens settings and fills a `Camera` from its owner's world matrix with
+  `applyTo()`, looking along local −Z. When `engine.useSceneCamera` is set
+  (the default; the editor turns it on in Play or with `C`), `Engine.step`
+  renders through `scene.activeCamera()`, which is the visible camera with the
+  highest priority. It also exposes that camera as `engine.viewObject` and
+  skips the grid. The editor then skips its overlay and ignores viewport
+  pointer input, because picking and gizmos use `engine.camera`.
 - **Physics** (`physics.ts`): `GameObject.rigidBody` plus `scene.physics`
   (`PhysicsWorld`), stepped at a fixed 60 Hz from `Scene.update` after
   behaviours, only while playing. Each step reads world poses from transforms
@@ -139,7 +149,7 @@ Engine.step(dt)                         src/engine/engine.ts
 `src/engine/behaviours.ts`, give it a unique `readonly type` string and numeric
 defaults in `super({...})`, and add it to `BEHAVIOURS`. The inspector picks it
 up automatically. Capture start state in `start()`, because Play/Stop only
-restores transforms, light color/intensity and rigid body velocities.
+restores transforms, light color/intensity, camera settings and rigid body velocities.
 User-written behaviours don't need this: they're TypeScript `Script` classes
 edited in the Scripts tab (see README).
 

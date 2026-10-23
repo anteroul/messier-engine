@@ -1,4 +1,6 @@
 import {
+  CameraComponent,
+  DEG2RAD,
   GameObject,
   Light,
   Material,
@@ -15,6 +17,7 @@ import {
   loadModelsFromFiles,
   raySphere,
   raycastScene,
+  quat,
   vec3,
   worldBounds,
   boxCorners,
@@ -22,6 +25,7 @@ import {
   type Engine,
   type FrameInfo,
   type LightType,
+  type OverlayBuilder,
   type PrimitiveKind,
   type Ray,
   type RenderStats,
@@ -48,11 +52,15 @@ interface PlaySnapshot {
   lightIntensity?: number;
   velocity?: Vec3;
   angularVelocity?: Vec3;
+  camera?: CameraComponent;
 }
 
 const SELECTION_COLOR: Vec4 = [0.13, 0.83, 0.93, 0.9]; // --accent
 const COLLIDER_COLOR: Vec4 = [0.35, 1, 0.45, 0.85];
+const CAMERA_COLOR: Vec4 = [0.8, 0.75, 1, 0.9];
 const LIGHT_ICON_PX = 7;
+/** Depth of the camera helper's frustum icon. */
+const CAMERA_ICON_PX = 34;
 const CLICK_SLOP_PX = 4;
 
 export interface EditorElements {
@@ -82,6 +90,8 @@ export class Editor {
   selected: GameObject | null = null;
   showHelpers = true;
   view: EditorView = 'scene';
+  /** Look through the scene's active camera instead of the editor camera (turned on by Play). */
+  cameraView = false;
 
   private pointerMode: PointerMode = 'none';
   private pointerStart: [number, number] = [0, 0];
@@ -89,6 +99,7 @@ export class Editor {
   private readonly keys = new Set<string>();
   private transformBefore: Transform | null = null;
   private playSnapshot: Map<GameObject, PlaySnapshot> | null = null;
+  private cameraViewBeforePlay = false;
   private lastStats: RenderStats | null = null;
   private statsTimer = 0;
 
@@ -98,6 +109,7 @@ export class Editor {
   ) {
     this.scene = engine.scene;
     this.camera = engine.camera;
+    engine.useSceneCamera = false;
     this.controls = new OrbitControls(this.camera);
     this.gizmo = new Gizmo(this.camera);
     this.hierarchy = new HierarchyPanel(this, ui.hierarchy);
@@ -446,6 +458,38 @@ export class Editor {
     return this.addObject(obj);
   }
 
+  /** Adds a camera on the ground in front of the view, looking the way the editor camera does. */
+  createCamera(): GameObject {
+    const obj = new GameObject('Camera');
+    obj.camera = new CameraComponent();
+    obj.transform.position = this.spawnPoint(1.5);
+    obj.transform.rotation = quat.lookRotation(this.camera.forward());
+    return this.addObject(obj);
+  }
+
+  /** Moves an object to the editor camera's position and orientation. Undoable. */
+  alignToView(obj: GameObject): void {
+    this.beginTransformEdit(obj);
+    obj.setWorldPosition(this.camera.position);
+    obj.setWorldRotation(quat.lookRotation(this.camera.forward(), this.camera.up));
+    this.commitTransformEdit(obj);
+  }
+
+  /** Switches the viewport between the editor camera and the scene's active camera. */
+  setCameraView(on: boolean): void {
+    if (on && !this.scene.activeCamera()) {
+      this.notify('The scene has no visible camera. Add one with ＋ Add → Camera.');
+      on = false;
+    }
+    if (on === this.cameraView) return;
+    // Navigation and gizmos are off while looking through a scene camera.
+    this.endActiveGesture();
+    this.gizmo.hover = null;
+    this.cameraView = on;
+    this.engine.useSceneCamera = on;
+    this.updateToolbar();
+  }
+
   createEmpty(): GameObject {
     const obj = new GameObject('Empty');
     obj.transform.position = this.spawnPoint(0);
@@ -520,6 +564,7 @@ export class Editor {
         lightIntensity: o.light?.intensity,
         velocity: o.rigidBody ? vec3.clone(o.rigidBody.velocity) : undefined,
         angularVelocity: o.rigidBody ? vec3.clone(o.rigidBody.angularVelocity) : undefined,
+        camera: o.camera?.clone(),
       });
     });
     this.playSnapshot = snap;
@@ -529,6 +574,9 @@ export class Editor {
       for (const b of o.behaviours) b.start(o);
     });
     this.engine.setPlaying(true);
+    // Play shows the game through its camera (when it has one) until Stop, unless toggled off meanwhile.
+    this.cameraViewBeforePlay = this.cameraView;
+    if (this.scene.activeCamera()) this.setCameraView(true);
     // Take focus off the Play button (Space would click it again) and off any panel, so keys reach the game.
     if (this.view === 'scene') this.ui.canvas.focus();
     document.body.classList.add('playing');
@@ -547,8 +595,10 @@ export class Editor {
         if (s.angularVelocity) o.rigidBody.angularVelocity = s.angularVelocity;
         o.rigidBody.resetState();
       }
+      if (o.camera && s.camera) o.camera.copyFrom(s.camera);
     }
     this.playSnapshot = null;
+    this.setCameraView(this.cameraViewBeforePlay);
     document.body.classList.remove('playing');
     this.updateToolbar();
   }
@@ -572,7 +622,8 @@ export class Editor {
 
     this.hierarchy.update();
     this.inspector.sync();
-    this.buildOverlay();
+    // Helpers and gizmos aren't part of the game's view.
+    if (!this.engine.viewObject) this.buildOverlay();
 
     this.statsTimer += f.dt;
     if (this.statsTimer > 0.25 && this.lastStats) {
@@ -580,7 +631,7 @@ export class Editor {
       const s = this.lastStats;
       this.ui.stats.textContent = `${this.engine.fps.toFixed(0)} fps · ${s.drawCalls} draws · ${formatCount(s.triangles)} tris · ${s.lights} lights${
         s.shadowCasters ? ` · ${s.shadowCasters} shadow casters` : ''
-      }`;
+      }${this.engine.viewObject ? ` · viewing ${this.engine.viewObject.name}` : ''}`;
     }
   }
 
@@ -590,20 +641,58 @@ export class Editor {
     return o === this.scene.root;
   }
 
-  private visibleLights(): GameObject[] {
+  /** Visible objects drawn with a helper icon: lights and cameras. */
+  private visibleHelpers(): GameObject[] {
     const out: GameObject[] = [];
     this.scene.traverse((o) => {
       if (!o.visible) return false;
-      if (o.light) out.push(o);
+      if (o.light || o.camera) out.push(o);
     });
     return out;
+  }
+
+  /** Frustum icon of constant screen size; the selected camera also shows its actual view volume. */
+  private drawCamera(o: GameObject, overlay: OverlayBuilder): void {
+    const cam = o.camera!;
+    const m = o.worldMatrix;
+    const pos: Vec3 = [m[12], m[13], m[14]];
+    const f = vec3.normalize(vec3.transformDir(m, [0, 0, -1]));
+    const u = vec3.normalize(vec3.transformDir(m, [0, 1, 0]));
+    const r = vec3.normalize(vec3.cross(f, u));
+    const aspect = this.camera.aspect;
+    const persp = cam.projection === 'perspective';
+    const tan = Math.tan((Math.min(cam.fovDeg, 150) * DEG2RAD) / 2);
+    const rect = (dist: number, halfH: number): Vec3[] => {
+      const c = vec3.addScaled(pos, f, dist);
+      const x = vec3.scale(r, halfH * aspect), y = vec3.scale(u, halfH);
+      return [vec3.add(vec3.add(c, x), y), vec3.add(vec3.sub(c, x), y), vec3.sub(vec3.sub(c, x), y), vec3.sub(vec3.add(c, x), y)];
+    };
+    const frustum = (near: Vec3[], far: Vec3[], color: Vec4, width: number) => {
+      overlay.polyline(far, color, width, true, true);
+      overlay.polyline(near, color, width, true, true);
+      for (let i = 0; i < 4; i++) overlay.line(near[i], far[i], color, width, true);
+    };
+    const selected = o === this.selected;
+    const d = overlay.pixelSize(pos) * CAMERA_ICON_PX * (selected ? 1.3 : 1);
+    const halfH = persp ? d * tan : d * 0.5;
+    frustum(persp ? rect(0, 0) : rect(0, halfH), rect(d, halfH), CAMERA_COLOR, 1.5);
+    // Triangle above the top edge shows which way is up.
+    const top = vec3.addScaled(vec3.addScaled(pos, f, d), u, halfH);
+    const s = halfH * 0.45;
+    overlay.triangle(vec3.addScaled(top, r, s), vec3.addScaled(top, r, -s), vec3.addScaled(top, u, s), CAMERA_COLOR, true);
+    if (selected) {
+      const far = Math.min(cam.far, persp ? 8 : 20);
+      const h = (dist: number) => (persp ? dist * tan : cam.orthoSize);
+      frustum(rect(cam.near, h(cam.near)), rect(far, h(far)), [CAMERA_COLOR[0], CAMERA_COLOR[1], CAMERA_COLOR[2], 0.45], 1);
+    }
   }
 
   private buildOverlay(): void {
     const overlay = this.engine.overlay;
     const vh = this.ui.canvas.clientHeight;
     if (this.showHelpers) {
-      for (const o of this.visibleLights()) {
+      for (const o of this.visibleHelpers()) {
+        if (o.camera) this.drawCamera(o, overlay);
         if (!o.light) continue;
         const pos: Vec3 = [o.worldMatrix[12], o.worldMatrix[13], o.worldMatrix[14]];
         const c = o.light.color;
@@ -663,22 +752,28 @@ export class Editor {
     return this.gizmo.pick(this.selected, x, y, c.clientWidth, c.clientHeight);
   }
 
-  /** Object under the cursor: light icons first, then meshes. */
+  /** Object under the cursor: light and camera icons first, then meshes. */
   private pickObject(x: number, y: number): GameObject | null {
     const ray = this.rayAt(x, y);
     if (this.showHelpers) {
-      let bestLight: GameObject | null = null;
+      let bestHelper: GameObject | null = null;
       let bestT = Infinity;
-      for (const o of this.visibleLights()) {
-        const pos: Vec3 = [o.worldMatrix[12], o.worldMatrix[13], o.worldMatrix[14]];
-        const r = this.engine.overlay.pixelSize(pos) * LIGHT_ICON_PX * 1.6;
+      for (const o of this.visibleHelpers()) {
+        let pos: Vec3 = [o.worldMatrix[12], o.worldMatrix[13], o.worldMatrix[14]];
+        const px = this.engine.overlay.pixelSize(pos);
+        let r = px * LIGHT_ICON_PX * 1.6;
+        if (o.camera && !o.light) {
+          // Sphere around the middle of the frustum icon.
+          pos = vec3.addScaled(pos, vec3.normalize(vec3.transformDir(o.worldMatrix, [0, 0, -1])), px * CAMERA_ICON_PX * 0.6);
+          r = px * CAMERA_ICON_PX * 0.6;
+        }
         const t = raySphere(ray.origin, ray.dir, pos, r);
         if (t !== null && t < bestT) {
           bestT = t;
-          bestLight = o;
+          bestHelper = o;
         }
       }
-      if (bestLight) return bestLight;
+      if (bestHelper) return bestHelper;
     }
     const hit = raycastScene(this.scene, ray);
     if (!hit) return null;
@@ -712,6 +807,7 @@ export class Editor {
       const [x, y] = this.localPointer(e);
       this.pointerStart = [x, y];
       this.pointerLast = [x, y];
+      if (this.engine.viewObject) return; // looking through a scene camera: no navigation or picking
       if (e.button === 0 && !e.altKey) {
         const handle = this.pickGizmo(x, y);
         if (handle !== null && this.selected) {
@@ -737,7 +833,7 @@ export class Editor {
       this.pointerLast = [x, y];
       switch (this.pointerMode) {
         case 'none': {
-          const h = this.pickGizmo(x, y);
+          const h = this.engine.viewObject ? null : this.pickGizmo(x, y);
           this.gizmo.hover = h;
           canvas.style.cursor = h !== null ? 'grab' : '';
           break;
@@ -773,6 +869,7 @@ export class Editor {
       'wheel',
       (e) => {
         e.preventDefault();
+        if (this.engine.viewObject) return;
         const scale = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1;
         this.controls.zoom(e.deltaY * scale);
       },
@@ -842,6 +939,7 @@ export class Editor {
         case 'KeyF': this.focusSelected(); break;
         case 'KeyG': this.engine.showGrid = !this.engine.showGrid; this.updateToolbar(); break;
         case 'KeyH': this.showHelpers = !this.showHelpers; this.updateToolbar(); break;
+        case 'KeyC': this.setCameraView(!this.cameraView); break;
         case 'KeyX': this.gizmo.snap = !this.gizmo.snap; this.updateToolbar(); break;
         case 'KeyP': this.togglePlay(); break;
         case 'Delete':
@@ -896,6 +994,7 @@ export class Editor {
         this.showHelpers = !this.showHelpers;
         this.updateToolbar();
       },
+      'camera-view': () => this.setCameraView(!this.cameraView),
       import: () => this.ui.importInput.click(),
       help: () => (this.ui.help.hidden = !this.ui.help.hidden),
       'view-scene': () => this.setView('scene'),
@@ -909,6 +1008,7 @@ export class Editor {
       'add-point': () => this.createLight('point'),
       'add-spot': () => this.createLight('spot'),
       'add-directional': () => this.createLight('directional'),
+      'add-camera': () => this.createCamera(),
     };
     const root = document.body;
     root.addEventListener('click', (e) => {
@@ -968,6 +1068,7 @@ export class Editor {
     set('snap', this.gizmo.snap);
     set('grid', this.engine.showGrid);
     set('helpers', this.showHelpers);
+    set('camera-view', this.cameraView);
     set('play', this.engine.playing);
     set('view-scene', this.view === 'scene');
     set('view-scripts', this.view === 'scripts');

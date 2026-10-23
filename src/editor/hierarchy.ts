@@ -56,8 +56,8 @@ export class HierarchyPanel {
       else this.collapsed.add(obj.id);
       this.markDirty();
     });
-    const icon = obj.light ? '✦' : obj.mesh ? '◆' : '○';
-    const iconClass = obj.light ? 'icon-light' : obj.mesh ? 'icon-mesh' : 'icon-empty';
+    const icon = obj.light ? '✦' : obj.camera ? '◉' : obj.mesh ? '◆' : '○';
+    const iconClass = obj.light ? 'icon-light' : obj.camera ? 'icon-camera' : obj.mesh ? 'icon-mesh' : 'icon-empty';
     const row = el('div', { class: `tree-row${obj.visible ? '' : ' hidden-obj'}`, draggable: 'true', title: obj.name }, [
       toggle,
       el('span', { class: `tree-icon ${iconClass}`, text: icon }),

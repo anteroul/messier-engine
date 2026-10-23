@@ -2,6 +2,7 @@ import { mat4, quat, vec3, type Mat4, type Quat, type Vec3 } from './math';
 import type { Mesh } from './mesh';
 import type { Material } from './material';
 import type { Light } from './light';
+import type { CameraComponent } from './camera';
 import type { Behaviour } from './behaviours';
 import { PhysicsWorld, type RigidBody } from './physics';
 import { ScriptLibrary } from './scripting';
@@ -51,6 +52,7 @@ export class GameObject {
   material: Material | null = null;
   castShadows = true;
   light: Light | null = null;
+  camera: CameraComponent | null = null;
   behaviours: Behaviour[] = [];
   rigidBody: RigidBody | null = null;
 
@@ -148,7 +150,7 @@ export class GameObject {
     this.transform.scale = s;
   }
 
-  /** Deep copy. Meshes and textures are shared; materials, lights, behaviours and rigid bodies are copied. */
+  /** Deep copy. Meshes and textures are shared; materials, lights, cameras, behaviours and rigid bodies are copied. */
   clone(): GameObject {
     const o = new GameObject(this.name);
     o.transform.copyFrom(this.transform);
@@ -157,6 +159,7 @@ export class GameObject {
     o.material = this.material?.clone() ?? null;
     o.castShadows = this.castShadows;
     o.light = this.light?.clone() ?? null;
+    o.camera = this.camera?.clone() ?? null;
     o.behaviours = this.behaviours.map((b) => b.clone());
     o.rigidBody = this.rigidBody?.clone() ?? null;
     for (const c of this.children) o.add(c.clone());
@@ -202,6 +205,16 @@ export class Scene {
 
   findByName(name: string): GameObject | null {
     return this.find((o) => o.name === name);
+  }
+
+  /** The camera the game renders through: the visible camera with the highest priority (ties: first in the hierarchy). */
+  activeCamera(): GameObject | null {
+    let best: GameObject | null = null;
+    this.traverse((o) => {
+      if (!o.visible) return false;
+      if (o.camera && (!best || o.camera.priority > best.camera!.priority)) best = o;
+    });
+    return best;
   }
 
   updateMatrices(): void {

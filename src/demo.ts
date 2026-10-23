@@ -1,4 +1,5 @@
 import {
+  CameraComponent,
   ColorCycle,
   GameObject,
   Light,
@@ -16,6 +17,8 @@ import {
   createPlane,
   createSphere,
   createTorus,
+  quat,
+  vec3,
   type BodyType,
   type Mesh,
   type Scene,
@@ -116,6 +119,13 @@ export function buildDemoScene(scene: Scene): void {
   hover.compile();
   glow.behaviours.push(new ScriptBehaviour(hover));
   scene.add(glow);
+
+  // Play renders through this camera.
+  const camera = new GameObject('Main Camera');
+  camera.camera = new CameraComponent({ fovDeg: 50 });
+  camera.transform.position = [1.5, 4.5, 11];
+  camera.transform.rotation = quat.lookRotation(vec3.sub([0.5, 1, 0], camera.transform.position));
+  scene.add(camera);
 
   // Lights
   const sun = new Light('directional', [1, 0.95, 0.88], 1.6);

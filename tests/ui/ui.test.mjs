@@ -212,8 +212,10 @@ const fallen = await state(() => window.engine.scene.findByName('Cube').transfor
 check('play simulates rigid bodies', Math.abs(fallen - 0.5) < 0.05, `y=${fallen.toFixed(3)}`);
 await page.screenshot({ path: `${OUT}/ui-playing.png` });
 check('play runs scripts', (await state(() => window.engine.scene.findByName('Empty').transform.position[1])) > 0.5);
+check('play looks through the scene camera', (await state(() => window.engine.viewObject?.name)) === 'Main Camera');
 await page.click('[data-action="play"]');
 await sleep(50);
+check('stop returns to the editor camera', (await state(() => window.engine.viewObject)) === null);
 const rot2 = await state(() => [...window.engine.scene.findByName('Spinning Cube').transform.rotation]);
 check('stop restores transforms', rot0.every((v, i) => Math.abs(v - rot2[i]) < 1e-6));
 check('stop restores rigid body pose', (await state(() => window.engine.scene.findByName('Cube').transform.position[1])) === 3);
@@ -306,6 +308,54 @@ check('Esc stops play', (await state(() => !window.engine.playing)) && (await em
 await page.keyboard.press('KeyE');
 check('shortcuts back after stop', (await state(() => window.editor.gizmo.mode)) === 'rotate');
 await page.keyboard.press('KeyW');
+
+// --- Cameras: add, align to view, look through (C), viewport ignores clicks meanwhile, pick by icon
+await page.click('summary.btn');
+await page.click('[data-action="add-camera"]');
+await sleep(100);
+const added = await state(() => ({ name: window.editor.selected?.name, camera: !!window.editor.selected?.camera, text: document.getElementById('inspector').innerText }));
+check('Add > Camera creates and selects', added.name === 'Camera' && added.camera && added.text.includes('Field of view') && added.text.includes('Main Camera is the active camera'), added.name);
+await page.click('#inspector .align-camera');
+const alignErr = await state(() => {
+  const ed = window.editor;
+  const p = ed.selected.worldPosition(), f = ed.selected.forward(), c = ed.camera.position, cf = ed.camera.forward();
+  return Math.hypot(p[0] - c[0], p[1] - c[1], p[2] - c[2]) + Math.hypot(f[0] - cf[0], f[1] - cf[1], f[2] - cf[2]);
+});
+check('align camera to view', alignErr < 1e-4, alignErr.toExponential(2));
+await state(() => { window.editor.selected.camera.priority = 1; window.editor.selected.camera.fovDeg = 30; });
+await page.$eval('#gpu-canvas', (e) => e.focus());
+await page.keyboard.press('KeyC');
+await sleep(150);
+check('C looks through the active camera', (await state(() => window.engine.viewObject?.name)) === 'Camera');
+await page.screenshot({ path: `${OUT}/ui-camera-view.png` });
+const editorCam0 = await state(() => [...window.engine.camera.position]);
+const box = await page.$eval('#gpu-canvas', (e) => { const r = e.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; });
+await page.mouse.move(box[0], box[1]);
+await page.mouse.down();
+await page.mouse.move(box[0] + 80, box[1] + 30, { steps: 5 });
+await page.mouse.up();
+const editorCam1 = await state(() => [...window.engine.camera.position]);
+check('camera view ignores viewport drags', editorCam0.every((v, i) => v === editorCam1[i]) && (await state(() => window.editor.selected?.name)) === 'Camera');
+await page.keyboard.press('KeyC');
+await sleep(50);
+check('C returns to the editor camera', (await state(() => window.engine.viewObject)) === null);
+await page.keyboard.press('Delete');
+// Frame the Main Camera (it's off-screen in the default view), deselect, then click its icon.
+await state(() => { const ed = window.editor; ed.select(ed.engine.scene.findByName('Main Camera')); ed.focusSelected(); });
+await sleep(800);
+await state(() => window.editor.select(null));
+const [mcx, mcy] = await screenOf(`(() => {
+  const o = engine.scene.findByName('Main Camera'); const p = o.worldPosition();
+  const d = engine.overlay.pixelSize(p) * 34 * 0.5; const f = o.forward();
+  return [p[0] + f[0] * d, p[1] + f[1] * d, p[2] + f[2] * d];
+})()`);
+await page.mouse.click(mcx, mcy);
+await sleep(50);
+check('click camera icon selects camera', (await state(() => window.editor.selected?.name)) === 'Main Camera');
+await sleep(100);
+await page.screenshot({ path: `${OUT}/ui-camera-helper.png` });
+await page.keyboard.press('Escape');
+await state(() => { window.editor.camera.position = [7, 5, 9]; window.editor.camera.target = [0, 0.5, 0]; window.editor.controls.syncFromCamera(); });
 
 await state(() => { window.engine.scene.findByName('Lantern').transform.position = [2.6, 0, 3.4]; });
 await sleep(100);

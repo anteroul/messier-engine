@@ -324,6 +324,13 @@ export const mat4 = {
     out[15] = 1;
     return out;
   },
+  /** Reversed-Z orthographic projection (near -> depth 1, far -> depth 0), the counterpart of perspectiveReversedZ. */
+  orthoReversedZ(l: number, r: number, b: number, t: number, n: number, f: number): Mat4 {
+    const out = mat4.ortho(l, r, b, t, n, f);
+    out[10] = 1 / (f - n);
+    out[14] = f / (f - n);
+    return out;
+  },
   lookAt(eye: Readonly<Vec3>, target: Readonly<Vec3>, up: Readonly<Vec3>): Mat4 {
     const z = vec3.normalize(vec3.sub(eye, target));
     let x = vec3.normalize(vec3.cross(up, z));

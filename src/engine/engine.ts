@@ -1,5 +1,5 @@
 import { Renderer, type RenderStats } from './renderer';
-import { Scene } from './scene';
+import { Scene, type GameObject } from './scene';
 import { Camera } from './camera';
 import { OverlayBuilder } from './overlay';
 import { input } from './input';
@@ -17,7 +17,12 @@ type FrameCallback = (frame: FrameInfo) => void;
 /** Owns the main loop: update behaviours + physics -> world matrices -> hooks -> render. */
 export class Engine {
   readonly scene = new Scene();
+  /** Free view (the editor's viewport camera), used when no scene camera is in use. */
   readonly camera = new Camera();
+  /** Render through the scene's active camera (Scene.activeCamera) when it has one, instead of `camera`. */
+  useSceneCamera = true;
+  /** The scene camera the current frame is rendered through, or null when it uses `camera`. */
+  viewObject: GameObject | null = null;
   readonly overlay = new OverlayBuilder();
   playing = false;
   showGrid = true;
@@ -29,6 +34,7 @@ export class Engine {
   private frameHandle = 0;
   private fpsAccum = 0;
   private fpsFrames = 0;
+  private readonly sceneView = new Camera();
   private readonly beforeRenderHooks: FrameCallback[] = [];
   private readonly afterRenderHooks: ((stats: RenderStats) => void)[] = [];
 
@@ -39,6 +45,11 @@ export class Engine {
   }
 
   /** Called every frame after the scene update and before rendering (build overlay here). */
+  /** The view the current frame is rendered from: the scene camera's, or `camera`. */
+  get view(): Camera {
+    return this.viewObject ? this.sceneView : this.camera;
+  }
+
   onBeforeRender(cb: FrameCallback): void {
     this.beforeRenderHooks.push(cb);
   }
@@ -86,17 +97,24 @@ export class Engine {
 
     this.scene.update(dt, this.playTime, this.playing);
     input.endFrame();
+    // After the update, so a camera moved by a behaviour is rendered where it is now.
+    const camObj = this.useSceneCamera ? this.scene.activeCamera() : null;
+    this.viewObject = camObj;
+    // Shadows are centered on view.target: put it where the shadow box covers most of what the camera sees.
+    camObj?.camera!.applyTo(this.sceneView, camObj.worldMatrix, this.scene.shadowExtent * 0.6);
+    const view = this.view;
     const canvas = this.renderer.canvas;
     // Hidden viewport (e.g. the editor's Scripts tab): keep simulating, skip drawing.
     if (canvas.clientWidth === 0 || canvas.clientHeight === 0) return;
-    this.camera.aspect = canvas.clientWidth / Math.max(1, canvas.clientHeight);
-    this.overlay.begin(this.camera, canvas.clientHeight);
+    view.aspect = canvas.clientWidth / Math.max(1, canvas.clientHeight);
+    this.overlay.begin(view, canvas.clientHeight);
     const frame: FrameInfo = { dt, time: this.time, playTime: this.playTime };
     for (const cb of this.beforeRenderHooks) cb(frame);
 
-    const stats = this.renderer.render(this.scene, this.camera, {
+    const stats = this.renderer.render(this.scene, view, {
       time: this.time,
-      grid: this.showGrid,
+      // The grid is an editing aid, not part of the game's view.
+      grid: this.showGrid && !camObj,
       overlay: this.overlay,
     });
     for (const cb of this.afterRenderHooks) cb(stats);

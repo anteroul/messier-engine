@@ -38,6 +38,8 @@
               <button data-action="add-point">Point Light</button>
               <button data-action="add-spot">Spot Light</button>
               <button data-action="add-directional">Directional Light</button>
+              <div class="menu-title">Camera</div>
+              <button data-action="add-camera">Camera</button>
             </div>
           </details>
           <button class="btn" data-action="import" title="Import .glb / .gltf / .obj models or .ts scripts (or drop files on the viewport)">⇪ Import</button>
@@ -55,7 +57,8 @@
 
         <div class="group">
           <button class="btn scene-only" data-action="grid" title="Toggle grid (G)">Grid</button>
-          <button class="btn scene-only" data-action="helpers" title="Toggle light helpers (H)">Helpers</button>
+          <button class="btn scene-only" data-action="helpers" title="Toggle light and camera helpers (H)">Helpers</button>
+          <button class="btn scene-only" data-action="camera-view" title="Look through the scene camera (C). Play turns it on.">🎥 Camera</button>
           <button class="btn play" data-action="play" title="Play / Stop (P)">▶ Play</button>
           <button class="btn" data-action="help" title="Shortcuts (?)">?</button>
         </div>
@@ -101,7 +104,8 @@
           <tr><td>Esc (while playing)</td><td>Stop. Other plain keys go to scripts during Play</td></tr>
           <tr><td>Ctrl+E</td><td>Switch between the Scene and Scripts tabs</td></tr>
           <tr><td>Ctrl+S / Ctrl+/</td><td>Scripts: compile now / toggle comment</td></tr>
-          <tr><td>G / H</td><td>Toggle grid / light helpers</td></tr>
+          <tr><td>G / H</td><td>Toggle grid / light and camera helpers</td></tr>
+          <tr><td>C</td><td>Look through the scene camera (Play turns it on)</td></tr>
           <tr><td>Esc</td><td>Deselect</td></tr>
         </table>
         <p>Drag the X/Y/Z labels in the inspector to scrub values. Drag rows in the hierarchy to re-parent.</p>
