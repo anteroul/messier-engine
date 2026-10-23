@@ -95,6 +95,21 @@ Engine.step(dt)                         src/engine/engine.ts
   imports only through the barrel `src/engine/index.ts`.
   `Engine.step` skips rendering while the canvas has zero size (Scripts tab),
   but keeps updating the scene.
+- **Persistence** (`serialize.ts`, `project.ts`, `src/editor/project.ts`):
+  `serializeScene()` turns a scene into JSON-safe `SceneData`, and
+  `applySceneData()` loads one into an existing `Scene` (scripts are looked up
+  by name, so load them first). Meshes and textures are saved as a `ref`
+  (`ResourceRef`): `{ primitive, args }` stamped by the `create*` generators, or
+  `{ asset, index }` for the n-th mesh/texture of an imported model, stamped by
+  `tagAssetResources()` in hierarchy order. A `Project` keeps every imported
+  model's original files as an `Asset` and reloads them through the normal
+  loaders (`ProjectResources`), so loaders must stay deterministic. A
+  `.messier` file is a GLB-style container (JSON manifest chunk + BIN chunk of
+  asset files). The editor's `ProjectManager` serializes the current scene
+  once a second, compares the manifest JSON with the last saved and autosaved
+  versions (dirty flag, IndexedDB autosave), and never syncs while playing.
+  Loading ignores unknown keys and keeps defaults for missing or mistyped
+  values. Problems become warnings, not exceptions.
 - **Editor** (`src/editor/editor.ts`) owns the Scene/Scripts view tabs
   (`setView`; scene shortcuts are off in the Scripts tab), selection, pointer modes
   (`click` → `orbit` after a 4 px slop, `gizmo`, `pan`, `fly`), keyboard
@@ -160,13 +175,23 @@ parameter properties. Erase code with `blank()`/`replaceRange()`, which keep
 widths. Never insert characters, because diagnostics rely on unchanged
 positions.
 
-**Add a material or light property.** Add the field (and copy it in `clone()`),
+**Add a component field (material, light, camera, rigid body).** Copy it in
+`clone()`/`copyFrom()` and add it to the `*_FIELDS` list next to the class
+(`MATERIAL_FIELDS`, `LIGHT_FIELDS`, `CAMERA_FIELDS`, `RIGID_BODY_FIELDS`) so
+scenes save it. Old files without the key keep the default. For a new
+component, extend `objectToData`/`dataToObject` in `serialize.ts` and the
+round-trip test in `tests/render`. Bump `SCENE_VERSION` only for changes old
+readers would misread.
+
+**Add a material or light property.** Add the field (and copy it in `clone()`
+and the `*_FIELDS` list),
 extend the WGSL struct and the TS packing (keep 16-byte alignment, and grow
 `*_UNIFORM_SIZE` if needed), add an inspector row in `inspector.ts`, and map it
 in the glTF/OBJ loaders if a standard field exists.
 
 **Add a primitive.** Write the generator in `primitives.ts` (finish with
-`.fixWinding()`), add it to `PrimitiveKind` and `getPrimitive`, add a
+`.fixWinding()`, and `tag()` it with its arguments so scenes can rebuild it), add it to
+`PrimitiveKind`, `GENERATORS` and `getPrimitive`, add a
 `data-action="add-…"` button in `index.html` and the matching entry in
 `Editor.bindToolbar()`.
 
@@ -213,6 +238,11 @@ counts, so update it too.
   error never reaches the console, which would fail `test:ui`. Script
   runtime errors aren't logged to the console either. The editor shows them
   instead.
+- The editor boots from the IndexedDB autosave when there is one. `test:ui`
+  relies on puppeteer's fresh temporary profile to start from the demo, and its
+  project checks (reload, scenes, Save/Open) run last because they replace the
+  scene. When debugging in a normal browser, use **☰ → New Project** or clear site data
+  to get back to a known state.
 - Dawn under Node prints `maxDynamic…BuffersPerPipelineLayout artificially
   reduced` warnings. They're harmless.
 

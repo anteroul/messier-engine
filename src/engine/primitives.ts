@@ -25,7 +25,7 @@ export function createCube(size = 1): Mesh {
     }
     idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
   }
-  return Mesh.fromArrays('Cube', pos, nor, uv, idx).fixWinding();
+  return tag(Mesh.fromArrays('Cube', pos, nor, uv, idx).fixWinding(), 'cube', [size]);
 }
 
 export function createSphere(radius = 0.5, segments = 48, rings = 24): Mesh {
@@ -48,7 +48,7 @@ export function createSphere(radius = 0.5, segments = 48, rings = 24): Mesh {
       if (i !== rings - 1) idx.push(d, b, c);
     }
   }
-  return Mesh.fromArrays('Sphere', pos, nor, uv, idx).fixWinding();
+  return tag(Mesh.fromArrays('Sphere', pos, nor, uv, idx).fixWinding(), 'sphere', [radius, segments, rings]);
 }
 
 export function createPlane(size = 10, subdivisions = 1): Mesh {
@@ -68,7 +68,7 @@ export function createPlane(size = 10, subdivisions = 1): Mesh {
       idx.push(a, b, c, a, c, d);
     }
   }
-  return Mesh.fromArrays('Plane', pos, nor, uv, idx).fixWinding();
+  return tag(Mesh.fromArrays('Plane', pos, nor, uv, idx).fixWinding(), 'plane', [size, subdivisions]);
 }
 
 export function createCylinder(radius = 0.5, height = 1, segments = 40): Mesh {
@@ -101,7 +101,7 @@ export function createCylinder(radius = 0.5, height = 1, segments = 40): Mesh {
     }
     for (let j = 0; j < segments; j++) idx.push(center, center + 1 + j, center + 2 + j);
   }
-  return Mesh.fromArrays('Cylinder', pos, nor, uv, idx).fixWinding();
+  return tag(Mesh.fromArrays('Cylinder', pos, nor, uv, idx).fixWinding(), 'cylinder', [radius, height, segments]);
 }
 
 export function createTorus(radius = 0.5, tube = 0.2, radialSegments = 24, tubularSegments = 64): Mesh {
@@ -128,10 +128,30 @@ export function createTorus(radius = 0.5, tube = 0.2, radialSegments = 24, tubul
       idx.push(a, b, d, b, c, d);
     }
   }
-  return Mesh.fromArrays('Torus', pos, nor, uv, idx).fixWinding();
+  return tag(Mesh.fromArrays('Torus', pos, nor, uv, idx).fixWinding(), 'torus', [radius, tube, radialSegments, tubularSegments]);
 }
 
 export type PrimitiveKind = 'cube' | 'sphere' | 'plane' | 'cylinder' | 'torus';
+
+/** Records the generator and its arguments so saved scenes can rebuild the mesh. */
+function tag(mesh: Mesh, kind: PrimitiveKind, args: number[]): Mesh {
+  mesh.ref = { primitive: kind, args };
+  return mesh;
+}
+
+const GENERATORS: Record<PrimitiveKind, (...args: number[]) => Mesh> = {
+  cube: createCube,
+  sphere: createSphere,
+  plane: createPlane,
+  cylinder: createCylinder,
+  torus: createTorus,
+};
+
+/** Rebuilds a primitive from a saved `{ primitive, args }` ref, or null for an unknown kind. */
+export function buildPrimitive(kind: string, args: number[]): Mesh | null {
+  const gen = GENERATORS[kind as PrimitiveKind];
+  return gen ? gen(...args.filter((a) => typeof a === 'number' && Number.isFinite(a))) : null;
+}
 
 const cache = new Map<PrimitiveKind, Mesh>();
 

@@ -35,3 +35,33 @@ export function mimeFromName(name: string): string {
     default: return 'application/octet-stream';
   }
 }
+
+/** A file held in memory, as stored in a project asset. */
+export interface MemoryFile {
+  name: string;
+  bytes: Uint8Array<ArrayBuffer>;
+}
+
+const fileNameOf = (uri: string) => decodeURIComponent(uri).split(/[\\/]/).pop()!.toLowerCase();
+
+/** Resolves URIs against in-memory files by file name (like fileResolver). */
+export function bytesResolver(files: Iterable<MemoryFile>): ResourceResolver {
+  const byName = new Map<string, MemoryFile>();
+  for (const f of files) byName.set(f.name.toLowerCase(), f);
+  return async (uri) => {
+    if (uri.startsWith('data:')) return (await fetch(uri)).arrayBuffer();
+    const file = byName.get(fileNameOf(uri));
+    if (!file) throw new Error(`Missing companion file "${fileNameOf(uri)}"`);
+    return file.bytes.slice().buffer;
+  };
+}
+
+/** Wraps a resolver to keep a copy of every external file it reads (data: URIs are part of the model file already). */
+export function recordingResolver(resolve: ResourceResolver, read: MemoryFile[]): ResourceResolver {
+  return async (uri) => {
+    const data = await resolve(uri);
+    const name = uri.startsWith('data:') ? null : decodeURIComponent(uri).split(/[\\/]/).pop()!;
+    if (name && !read.some((f) => f.name.toLowerCase() === name.toLowerCase())) read.push({ name, bytes: new Uint8Array(data.slice(0)) });
+    return data;
+  };
+}

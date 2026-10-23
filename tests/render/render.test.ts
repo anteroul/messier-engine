@@ -311,6 +311,81 @@ check('OBJ groups/materials', ico.children.length === 2 && ico.children[0].mater
 }
 check('OBJ triangles', ico.children.reduce((n: number, c: any) => n + c.mesh.triangleCount, 0) === 20);
 
+// ---- scene & project persistence
+{
+  const { Project, ProjectResources, ScriptAsset, Mesh, serializeScene, applySceneData, loadModelAsset } = engine;
+  const src = new Scene();
+  buildDemoScene(src);
+  for (const s of src.scripts.scripts) s.compile();
+  const { model, asset } = await loadModelAsset('lantern.glb', glbBytes.buffer.slice(glbBytes.byteOffset, glbBytes.byteOffset + glbBytes.byteLength), resolver(ROOT + '/public/models'));
+  src.add(model);
+  const gold = src.findByName('Gold Sphere');
+  gold.material.roughness = 0.77;
+  gold.transform.scale = [1, 2, 3];
+  src.ambientIntensity = 0.5;
+  src.physics.gravity = [0, -5, 0];
+  const glow = src.findByName('Glow Orb');
+  glow.behaviours[0].params.size = 1.25; // a script override
+  const saveWarnings: string[] = [];
+  const data = serializeScene(src, saveWarnings);
+
+  const project = new Project();
+  project.name = 'Test';
+  project.scenes = [{ id: 'a', name: 'Main', data }];
+  project.startScene = 'a';
+  project.scripts = src.scripts.scripts.map((s: any) => ({ name: s.name, source: s.source }));
+  project.assets = [asset, { id: 'unused', name: 'unused', files: [{ name: 'x.obj', bytes: new Uint8Array(8) }] }];
+  const decoded = Project.decode(project.encode());
+  check('project encode/decode', decoded.name === 'Test' && decoded.scenes.length === 1 && decoded.assets.length === 1 &&
+    decoded.assets[0].files[0].bytes.byteLength === glbBytes.byteLength && decoded.scripts.map((s: any) => s.name).join() === 'Hover',
+    `${decoded.assets.length} assets, files ${decoded.assets[0]?.files.map((f: any) => `${f.name}:${f.bytes.byteLength}`).join(' ')}`);
+
+  const dst = new Scene();
+  for (const s of decoded.scripts) dst.scripts.add(new ScriptAsset(s.name, s.source)).compile();
+  const res = new ProjectResources(decoded);
+  const loadWarnings: string[] = [];
+  await res.prepare(decoded.scenes[0].data, loadWarnings);
+  applySceneData(dst, decoded.scenes[0].data, res, loadWarnings);
+  const resaved = JSON.stringify(serializeScene(dst));
+  let meshes = 0, lights = 0;
+  dst.findByName('Lantern')?.traverse((o: any) => {
+    if (o.mesh) meshes++;
+    if (o.light) lights++;
+  });
+  const cubes = [dst.findByName('Crate 1'), dst.findByName('Crate 2')];
+  check('scene round-trip', saveWarnings.length === 0 && loadWarnings.length === 0 && resaved === JSON.stringify(data),
+    [...saveWarnings, ...loadWarnings].join('; ') || (resaved === JSON.stringify(data) ? `${resaved.length} chars` : 'resaved scene differs'));
+  check('scene round-trip values', dst.findByName('Gold Sphere').material.roughness === 0.77 && vec3.equals(dst.findByName('Gold Sphere').transform.scale, [1, 2, 3]) &&
+    dst.ambientIntensity === 0.5 && dst.physics.gravity[1] === -5 && dst.findByName('Glow Orb').behaviours[0].params.size === 1.25 &&
+    dst.findByName('Main Camera').camera.fovDeg === 50 && cubes[0].mesh === cubes[1].mesh);
+  check('scene round-trip asset meshes', meshes === 4 && lights === 1, `${meshes} meshes, ${lights} lights`);
+
+  // Problems are reported, not thrown.
+  const runtime = new Scene();
+  const custom = new GameObject('Custom');
+  custom.mesh = Mesh.fromArrays('tri', [0, 0, 0, 1, 0, 0, 0, 1, 0], null, null, null);
+  runtime.add(custom);
+  const runtimeWarnings: string[] = [];
+  const runtimeData = serializeScene(runtime, runtimeWarnings);
+  runtimeData.objects.push({ name: 'Broken', position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1], visible: true, castShadows: true,
+    mesh: { asset: 'gone', index: 0 }, behaviours: [{ script: 'Missing', enabled: true, overrides: {} }, { type: 'Nope', enabled: true, params: {} }] });
+  const brokenScene = new Scene();
+  const brokenWarnings: string[] = [];
+  const brokenRes = new ProjectResources(new Project());
+  await brokenRes.prepare(runtimeData, brokenWarnings);
+  applySceneData(brokenScene, runtimeData, brokenRes, brokenWarnings);
+  const broken = brokenScene.findByName('Broken');
+  check('scene load problems are warnings', runtimeWarnings.length === 1 && !!broken && broken.mesh === null && broken.behaviours.length === 0 && brokenWarnings.length === 4,
+    [...runtimeWarnings, ...brokenWarnings].join('; '));
+  let newer = '';
+  try {
+    applySceneData(new Scene(), { ...data, version: 99 }, res);
+  } catch (err) {
+    newer = (err as Error).message;
+  }
+  check('newer scene version is rejected', /newer/.test(newer), newer);
+}
+
 // ---- keyboard input: edge state lasts one update, axes, and a script reading it
 {
   const { GameObject, ScriptAsset, ScriptBehaviour, InputState, input } = engine;

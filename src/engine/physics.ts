@@ -36,6 +36,12 @@ type RigidBodyOptions = Partial<
  * ones never move, and `kinematic` ones are moved by you (transform edits or
  * behaviours) and push dynamic bodies with the velocity derived from that motion.
  */
+/** Settings saved with a scene (velocities are the initial ones set before Play). Keep in sync with clone(). */
+export const RIGID_BODY_FIELDS = [
+  'type', 'shape', 'center', 'halfExtents', 'radius', 'mass', 'friction', 'restitution',
+  'linearDamping', 'angularDamping', 'useGravity', 'velocity', 'angularVelocity',
+] as const;
+
 export class RigidBody {
   type: BodyType;
   shape: ColliderShape = 'box';

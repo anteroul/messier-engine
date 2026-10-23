@@ -4,6 +4,13 @@ import { vec3, type Vec3 } from './math';
 export const VERTEX_STRIDE_FLOATS = 8;
 export const VERTEX_STRIDE_BYTES = VERTEX_STRIDE_FLOATS * 4;
 
+/**
+ * Where a mesh or texture came from, so a saved scene can point at it instead
+ * of embedding vertex data: a procedural primitive with its generator
+ * arguments, or the n-th resource of an imported asset (see tagAssetResources).
+ */
+export type ResourceRef = { primitive: string; args: number[] } | { asset: string; index: number };
+
 export interface MeshGPU {
   vertexBuffer: GPUBuffer;
   indexBuffer: GPUBuffer;
@@ -21,6 +28,8 @@ export class Mesh {
   boundsMin: Vec3 = [0, 0, 0];
   boundsMax: Vec3 = [0, 0, 0];
   gpu: MeshGPU | null = null;
+  /** Source of this mesh, or null when it can't be saved (built by code at runtime). */
+  ref: ResourceRef | null = null;
 
   constructor(name: string, vertices: Float32Array<ArrayBuffer>, indices: Uint32Array<ArrayBuffer>) {
     this.name = name;

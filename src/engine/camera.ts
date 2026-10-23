@@ -73,7 +73,9 @@ export class Camera {
 export type Projection = 'perspective' | 'orthographic';
 export const PROJECTIONS: readonly Projection[] = ['perspective', 'orthographic'];
 
-type CameraSettings = Pick<CameraComponent, 'projection' | 'fovDeg' | 'orthoSize' | 'near' | 'far' | 'priority'>;
+/** Lens settings: the fields copyFrom() copies and scenes save. */
+export const CAMERA_FIELDS = ['projection', 'fovDeg', 'orthoSize', 'near', 'far', 'priority'] as const;
+type CameraSettings = Pick<CameraComponent, (typeof CAMERA_FIELDS)[number]>;
 
 /**
  * Camera component. Position and orientation come from the owning GameObject:

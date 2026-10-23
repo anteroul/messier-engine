@@ -65,6 +65,23 @@ export class InspectorPanel {
   private buildScene(): HTMLElement[] {
     const scene = this.editor.scene;
     const engine = this.editor.engine;
+    const pm = this.editor.project;
+    const project = section('Project');
+    const projectName = textRow('Name', () => pm.project.name, (v) => pm.renameProject(v));
+    const sceneName = textRow('Scene', () => pm.currentScene?.name ?? '', (v) => pm.renameScene(pm.sceneId, v));
+    const assets = pm.project.referencedAssets();
+    const bytes = assets.reduce((n, a) => n + a.files.reduce((m, f) => m + f.bytes.byteLength, 0), 0);
+    project.body.append(
+      projectName.row,
+      sceneName.row,
+      row('', button('New scene', () => void pm.newScene(), 'btn btn-small'), button('Delete scene', () => void pm.deleteScene(pm.sceneId), 'btn btn-small delete-scene')),
+      el('p', {
+        class: 'hint',
+        text: `${pm.project.scenes.length} scene${pm.project.scenes.length === 1 ? '' : 's'}, ${assets.length} imported asset${assets.length === 1 ? '' : 's'} (${formatBytes(bytes)}). ` +
+          `Changes autosave in this browser; Save (Ctrl+S) writes a ${pm.fileName} file.`,
+      }),
+    );
+    this.add(projectName.binding, sceneName.binding);
     const env = section('Environment');
     const ambientColor = colorRow('Ambient', () => linearToHex(scene.ambientColor), (hex) => (scene.ambientColor = hexToLinear(hex)));
     const ambientI = sliderRow('Ambient ×', () => scene.ambientIntensity, (v) => (scene.ambientIntensity = v), 0, 2, 0.01);
@@ -92,7 +109,7 @@ export class InspectorPanel {
       el('p', { class: 'hint', text: `${objects} objects, ${lights} lights, ${cameras} camera${cameras === 1 ? '' : 's'}.` }),
       el('p', { class: 'hint', text: 'Select an object in the viewport or hierarchy to edit it. Drop .glb / .gltf / .obj files onto the viewport to import.' }),
     );
-    return [env.root, physics.root, info.root];
+    return [project.root, env.root, physics.root, info.root];
   }
 
   private buildObject(obj: GameObject): HTMLElement[] {
@@ -414,4 +431,8 @@ export class InspectorPanel {
 
 function quatEquals(a: readonly number[], b: readonly number[]): boolean {
   return a[0] === b[0] && a[1] === b[1] && a[2] === b[2] && a[3] === b[3];
+}
+
+function formatBytes(n: number): string {
+  return n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : n >= 1024 ? `${(n / 1024).toFixed(0)} KB` : `${n} B`;
 }

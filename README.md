@@ -102,7 +102,9 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
 | `Ctrl+D` / `Del` | Duplicate / delete |
 | `P` | Play / stop (during Play, plain keys go to scripts; `Esc` stops) |
 | `Ctrl+E` | Switch between the **Scene** and **Scripts** tabs |
-| `Ctrl+S` / `Ctrl+/` / `Tab` | In the code editor: compile now / toggle comment / indent (`Shift+Tab` outdents) |
+| `Ctrl+S` / `Ctrl+Shift+S` | Save project / save as (in the code editor, `Ctrl+S` also compiles now) |
+| `Ctrl+O` | Open a `.messier` project |
+| `Ctrl+/` / `Tab` | In the code editor: toggle comment / indent (`Shift+Tab` outdents) |
 | `G` / `H` | Toggle grid / light and camera helpers |
 | `C` | Look through the scene camera (Play turns this on) |
 | `Esc` | Deselect |
@@ -114,6 +116,23 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
 - **Inspector:** drag the colored `X`/`Y`/`Z` tags (or any number label) left
   and right to scrub a value. Hold Shift for ×10, Alt for ×0.1. Values update
   live while objects move or animate.
+- **Projects and scenes:** a project holds several scenes plus the scripts and
+  imported models they share. The **☰** menu creates, opens and saves projects
+  and adds scenes; the picker next to it switches scenes (not during Play).
+  With nothing selected, the inspector renames the project and scene or deletes
+  the scene. Switching scenes clears undo.
+  - Everything **autosaves** in the browser (IndexedDB) about a second after a
+    change, so a reload continues where you left off. The first load (or a
+    browser without an autosave) starts with the demo project.
+  - **Save** (`Ctrl+S`) writes one `.messier` file: the scenes as JSON plus the
+    original files of every imported model. Chromium writes back to the file you
+    opened or saved; other browsers download it. **Open** a project with
+    `Ctrl+O`, **Import**, or by dropping the file on the viewport. A `•` on the
+    menu means changes that aren't in a file yet.
+  - Saving during Play stops Play first, so the file has the edit-time scene.
+  - Meshes are saved by reference (primitive parameters, or which imported
+    file they came from), never as vertex data. Meshes created by scripts at
+    runtime can't be saved; Save tells you which objects lost theirs.
 - **Environment:** with nothing selected, the inspector edits ambient light,
   background, exposure, shadow extent and the grid.
 - **Importing:** click **Import** or drop files onto the viewport. For
@@ -237,8 +256,8 @@ export default class Hover extends Script {
   methods.
 - Inspector values are stored as overrides. Changing a field's default in code
   updates every object that hasn't overridden it.
-- Scripts are saved in the browser's `localStorage` and restored on reload.
-  Download them with **⤓ Download**, or import `.ts` files with **Import** or by
+- Scripts are part of the project (autosaved and written by Save).
+  Download one with **⤓ Download**, or import `.ts` files with **Import** or by
   dropping them on the viewport.
 - Types are erased, not checked: annotations, generics, `as`, `satisfies`, `!`,
   interfaces, type aliases, overloads, `declare` and modifiers are supported.
@@ -313,7 +332,7 @@ obj.behaviours.push(new ScriptBehaviour(hover, { speed: 0.5 })); // optional ove
 ```
 flake.nix               Nix: dev shell, `nix run` dev server, static build, `.#serve`, `.#tests` shell
 index.html              Editor shell (toolbar, panels, canvas)
-src/main.ts             Entry point: creates the engine, demo scene and editor, loads sample models
+src/main.ts             Entry point: creates the engine and editor, restores the autosave or builds the demo project
 src/demo.ts             Demo scene content
 src/engine/             The engine (no DOM dependencies except the canvas)
   engine.ts             Main loop: behaviours + physics → world matrices → hooks → render
@@ -329,9 +348,12 @@ src/engine/             The engine (no DOM dependencies except the canvas)
   overlay.ts            Immediate-mode helper geometry (gizmos, icons, boxes)
   raycast.ts            Ray/AABB/triangle/sphere tests, scene picking, world bounds
   math.ts               vec3 / quat / mat4 (column-major), color helpers
-  loaders/              glTF 2.0 / GLB, OBJ + MTL, resource resolvers
+  loaders/              glTF 2.0 / GLB, OBJ + MTL, resource resolvers, model assets
+  serialize.ts          Scene <-> JSON (SceneData); meshes and textures as ResourceRefs
+  project.ts            Project (scenes, scripts, assets), .messier container, ProjectResources
 src/editor/             Editor UI (plain DOM, no framework)
   editor.ts             Input, selection, commands, play mode, import, overlay, Scene/Scripts tabs
+  project.ts            ProjectManager: scenes, Save/Open, IndexedDB autosave, change detection
   scriptsView.ts        Scripts tab: script list, problems, usages, reference
   codeEditor.ts         Textarea-over-highlight code editor (indent, comments, error markers)
   gizmo.ts              Move/rotate/scale manipulator (picking + dragging + drawing)
@@ -394,7 +416,7 @@ The tests need a working Vulkan driver. On NixOS that means
   thread, so an infinite loop freezes the page. Scripts can only import from
   `'messier'` (not from each other). Input is keyboard only (no mouse or
   gamepad API yet).
-- **Editor:** no scene save/load yet (only script sources persist). Objects added or deleted during Play
+- **Editor:** Objects added or deleted during Play
   stay that way after Stop (only transforms, light and camera settings and velocities are restored).
   Material and light edits aren't part of undo.
 

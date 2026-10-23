@@ -48,12 +48,13 @@ body {
   grid-area: toolbar;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   padding: 0 10px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
 .brand {
+  white-space: nowrap;
   font-weight: 700;
   color: var(--accent);
   background: linear-gradient(90deg, var(--accent), var(--accent-2));
@@ -145,6 +146,32 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.06em;
   padding: 6px 10px 2px;
+}
+
+.menu-items kbd {
+  float: right;
+  margin-left: 16px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+}
+.file-menu .dirty-dot {
+  display: none;
+  margin-left: 4px;
+  color: var(--accent);
+}
+.file-menu.dirty .dirty-dot {
+  display: inline;
+}
+.scene-select {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 4px 6px;
+  font: inherit;
+  width: 92px;
+  flex-shrink: 0;
 }
 
 /* View tabs (Scene / Scripts) */

@@ -2,6 +2,7 @@
 // server and checks editor state after each interaction. Screenshots go to
 // tests/.out/. Run via `npm run test:ui` (see tests/ui/run.mjs).
 import puppeteer from 'puppeteer-core';
+import { writeFileSync } from 'node:fs';
 
 const OUT = process.env.OUT_DIR;
 const URL = process.env.APP_URL;
@@ -91,7 +92,7 @@ check('E switches to rotate', (await state(() => window.editor.gizmo.mode)) === 
 await page.keyboard.press('KeyW');
 
 // --- Add menu
-await page.click('summary.btn');
+await page.click('.add-menu summary');
 await page.click('[data-action="add-cube"]');
 await sleep(100);
 check('Add > Cube creates and selects', (await state(() => window.editor.selected?.name)) === 'Cube');
@@ -116,7 +117,7 @@ check('redo add rigid body', (await state(() => !!window.editor.selected.rigidBo
 await state(() => { window.editor.selected.transform.position[1] = 3; });
 
 // --- Scripts: create from the inspector, edit in the Scripts tab, attach
-await page.click('summary.btn');
+await page.click('.add-menu summary');
 await page.click('[data-action="add-empty"]');
 await sleep(50);
 await page.select('#inspector select.add-behaviour', 'new-script');
@@ -182,7 +183,7 @@ const inspectorScript = await page.$eval('#inspector', (e) => e.innerText);
 check('Ctrl+E back to scene, script in inspector', (await state(() => window.editor.view)) === 'scene' && inspectorScript.includes('EmptyScript.ts') && inspectorScript.includes('rise'), inspectorScript.slice(-200));
 
 // --- Add light, change type in inspector
-await page.click('summary.btn');
+await page.click('.add-menu summary');
 await page.click('[data-action="add-point"]');
 await sleep(50);
 await page.select('#inspector select', 'spot');
@@ -266,7 +267,22 @@ const afterUndo = await state(() => [!!window.engine.scene.scripts.get('EmptyScr
 check('delete script detaches, undo restores', afterDelete[0] && afterDelete[1] === 0 && afterUndo[0] && afterUndo[1] === 1, JSON.stringify([afterDelete, afterUndo]));
 await page.click('[data-action="view-scene"]');
 await sleep(50);
-check('scripts persist to localStorage', (await state(() => JSON.parse(localStorage.getItem('messier.scripts.v1')).map((x) => x.name).join())) === 'Hover,EmptyScript');
+/** The autosaved project manifest from IndexedDB (written about a second after a change). */
+const autosaved = () =>
+  page.evaluate(
+    () =>
+      new Promise((resolve, reject) => {
+        const open = indexedDB.open('messier');
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const get = open.result.transaction('kv').objectStore('kv').get('autosave');
+          get.onsuccess = () => resolve(get.result ? JSON.parse(get.result.json) : null);
+          get.onerror = () => reject(get.error);
+        };
+      }),
+  );
+await sleep(1500);
+check('scripts autosave', (await autosaved())?.scripts.map((x) => x.name).join() === 'Hover,EmptyScript');
 
 // --- Keyboard input: during Play, keys drive scripts instead of editor shortcuts; Esc stops
 await state(() => {
@@ -310,7 +326,7 @@ check('shortcuts back after stop', (await state(() => window.editor.gizmo.mode))
 await page.keyboard.press('KeyW');
 
 // --- Cameras: add, align to view, look through (C), viewport ignores clicks meanwhile, pick by icon
-await page.click('summary.btn');
+await page.click('.add-menu summary');
 await page.click('[data-action="add-camera"]');
 await sleep(100);
 const added = await state(() => ({ name: window.editor.selected?.name, camera: !!window.editor.selected?.camera, text: document.getElementById('inspector').innerText }));
@@ -389,6 +405,93 @@ await sleep(300);
 await page.screenshot({ path: `${OUT}/ui-final.png` });
 const stats = await page.$eval('#stats', (e) => e.textContent);
 check('stats overlay', /fps/.test(stats), stats);
+// --- Projects: autosave survives a reload, scenes, Save (download fallback) and Open
+page.on('dialog', (d) => void d.accept()); // "Discard unsaved changes?"
+await state(() => {
+  window.engine.scene.findByName('Torus').transform.position[0] = 7.25;
+});
+await sleep(1500);
+await page.reload({ waitUntil: 'networkidle0' });
+await page.waitForFunction(() => window.editor?.project.sceneId && window.engine.scene.findByName('Torus'), { timeout: 15000 });
+await sleep(300);
+const restored = await state(() => {
+  const { engine, editor } = window;
+  let lanternMeshes = 0;
+  engine.scene.findByName('Lantern')?.traverse((o) => void (o.mesh && lanternMeshes++));
+  return { x: engine.scene.findByName('Torus').transform.position[0], lanternMeshes, scripts: engine.scene.scripts.scripts.map((s) => s.name).join(), name: editor.project.project.name };
+});
+check('autosave restores after reload', restored.x === 7.25 && restored.lanternMeshes === 4 && restored.scripts === 'Hover,EmptyScript,Walker' && restored.name === 'Demo', JSON.stringify(restored));
+await page.screenshot({ path: `${OUT}/ui-restored.png` });
+
+const firstScene = await state(() => window.editor.project.sceneId);
+await page.click('.file-menu summary');
+await page.click('[data-action="new-scene"]');
+await sleep(300);
+const fresh = await state(() => ({
+  options: document.querySelectorAll('.scene-select option').length,
+  objects: window.engine.scene.root.children.map((o) => o.name).join(),
+  canUndo: window.editor.history.canUndo,
+}));
+check('new scene', fresh.options === 2 && fresh.objects === 'Sun,Main Camera' && !fresh.canUndo, JSON.stringify(fresh));
+await page.select('.scene-select', firstScene);
+await sleep(300);
+check('switch back to first scene', (await state(() => window.engine.scene.findByName('Torus')?.transform.position[0])) === 7.25);
+
+// Save during Play: stops Play first and saves the edit-time scene. Headless has no file picker here, so Save downloads.
+await state(() => {
+  Object.defineProperty(window, 'showSaveFilePicker', { value: undefined, configurable: true });
+  window.__downloads = [];
+  HTMLAnchorElement.prototype.click = function () {
+    window.__downloads.push({ href: this.href, name: this.download });
+  };
+});
+const rotBefore = await state(() => [...window.engine.scene.findByName('Spinning Cube').transform.rotation]);
+await page.evaluate(() => document.getElementById('gpu-canvas').focus());
+await page.keyboard.press('KeyP');
+await sleep(400);
+await page.keyboard.down('Control');
+await page.keyboard.press('KeyS');
+await page.keyboard.up('Control');
+await sleep(300);
+const saved = await state(async () => {
+  const { editor, engine } = window;
+  const dl = window.__downloads[0];
+  if (!dl) return null;
+  const bytes = new Uint8Array(await (await fetch(dl.href)).arrayBuffer());
+  const project = editor.project.project.constructor.decode(bytes);
+  const scene = project.getScene(editor.project.sceneId).data;
+  return {
+    name: dl.name,
+    playing: engine.playing,
+    dirty: editor.project.dirty,
+    scenes: project.scenes.length,
+    rot: scene.objects.find((o) => o.name === 'Spinning Cube').rotation,
+    bytes: Array.from(bytes),
+  };
+});
+check('Ctrl+S during Play stops and saves', saved && saved.name === 'Demo.messier' && !saved.playing && !saved.dirty && saved.scenes === 2 &&
+  saved.rot.every((v, i) => Math.abs(v - rotBefore[i]) < 1e-6), JSON.stringify(saved && { ...saved, bytes: saved.bytes.length }));
+
+if (saved) {
+  const file = `${OUT}/ui-test.messier`;
+  writeFileSync(file, Buffer.from(saved.bytes));
+  await state(() => {
+    window.editor.project.renameProject('Changed');
+    window.engine.scene.findByName('Torus').transform.position[0] = 0;
+  });
+  const input = await page.$('#import-input');
+  await input.uploadFile(file);
+  await page.waitForFunction(() => window.editor.project.project.name === 'Demo', { timeout: 10000 }).catch(() => {});
+  await sleep(300);
+  const opened = await state(() => ({
+    name: window.editor.project.project.name,
+    scenes: window.editor.project.project.scenes.length,
+    x: window.engine.scene.findByName('Torus')?.transform.position[0],
+    dirty: window.editor.project.dirty,
+  }));
+  check('open project file', opened.name === 'Demo' && opened.scenes === 2 && opened.x === 7.25 && !opened.dirty, JSON.stringify(opened));
+}
+
 check('no console errors/warnings', errors.length === 0, errors.join(' | '));
 await browser.close();
 console.log(failures ? `${failures} FAILURE(S)` : 'ALL PASSED');

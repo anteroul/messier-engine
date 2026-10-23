@@ -4,6 +4,9 @@ export type LightType = 'directional' | 'point' | 'spot';
 
 export const LIGHT_TYPE_INDEX: Record<LightType, number> = { directional: 0, point: 1, spot: 2 };
 
+/** Fields saved with a scene. Keep in sync with clone(). */
+export const LIGHT_FIELDS = ['type', 'color', 'intensity', 'range', 'innerAngle', 'outerAngle', 'castShadows'] as const;
+
 /**
  * Light component. Position and direction come from the owning GameObject:
  * lights shine along the object's local -Z axis.

@@ -16,3 +16,5 @@ export * from './raycast';
 export * from './renderer';
 export * from './engine';
 export * from './loaders';
+export * from './serialize';
+export * from './project';

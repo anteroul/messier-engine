@@ -1,5 +1,5 @@
 import './editor/editor.css';
-import { Engine, loadModelFromURL, type Vec3 } from './engine';
+import { Engine, loadModelAssetFromURL, type Vec3 } from './engine';
 import { Editor } from './editor/editor';
 import { buildDemoScene } from './demo';
 
@@ -21,8 +21,6 @@ async function main(): Promise<void> {
     return;
   }
 
-  buildDemoScene(engine.scene);
-
   const editor = new Editor(engine, {
     viewport: $('viewport'),
     canvas,
@@ -37,24 +35,37 @@ async function main(): Promise<void> {
     scriptsView: $('scripts-view'),
   });
 
-  // Sample assets exercising the glTF and OBJ loaders.
+  engine.start();
+  // Expose for console tinkering.
+  Object.assign(window, { engine, editor });
+
+  // Continue where the last session left off, or start with the demo.
+  if (!(await editor.project.restoreAutosave())) await loadDemo(engine, editor);
+}
+
+async function loadDemo(engine: Engine, editor: Editor): Promise<void> {
+  buildDemoScene(engine.scene);
+  editor.restoreLegacyScripts();
+  editor.afterSceneLoad();
+  // Sample assets exercising the glTF and OBJ loaders. They become project assets, so the demo saves like any scene.
   const samples: [string, Vec3][] = [
     [`${import.meta.env.BASE_URL}models/lantern.glb`, [2.6, 0, 3.4]],
     [`${import.meta.env.BASE_URL}models/icosahedron.obj`, [-3.2, 0.9, -3]],
   ];
-  for (const [url, pos] of samples) {
-    loadModelFromURL(url)
-      .then((model) => {
+  await Promise.all(
+    samples.map(async ([url, pos]) => {
+      try {
+        const { model, asset } = await loadModelAssetFromURL(url);
+        editor.project.addAsset(asset, model);
         model.transform.position = pos;
         engine.scene.add(model);
         editor.hierarchy.markDirty();
-      })
-      .catch((err) => editor.notify(`Could not load ${url}: ${(err as Error).message}`, 'error'));
-  }
-
-  engine.start();
-  // Expose for console tinkering.
-  Object.assign(window, { engine, editor });
+      } catch (err) {
+        editor.notify(`Could not load ${url}: ${(err as Error).message}`, 'error');
+      }
+    }),
+  );
+  editor.project.adoptCurrentScene('Demo');
 }
 
 void main();

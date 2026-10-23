@@ -14,7 +14,8 @@ import {
   input,
   isFlatMesh,
   worldCollider,
-  loadModelsFromFiles,
+  loadModelAssetsFromFiles,
+  PROJECT_EXTENSION,
   raySphere,
   raycastScene,
   quat,
@@ -28,6 +29,7 @@ import {
   type OverlayBuilder,
   type PrimitiveKind,
   type Ray,
+  type ScriptSource,
   type RenderStats,
   type Vec3,
   type Vec4,
@@ -37,12 +39,12 @@ import { History } from './history';
 import { HierarchyPanel } from './hierarchy';
 import { InspectorPanel } from './inspector';
 import { OrbitControls } from './orbitControls';
+import { LEGACY_SCRIPTS_KEY, ProjectManager } from './project';
 import { ScriptsView } from './scriptsView';
 
 type PointerMode = 'none' | 'click' | 'orbit' | 'pan' | 'gizmo' | 'fly';
 export type EditorView = 'scene' | 'scripts';
 
-const SCRIPT_STORAGE_KEY = 'messier.scripts.v1';
 /** Game keys whose browser default (scrolling, activating the focused button) would fight the game. */
 const SCROLL_KEYS = new Set(['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End']);
 
@@ -87,6 +89,7 @@ export class Editor {
   readonly hierarchy: HierarchyPanel;
   readonly inspector: InspectorPanel;
   readonly scripts: ScriptsView;
+  readonly project: ProjectManager;
   selected: GameObject | null = null;
   showHelpers = true;
   view: EditorView = 'scene';
@@ -116,6 +119,9 @@ export class Editor {
     this.inspector = new InspectorPanel(this, ui.inspector);
     this.scripts = new ScriptsView(this, ui.scriptsView);
     this.history.onChange = () => this.updateToolbar();
+    this.project = new ProjectManager(this);
+    // Toolbar only: rebuilding the inspector here would steal focus from a field being edited.
+    this.project.onChange = () => this.updateToolbar();
     this.initScripts();
 
     this.bindViewport();
@@ -379,16 +385,14 @@ export class Editor {
     this.history.push({ label: `Rename script ${before}`, undo: () => apply(before), redo: () => apply(after) });
   }
 
-  /** Compiles a script (running objects pick up the new class) and persists the sources. */
+  /** Compiles a script (running objects pick up the new class). */
   compileScript(asset: ScriptAsset): boolean {
     const ok = asset.compile();
-    this.saveScripts();
     this.updateToolbar();
     return ok;
   }
 
   private scriptsChanged(): void {
-    this.saveScripts();
     this.scripts.refresh();
     this.updateToolbar();
   }
@@ -402,8 +406,15 @@ export class Editor {
       if (this.selected) this.inspector.refresh();
       this.updateToolbar();
     };
-    // Restore sources edited in earlier sessions. Scripts the scene already
-    // defines (like the demo's) are matched by name.
+  }
+
+  /**
+   * Compiles the scene's scripts after building a scene in code (the demo),
+   * first applying sources saved by versions before projects existed. Those
+   * are matched by name; the key is removed once the project autosaves.
+   */
+  restoreLegacyScripts(): void {
+    const lib = this.scene.scripts;
     for (const { name, source } of loadStoredScripts()) {
       const existing = lib.get(name);
       if (existing) existing.source = source;
@@ -411,14 +422,35 @@ export class Editor {
     }
     for (const s of lib.scripts) if (s.compiledSource !== s.source) s.compile();
     this.scripts.refresh();
+    this.updateToolbar();
   }
 
-  private saveScripts(): void {
-    try {
-      localStorage.setItem(SCRIPT_STORAGE_KEY, JSON.stringify(this.scene.scripts.scripts.map((s) => ({ name: s.name, source: s.source }))));
-    } catch {
-      /* storage unavailable (private mode, quota): scripts just won't persist */
-    }
+  /** Replaces every script with a project's (objects using the old ones are about to be replaced too). */
+  loadScripts(sources: ScriptSource[]): void {
+    const lib = this.scene.scripts;
+    for (const s of [...lib.scripts]) lib.remove(s);
+    for (const { name, source } of sources) lib.add(new ScriptAsset(name, source)).compile();
+    this.scripts.refresh();
+    this.updateToolbar();
+  }
+
+  /** Called by the project manager before it replaces the scene's objects. */
+  beforeSceneLoad(): void {
+    this.endActiveGesture();
+    this.select(null);
+    this.history.clear();
+  }
+
+  afterSceneLoad(): void {
+    this.hierarchy.markDirty();
+    this.inspector.show(null, true);
+    this.scripts.refresh();
+    this.updateToolbar();
+  }
+
+  /** Opens the file chooser used for Import (and Open without the File System Access API). */
+  pickFiles(): void {
+    this.ui.importInput.click();
   }
 
   focusSelected(): void {
@@ -503,6 +535,11 @@ export class Editor {
   }
 
   async importFiles(files: File[]): Promise<void> {
+    const project = files.find((f) => f.name.toLowerCase().endsWith(PROJECT_EXTENSION));
+    if (project) {
+      await this.project.openFile(project);
+      return;
+    }
     const scripts = files.filter((f) => /\.ts$/i.test(f.name));
     files = files.filter((f) => !scripts.includes(f));
     let lastScript: ScriptAsset | null = null;
@@ -514,8 +551,9 @@ export class Editor {
     if (files.length === 0) return;
     this.notify(`Importing ${files.map((f) => f.name).join(', ')}…`);
     try {
-      const models = await loadModelsFromFiles(files);
-      for (const model of models) {
+      const loaded = await loadModelAssetsFromFiles(files);
+      for (const { model, asset } of loaded) {
+        this.project.addAsset(asset, model);
         this.normalizeImportedScale(model);
         model.transform.position = vec3.add(model.transform.position, this.spawnPoint(0));
         this.addObject(model, this.scene.root, `Import ${model.name}`);
@@ -886,6 +924,13 @@ export class Editor {
         this.setView(this.view === 'scene' ? 'scripts' : 'scene');
         return;
       }
+      // Save / Open work everywhere too (in the code editor, Ctrl+S also compiles), and during Play.
+      if (mod && !e.altKey && (e.code === 'KeyS' || (e.code === 'KeyO' && !e.shiftKey))) {
+        e.preventDefault();
+        if (e.code === 'KeyO') void this.project.open();
+        else void this.project.save(e.shiftKey);
+        return;
+      }
       const target = e.target as HTMLElement;
       if (target.closest('input, select, textarea')) return;
       // Scene shortcuts (W/E/R, Delete…) would act on an invisible scene; undo and Play still work.
@@ -995,7 +1040,12 @@ export class Editor {
         this.updateToolbar();
       },
       'camera-view': () => this.setCameraView(!this.cameraView),
-      import: () => this.ui.importInput.click(),
+      import: () => this.pickFiles(),
+      'new-project': () => void this.project.newProject(),
+      'open-project': () => void this.project.open(),
+      'save-project': () => void this.project.save(),
+      'save-project-as': () => void this.project.save(true),
+      'new-scene': () => void this.project.newScene(),
       help: () => (this.ui.help.hidden = !this.ui.help.hidden),
       'view-scene': () => this.setView('scene'),
       'view-scripts': () => this.setView('scripts'),
@@ -1020,6 +1070,11 @@ export class Editor {
       // Close dropdown menus after choosing an entry.
       btn.closest('details')?.removeAttribute('open');
       btn.blur();
+    });
+    const sceneSelect = this.ui.toolbar.querySelector<HTMLSelectElement>('.scene-select');
+    sceneSelect?.addEventListener('change', () => {
+      void this.project.switchScene(sceneSelect.value);
+      sceneSelect.blur();
     });
     // Close open dropdown menus when clicking anywhere else.
     document.addEventListener('pointerdown', (e) => {
@@ -1084,6 +1139,18 @@ export class Editor {
     const redo = tb.querySelector<HTMLButtonElement>('[data-action="redo"]');
     if (undo) undo.disabled = !this.history.canUndo;
     if (redo) redo.disabled = !this.history.canRedo;
+
+    const pm = this.project;
+    document.title = `${pm.dirty ? '• ' : ''}${pm.project.name} — Messier`;
+    tb.querySelector('.file-menu')?.classList.toggle('dirty', pm.dirty);
+    const select = tb.querySelector<HTMLSelectElement>('.scene-select');
+    if (select) {
+      const scenes = pm.project.scenes;
+      const same = select.options.length === scenes.length && scenes.every((s, i) => select.options[i].value === s.id && select.options[i].text === s.name);
+      if (!same) select.replaceChildren(...scenes.map((s) => new Option(s.name, s.id)));
+      select.value = pm.sceneId;
+      select.disabled = this.engine.playing;
+    }
   }
 
   notify(message: string, kind: 'info' | 'success' | 'error' = 'info'): void {
@@ -1131,7 +1198,7 @@ export default class ${className} extends Script {
 
 function loadStoredScripts(): { name: string; source: string }[] {
   try {
-    const raw = localStorage.getItem(SCRIPT_STORAGE_KEY);
+    const raw = localStorage.getItem(LEGACY_SCRIPTS_KEY);
     const list = raw ? JSON.parse(raw) : [];
     return Array.isArray(list) ? list.filter((s) => typeof s?.name === 'string' && typeof s?.source === 'string') : [];
   } catch {
