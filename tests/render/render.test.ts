@@ -230,6 +230,23 @@ export default class Mover extends Script {
   const steps = (b.instance as any).steps;
   check('script hot reload keeps state', b.error === null && steps === 5 && obj.transform.position[1] === 5, `steps=${steps} y=${obj.transform.position[1]}`);
 
+  // Scripts reach their scene through the hierarchy.
+  const probe = world.scripts.add(new ScriptAsset('SceneProbe', `import { Script } from 'messier';
+export default class SceneProbe extends Script {
+  update(): void { this.object.transform.position[2] = this.scene.findByName('Mover obj') ? 7 : -1; }
+}
+`));
+  check('scene probe compiles', probe.compile(), JSON.stringify(probe.diagnostics));
+  const holder = world.add(new GameObject('Holder'));
+  const nested = holder.add(new GameObject('Nested'));
+  const pb = new ScriptBehaviour(probe);
+  nested.behaviours.push(pb);
+  pb.start(nested);
+  world.update(0.1, 1.1, true);
+  check('script sees its scene', nested.transform.position[2] === 7 && nested.scene === world, `z=${nested.transform.position[2]} err=${pb.error?.message}`);
+  world.remove(holder);
+  check('detached object has no scene', nested.scene === null && new GameObject().scene === null);
+
   const bad = (src: string) => {
     const a = new ScriptAsset('Bad', src);
     a.compile();

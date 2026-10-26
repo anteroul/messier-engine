@@ -1,5 +1,5 @@
 import { Behaviour } from './behaviours';
-import type { GameObject } from './scene';
+import type { GameObject, Scene } from './scene';
 import { lineColumn, stripTypes, TranspileError } from './typescript';
 // Scripts import the public engine API by name. This is a circular import
 // (index re-exports this module), which is fine because it's only read lazily
@@ -22,6 +22,13 @@ export class Script {
 
   /** Called every frame in Play mode. `time` is seconds since Play started. */
   update(_dt: number, _time: number): void {}
+
+  /** The scene the object is in: findByName(), traverse(), activeCamera(), physics, background… */
+  get scene(): Scene {
+    const scene = this.object.scene;
+    if (!scene) throw new Error(`'${this.object.name}' is not in a scene`);
+    return scene;
+  }
 
   /** First object in the scene with this name. */
   find(name: string): GameObject | null {

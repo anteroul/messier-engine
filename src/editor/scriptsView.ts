@@ -236,6 +236,7 @@ function reference(): HTMLElement {
     item('start()', 'Called when Play starts.'),
     item('update(dt, time)', 'Called every frame while playing. dt and time are in seconds.'),
     item('this.object', 'The GameObject: transform, mesh, material, light, rigidBody, children.'),
+    item('this.scene', 'The Scene: findByName(), traverse(), activeCamera(), physics, background…'),
     item('this.find(name)', 'Another object in the scene by name.'),
     item("input.isDown('KeyW', 'ArrowUp')", 'Keyboard (import input). Also pressed()/released() for one frame, axis(\'horizontal\' | \'vertical\') for WASD/arrows → -1…1. Esc stops Play.'),
     el('p', { class: 'hint', text: 'Types are checked by syntax only: annotations are erased, not type-checked. Enums, namespaces, decorators and parameter properties aren’t supported. Ctrl+S compiles now, Ctrl+/ toggles comments, Tab / Shift+Tab indents.' }),

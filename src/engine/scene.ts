@@ -8,6 +8,8 @@ import { PhysicsWorld, type RigidBody } from './physics';
 import { ScriptLibrary } from './scripting';
 
 let nextId = 1;
+// Scene of each scene root, so objects can find their scene through the hierarchy.
+const rootScenes = new WeakMap<GameObject, Scene>();
 
 export class Transform {
   position: Vec3 = [0, 0, 0];
@@ -86,6 +88,13 @@ export class GameObject {
   }
 
   /** True when this object and all its ancestors are visible. */
+  /** The scene this object is in (through its root), or null when detached. */
+  get scene(): Scene | null {
+    let root: GameObject = this;
+    while (root.parent) root = root.parent;
+    return rootScenes.get(root) ?? null;
+  }
+
   isVisibleInHierarchy(): boolean {
     for (let o: GameObject | null = this; o; o = o.parent) if (!o.visible) return false;
     return true;
@@ -181,6 +190,10 @@ export class Scene {
   readonly physics = new PhysicsWorld();
   /** TypeScript behaviour scripts available to this scene's objects. */
   readonly scripts = new ScriptLibrary();
+
+  constructor() {
+    rootScenes.set(this.root, this);
+  }
 
   add(obj: GameObject, parent: GameObject = this.root): GameObject {
     return parent.add(obj);

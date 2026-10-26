@@ -244,8 +244,9 @@ export default class Hover extends Script {
 }
 ```
 
-- `this.object` is the `GameObject`, and `this.find(name)` looks up another
-  object. For example, a follow camera can move `this.find('Main Camera')`
+- `this.object` is the `GameObject`, `this.scene` is the `Scene` it's in
+  (`findByName`, `traverse`, `activeCamera()`, `physics`, `background`…), and
+  `this.find(name)` looks up another object. For example, a follow camera can move `this.find('Main Camera')`
   each frame, and `this.object.camera.fovDeg` changes a camera's zoom. `start()` runs when Play starts, `update(dt, time)` every frame.
 - Scripts compile while you type. Errors are underlined in the editor, listed
   under *Problems* and counted on the Scripts tab. Runtime errors are mapped
