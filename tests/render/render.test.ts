@@ -247,6 +247,34 @@ export default class SceneProbe extends Script {
   world.remove(holder);
   check('detached object has no scene', nested.scene === null && new GameObject().scene === null);
 
+  // A start() that threw is re-run after the fix instead of resuming the half-started instance.
+  const starter = world.scripts.add(new ScriptAsset('Starter', `import { Script } from 'messier';
+export default class Starter extends Script {
+  target: any = null;
+  start(): void { this.target = this.find('Taget')!; this.target.name; }
+  update(): void { this.target.transform.position[0] = 9; }
+}
+`));
+  check('starter compiles', starter.compile(), JSON.stringify(starter.diagnostics));
+  const sb = new ScriptBehaviour(starter);
+  const starterObj = world.add(new GameObject('Starter obj'));
+  starterObj.behaviours.push(sb);
+  const target = world.add(new GameObject('Target'));
+  sb.start(starterObj);
+  check('script start() error pauses', sb.error !== null);
+  starter.source = starter.source.replace("'Taget'", "'Target'");
+  starter.compile();
+  sb.update(starterObj, 0.1, 1.2);
+  check('fixed start() re-runs on hot swap', sb.error === null && target.transform.position[0] === 9, `err=${sb.error?.message}`);
+
+  // Field initializers can't reach the scene yet; the compile error says so.
+  const early = new ScriptAsset('Early', `import { Script } from 'messier';
+export default class Early extends Script {
+  cam = this.scene.activeCamera();
+}
+`);
+  check('scene in field initializer explains itself', !early.compile() && /start\(\) on/.test(early.compileError?.message ?? ''), early.compileError?.message);
+
   const bad = (src: string) => {
     const a = new ScriptAsset('Bad', src);
     a.compile();

@@ -87,7 +87,6 @@ export class GameObject {
     return false;
   }
 
-  /** True when this object and all its ancestors are visible. */
   /** The scene this object is in (through its root), or null when detached. */
   get scene(): Scene | null {
     let root: GameObject = this;
@@ -95,6 +94,7 @@ export class GameObject {
     return rootScenes.get(root) ?? null;
   }
 
+  /** True when this object and all its ancestors are visible. */
   isVisibleInHierarchy(): boolean {
     for (let o: GameObject | null = this; o; o = o.parent) if (!o.visible) return false;
     return true;

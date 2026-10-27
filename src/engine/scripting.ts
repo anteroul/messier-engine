@@ -25,14 +25,14 @@ export class Script {
 
   /** The scene the object is in: findByName(), traverse(), activeCamera(), physics, background… */
   get scene(): Scene {
-    const scene = this.object.scene;
+    const scene = attached(this, 'this.scene').scene;
     if (!scene) throw new Error(`'${this.object.name}' is not in a scene`);
     return scene;
   }
 
   /** First object in the scene with this name. */
   find(name: string): GameObject | null {
-    let root = this.object;
+    let root = attached(this, 'this.find()');
     while (root.parent) root = root.parent;
     let found: GameObject | null = null;
     root.traverse((o) => {
@@ -41,6 +41,12 @@ export class Script {
     });
     return found;
   }
+}
+
+// Field initializers run before `object` is set, which would otherwise fail with an unhelpful TypeError.
+function attached(script: Script, what: string): GameObject {
+  if (!script.object) throw new Error(`${what} is available from start() on, not in field initializers`);
+  return script.object;
 }
 
 export interface ScriptDiagnostic {
@@ -222,7 +228,7 @@ export class ScriptLibrary {
     return this.scripts.find((s) => s.name === name) ?? null;
   }
 
-  /** `base`, or `base 2`, `base 3`… if taken. */
+  /** `base`, or `base2`, `base3`… if taken. */
   uniqueName(base: string, except?: ScriptAsset): string {
     const taken = (n: string) => this.scripts.some((s) => s !== except && s.name === n);
     if (!taken(base)) return base;
@@ -242,6 +248,8 @@ export class ScriptBehaviour extends Behaviour {
   /** Runtime error that paused this behaviour; cleared when the script recompiles or Play restarts. */
   error: ScriptDiagnostic | null = null;
   private version = 0;
+  /** False until the instance's start() returns; a hot swap re-instantiates instead of resuming a half-started instance. */
+  private started = false;
   private obj: GameObject | null = null;
 
   constructor(
@@ -276,6 +284,7 @@ export class ScriptBehaviour extends Behaviour {
     this.obj = obj;
     this.error = null;
     this.instance = null;
+    this.started = false;
     this.version = this.asset.version;
     this.instantiate(obj);
   }
@@ -305,7 +314,9 @@ export class ScriptBehaviour extends Behaviour {
       this.applyParams(inst);
       inst.object = obj;
       this.instance = inst;
+      this.started = false;
       inst.start();
+      this.started = true;
     } catch (err) {
       this.fail(err, obj);
     }
@@ -321,7 +332,7 @@ export class ScriptBehaviour extends Behaviour {
     const inst = this.instance;
     this.error = null;
     if (!ctor) return;
-    if (!inst) return this.instantiate(this.obj ?? obj);
+    if (!inst || !this.started) return this.instantiate(this.obj ?? obj);
     try {
       const fresh = new ctor() as unknown as Record<string, unknown>;
       const target = inst as unknown as Record<string, unknown>;
