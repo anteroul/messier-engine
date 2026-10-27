@@ -1,4 +1,4 @@
-import { ScriptBehaviour, type GameObject, type ScriptAsset } from '../engine';
+import { Script, type GameObject, type ScriptAsset } from '../engine';
 import { CodeEditor } from './codeEditor';
 import { button, el } from './ui';
 import type { Editor } from './editor';
@@ -208,7 +208,7 @@ export class ScriptsView {
   private usersOf(script: ScriptAsset): GameObject[] {
     const out: GameObject[] = [];
     this.editor.scene.traverse((o) => {
-      if (o.behaviours.some((b) => b instanceof ScriptBehaviour && b.asset === script)) out.push(o);
+      if (o.behaviours.some((b) => b instanceof Script && b.asset === script)) out.push(o);
     });
     return out;
   }

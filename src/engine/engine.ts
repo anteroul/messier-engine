@@ -65,6 +65,7 @@ export class Engine {
     // Keys held across Play/Stop would otherwise stay down in the next session.
     input.reset();
     if (playing) this.scene.physics.reset(this.scene);
+    this.scene.setRunning(playing);
   }
 
   start(): void {

@@ -6,7 +6,7 @@ import {
   Material,
   RigidBody,
   ScriptAsset,
-  ScriptBehaviour,
+  Script,
   IDENTITY_TRS,
   type LocalTRS,
   colliderCorners,
@@ -277,29 +277,26 @@ export class Editor {
 
   /** Attaches a behaviour (built-in or script). Undoable. */
   addBehaviour(obj: GameObject, b: Behaviour): void {
+    // Attaching during Play wakes it like any component added at runtime.
     const apply = (on: boolean) => {
-      const i = obj.behaviours.indexOf(b);
-      if (on && i < 0) obj.behaviours.push(b);
-      else if (!on && i >= 0) obj.behaviours.splice(i, 1);
+      if (on && !b.attached) obj.attachComponent(b);
+      else if (!on && b.attached) obj.detachComponent(b);
       this.behavioursChanged(obj);
     };
     apply(true);
-    // Added during Play: start it now, as Play would have.
-    if (this.engine.playing) b.start(obj);
-    this.history.push({ label: `Add ${b.type} to ${obj.name}`, undo: () => apply(false), redo: () => apply(true) });
+    this.history.push({ label: `Add ${b.typeName} to ${obj.name}`, undo: () => apply(false), redo: () => apply(true) });
   }
 
   removeBehaviour(obj: GameObject, b: Behaviour): void {
-    const index = obj.behaviours.indexOf(b);
+    const index = obj.components.indexOf(b);
     if (index < 0) return;
     const apply = (on: boolean) => {
-      const i = obj.behaviours.indexOf(b);
-      if (on && i < 0) obj.behaviours.splice(Math.min(index, obj.behaviours.length), 0, b);
-      else if (!on && i >= 0) obj.behaviours.splice(i, 1);
+      if (on && !b.attached) obj.attachComponent(b, index);
+      else if (!on && b.attached) obj.detachComponent(b);
       this.behavioursChanged(obj);
     };
     apply(false);
-    this.history.push({ label: `Remove ${b.type} from ${obj.name}`, undo: () => apply(true), redo: () => apply(false) });
+    this.history.push({ label: `Remove ${b.typeName} from ${obj.name}`, undo: () => apply(true), redo: () => apply(false) });
   }
 
   private behavioursChanged(obj: GameObject): void {
@@ -352,17 +349,17 @@ export class Editor {
     if (index < 0) return;
     const attached: [GameObject, number, Behaviour][] = [];
     this.scene.traverse((o) => {
-      o.behaviours.forEach((b, i) => {
-        if (b instanceof ScriptBehaviour && b.asset === asset) attached.push([o, i, b]);
+      o.components.forEach((b, i) => {
+        if (b instanceof Script && b.asset === asset) attached.push([o, i, b]);
       });
     });
     const apply = (remove: boolean) => {
       if (remove) {
         lib.remove(asset);
-        for (const [o, , b] of attached) o.behaviours.splice(o.behaviours.indexOf(b), 1);
+        for (const [o, , b] of attached) o.detachComponent(b);
       } else {
         lib.add(asset, Math.min(index, lib.scripts.length));
-        for (const [o, i, b] of attached) o.behaviours.splice(Math.min(i, o.behaviours.length), 0, b);
+        for (const [o, i, b] of attached) if (!b.attached) o.attachComponent(b, i);
       }
       this.scriptsChanged();
       if (this.selected) this.inspector.refresh();
@@ -606,9 +603,6 @@ export class Editor {
     this.playSnapshot = snap;
     for (const s of this.scene.scripts.scripts) s.clearRuntimeErrors();
     this.scripts.refresh();
-    this.scene.traverse((o) => {
-      for (const b of o.behaviours) b.start(o);
-    });
     this.engine.setPlaying(true);
     // Play shows the game through its camera (when it has one) until Stop, unless toggled off meanwhile.
     this.cameraViewBeforePlay = this.cameraView;

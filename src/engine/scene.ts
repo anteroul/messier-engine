@@ -6,7 +6,8 @@ import type { Mesh } from './mesh';
 import type { Material } from './material';
 import { Light } from './light';
 import { CameraComponent } from './camera';
-import type { Behaviour } from './behaviours';
+import { Behaviour, HOOK_FIXED_UPDATE, HOOK_LATE_UPDATE, HOOK_UPDATE } from './behaviours';
+import { Clock } from './time';
 import { PhysicsWorld, RigidBody } from './physics';
 import { ScriptLibrary } from './scripting';
 import { Signal } from './signal';
@@ -24,7 +25,6 @@ export class GameObject {
   readonly transform: Transform = new Transform(this);
   /** Child objects, in order. Change it through add()/remove() or transform.setParent(). */
   readonly children: readonly GameObject[] = [];
-  behaviours: Behaviour[] = [];
 
   // Cached hierarchy state, refreshed top-down whenever the parent or activeSelf changes.
   _scene: Scene | null = null;
@@ -168,6 +168,11 @@ export class GameObject {
   /** Attached components in order (not including the transform). */
   get components(): readonly Component[] {
     return this._components;
+  }
+
+  /** The attached behaviours (a new array each call). */
+  get behaviours(): Behaviour[] {
+    return this.getComponents(Behaviour);
   }
 
   /** Creates a component, applies `init` and attaches it. */
@@ -356,7 +361,6 @@ export class GameObject {
     o._activeSelf = this._activeSelf;
     o._castShadows = this._castShadows;
     for (const c of this._components) o.attachComponent(c.clone());
-    o.behaviours = this.behaviours.map((b) => b.clone());
     if (this._groups) for (const g of this._groups) o.addToGroup(g);
     for (const c of this.children) o.add(c.clone());
     return o;
@@ -378,27 +382,58 @@ export class GameObject {
     return copy;
   }
 
-  /** Destroys an object (with its descendants) or a single component. */
+  /**
+   * Destroys an object (with its descendants) or a single component. In a running scene this is deferred: the target
+   * is marked at once (it leaves Scene.query() and gets no further callbacks), and onDisable → onDestroy run and it is
+   * detached at the end of the frame (Scene.processDestroyed). Elsewhere it happens immediately.
+   */
   static destroy(target: GameObject | Component): void {
+    if (target.isDestroyed) return;
+    const obj = target instanceof Component ? (target.attached ? target.gameObject : null) : target;
     if (target instanceof Component) {
-      if (target.isDestroyed) return;
       target._destroyed = true;
       target._sync();
+    } else {
+      target._markDestroyed();
+    }
+    const scene = obj?._scene;
+    if (scene?.running) scene._queueDestroy(target);
+    else GameObject._finishDestroy(target);
+  }
+
+  /** Runs the destroy callbacks and detaches `target`. Called by destroy() or at the end of the frame. */
+  static _finishDestroy(target: GameObject | Component): void {
+    if (target instanceof Component) {
+      if (target instanceof Behaviour) teardown(target);
       if (target.attached) target.gameObject.detachComponent(target);
+      target._disposed();
       Signal.disconnectOwner(target);
       return;
     }
-    if (target._destroyed) return;
+    const behaviours: Behaviour[] = [];
+    target.traverse((o) => void o.getComponents(Behaviour, behaviours));
+    for (const b of behaviours) if (b._enabledCalled) disable(b);
+    for (const b of behaviours) if (b._awoken) destroyHook(b);
     target.parent?.remove(target);
-    target._markDestroyed();
+    target._dispose();
   }
 
+  // Sets the destroyed flags for the whole subtree first, so the following sync sees every component as destroyed.
   private _markDestroyed(): void {
-    this._destroyed = true;
-    for (const c of this.children) c._markDestroyed();
+    this.traverse((o) => {
+      o._destroyed = true;
+      for (const c of o._components) c._destroyed = true;
+    });
+    this._refreshState();
+    this.traverse((o) => {
+      for (const c of o._components) c._sync();
+    });
+  }
+
+  private _dispose(): void {
+    for (const c of this.children) c._dispose();
     for (const c of this._components) {
-      c._destroyed = true;
-      c._sync();
+      c._disposed();
       Signal.disconnectOwner(c);
     }
     this._destroyedSignal?.emit(this);
@@ -459,9 +494,25 @@ export class Scene {
   /** TypeScript behaviour scripts available to this scene's objects. */
   readonly scripts = new ScriptLibrary();
 
+  /** Emitted when a behaviour's hook throws (the behaviour is then paused). Without listeners the error is logged. */
+  readonly behaviourError = new Signal<[behaviour: Behaviour, error: unknown, hook: string]>();
+
   // Live components by class, for every class in each component's prototype chain below Component.
   private readonly _registry = new Map<ComponentClass<Component>, Component[]>();
   private readonly _groups = new Map<string, GameObject[]>();
+
+  // Behaviour lifecycle while running. Dispatch lists only hold started, enabled behaviours whose class overrides
+  // the hook; removals during a dispatch leave a null that is compacted afterwards.
+  private _running = false;
+  private readonly _startQueue: Behaviour[] = [];
+  private readonly _updateList: (Behaviour | null)[] = [];
+  private readonly _fixedList: (Behaviour | null)[] = [];
+  private readonly _lateList: (Behaviour | null)[] = [];
+  private _dispatching = 0;
+  private _holes = false;
+  private readonly _destroyQueue: (GameObject | Component)[] = [];
+  // Fixed-step clock for the update() convenience; the engine drives the phases with Time instead.
+  private readonly _clock = new Clock();
 
   constructor() {
     this.root._makeSceneRoot(this);
@@ -523,16 +574,162 @@ export class Scene {
     updateSubtree(this.root);
   }
 
-  /** Runs behaviours and physics (when playing) and refreshes world matrices. */
+  // ---- behaviour lifecycle
+
+  /** Whether behaviours run (Play). */
+  get running(): boolean {
+    return this._running;
+  }
+
+  /**
+   * Starts or stops running behaviours. Starting wakes every live behaviour (awake, then onEnable; start comes before
+   * its first update). Stopping runs onDisable and onDestroy and forgets lifecycle state, so the next start begins
+   * with awake again.
+   */
+  setRunning(running: boolean): void {
+    if (running === this._running) return;
+    const all: Behaviour[] = [];
+    this.root.traverse((o) => void o.getComponents(Behaviour, all));
+    if (running) {
+      this._running = true;
+      this._clock.reset();
+      for (const b of all) b._sync();
+      return;
+    }
+    this.processDestroyed();
+    for (const b of all) if (b._enabledCalled) disable(b);
+    for (const b of all) if (b._awoken) destroyHook(b);
+    this._running = false;
+    for (const b of all) b._resetLifecycle();
+    this._startQueue.length = this._updateList.length = this._fixedList.length = this._lateList.length = 0;
+  }
+
+  /** One fixed step: start pending behaviours, fixedUpdate, then physics. */
+  fixedUpdate(fixedDt: number): void {
+    if (!this._running) return;
+    this._flushStarts();
+    this._dispatch(this._fixedList, HOOK_FIXED_UPDATE, fixedDt, 0);
+    this.physics.step(this, fixedDt);
+  }
+
+  /** Starts pending behaviours, then runs update(dt, time). */
+  updateBehaviours(dt: number, time: number): void {
+    if (!this._running) return;
+    this._flushStarts();
+    this._dispatch(this._updateList, HOOK_UPDATE, dt, time);
+  }
+
+  lateUpdate(dt: number): void {
+    if (!this._running) return;
+    this._dispatch(this._lateList, HOOK_LATE_UPDATE, dt, 0);
+  }
+
+  /** Finishes destroys requested during the frame (onDisable → onDestroy → detach). The engine calls it last. */
+  processDestroyed(): void {
+    const q = this._destroyQueue;
+    for (let i = 0; i < q.length; i++) GameObject._finishDestroy(q[i]);
+    q.length = 0;
+  }
+
+  /**
+   * Runs one whole frame with the scene's own fixed-step clock: when playing, fixed steps, update and lateUpdate;
+   * then world matrices and pending destroys. Handy for tools and tests; the engine drives the phases itself.
+   */
   update(dt: number, time: number, playing: boolean): void {
     if (playing) {
-      this.traverse((o) => {
-        if (!o.activeInHierarchy) return false;
-        for (const b of o.behaviours) if (b.enabled) b.update(o, dt, time);
-      });
-      this.physics.update(this, dt);
+      this.setRunning(true);
+      const steps = this._clock.beginFrame(dt);
+      for (let i = 0; i < steps; i++) {
+        this.fixedUpdate(this._clock.fixedDeltaTime);
+        this._clock.fixedStepDone();
+      }
+      this.updateBehaviours(dt, time);
+      this.lateUpdate(dt);
     }
     this.updateMatrices();
+    this.processDestroyed();
+  }
+
+  _queueStart(b: Behaviour): void {
+    if (b._startQueued) return;
+    b._startQueued = true;
+    this._startQueue.push(b);
+  }
+
+  _queueDestroy(target: GameObject | Component): void {
+    this._destroyQueue.push(target);
+  }
+
+  _addToLists(b: Behaviour): void {
+    if (b._inLists) return;
+    b._inLists = true;
+    const hooks = b._hooks();
+    if (hooks & HOOK_UPDATE) this._updateList.push(b);
+    if (hooks & HOOK_FIXED_UPDATE) this._fixedList.push(b);
+    if (hooks & HOOK_LATE_UPDATE) this._lateList.push(b);
+  }
+
+  _removeFromLists(b: Behaviour): void {
+    if (!b._inLists) return;
+    b._inLists = false;
+    this._removeFrom(this._updateList, b);
+    this._removeFrom(this._fixedList, b);
+    this._removeFrom(this._lateList, b);
+  }
+
+  private _removeFrom(list: (Behaviour | null)[], b: Behaviour): void {
+    const i = list.indexOf(b);
+    if (i < 0) return;
+    if (this._dispatching > 0) {
+      list[i] = null;
+      this._holes = true;
+    } else {
+      list.splice(i, 1);
+    }
+  }
+
+  // Behaviours queued while starting others start in the same flush (before anyone's first update).
+  private _flushStarts(): void {
+    const q = this._startQueue;
+    for (let i = 0; i < q.length; i++) {
+      const b = q[i];
+      b._startQueued = false;
+      if (!b._enabledCalled || b._started || b._destroyed || b._lifeScene !== this) continue;
+      b._started = true;
+      b._invoke('start');
+      if (b._started && b._enabledCalled && !b._destroyed && b._lifeScene === this) this._addToLists(b);
+    }
+    q.length = 0;
+  }
+
+  // Behaviours added during a dispatch first run in the next one (the loop stops at the length it started with).
+  private _dispatch(list: (Behaviour | null)[], hook: number, a: number, b: number): void {
+    this._dispatching++;
+    const end = list.length;
+    try {
+      for (let i = 0; i < end; i++) {
+        const beh = list[i];
+        if (beh === null || beh._failed) continue;
+        try {
+          if (hook === HOOK_UPDATE) beh.update(a, b);
+          else if (hook === HOOK_FIXED_UPDATE) beh.fixedUpdate(a);
+          else beh.lateUpdate(a);
+        } catch (err) {
+          beh._fail(err, hook === HOOK_UPDATE ? 'update' : hook === HOOK_FIXED_UPDATE ? 'fixedUpdate' : 'lateUpdate');
+        }
+      }
+    } finally {
+      if (--this._dispatching === 0 && this._holes) this._compact();
+    }
+  }
+
+  private _compact(): void {
+    this._holes = false;
+    for (const list of [this._updateList, this._fixedList, this._lateList]) {
+      let j = 0;
+      for (let i = 0; i < list.length; i++) if (list[i] !== null) list[j++] = list[i];
+      list.length = j;
+    }
   }
 
   _register(c: Component): void {
@@ -563,6 +760,22 @@ export class Scene {
     const i = list ? list.indexOf(obj) : -1;
     if (i >= 0) list!.splice(i, 1);
   }
+}
+
+function disable(b: Behaviour): void {
+  b._enabledCalled = false;
+  b._lifeScene?._removeFromLists(b);
+  b._invoke('onDisable');
+}
+
+function destroyHook(b: Behaviour): void {
+  b._awoken = false;
+  b._invoke('onDestroy');
+}
+
+function teardown(b: Behaviour): void {
+  if (b._enabledCalled) disable(b);
+  if (b._awoken) destroyHook(b);
 }
 
 function updateSubtree(obj: GameObject): void {

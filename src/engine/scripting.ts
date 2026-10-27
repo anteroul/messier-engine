@@ -9,46 +9,6 @@ import * as api from './index';
 /** Module name scripts import the engine API from: `import { Script, vec3 } from 'messier'`. */
 export const SCRIPT_MODULE = 'messier';
 
-/**
- * Base class for TypeScript behaviour scripts. A script's default export
- * extends this; public number fields become inspector parameters.
- */
-export class Script {
-  /** The object this script is attached to. Set before start(). */
-  object!: GameObject;
-
-  /** Called when Play mode starts, before the first update. */
-  start(): void {}
-
-  /** Called every frame in Play mode. `time` is seconds since Play started. */
-  update(_dt: number, _time: number): void {}
-
-  /** The scene the object is in: findByName(), traverse(), activeCamera(), physics, background… */
-  get scene(): Scene {
-    const scene = attached(this, 'this.scene').scene;
-    if (!scene) throw new Error(`'${this.object.name}' is not in a scene`);
-    return scene;
-  }
-
-  /** First object in the scene with this name. */
-  find(name: string): GameObject | null {
-    let root = attached(this, 'this.find()');
-    while (root.parent) root = root.parent;
-    let found: GameObject | null = null;
-    root.traverse((o) => {
-      if (found) return false;
-      if (o.name === name && o !== root) found = o;
-    });
-    return found;
-  }
-}
-
-// Field initializers run before `object` is set, which would otherwise fail with an unhelpful TypeError.
-function attached(script: Script, what: string): GameObject {
-  if (!script.object) throw new Error(`${what} is available from start() on, not in field initializers`);
-  return script.object;
-}
-
 export interface ScriptDiagnostic {
   kind: 'compile' | 'runtime';
   message: string;
@@ -85,6 +45,8 @@ export class ScriptAsset {
   /** The source that `ctor` was compiled from, or that the last failed compile saw. */
   compiledSource: string | null = null;
   library: ScriptLibrary | null = null;
+  /** Script components created from this asset; they adopt each newly compiled class. */
+  readonly _instances = new Set<Script>();
   /** sourceURL of the active class, used to map stack traces to source lines. */
   private url = '';
   private pendingUrl = '';
@@ -92,6 +54,21 @@ export class ScriptAsset {
   constructor(name: string, source: string) {
     this.name = name;
     this.source = source;
+  }
+
+  /**
+   * A new Script component running this asset, with inspector `overrides` of the field defaults. Before the asset
+   * has compiled it's a plain Script that turns into the real class on the first successful compile.
+   */
+  create(overrides: Record<string, number> = {}): Script {
+    let s: Script;
+    try {
+      s = this.ctor ? new this.ctor() : new Script();
+    } catch {
+      s = new Script();
+    }
+    s._bindAsset(this, overrides, true);
+    return s;
   }
 
   get compileError(): ScriptDiagnostic | null {
@@ -109,6 +86,7 @@ export class ScriptAsset {
       this.defaults = defaults;
       this.url = this.pendingUrl;
       this.version++;
+      for (const s of [...this._instances]) s._hotSwap();
       return true;
     } catch (err) {
       this.diagnostics = [this.toDiagnostic(err, 'compile', undefined, this.pendingUrl)];
@@ -237,120 +215,165 @@ export class ScriptLibrary {
 }
 
 /**
- * Component that runs a ScriptAsset. Parameters edited in the inspector are
- * stored as overrides of the script's field defaults, so changing a default in
- * code updates every object that hasn't overridden it.
+ * Base class for TypeScript behaviour scripts: `export default class Spin extends Script { … }`. A Script is a
+ * Behaviour with every lifecycle hook, plus the `object`, `scene` and `find()` shortcuts and the link to the
+ * ScriptAsset it was compiled from. Public number fields become inspector parameters; values edited there are kept
+ * as overrides of the defaults in code.
  */
-export class ScriptBehaviour extends Behaviour {
-  overrides: Record<string, number>;
-  /** The live script object while playing. */
-  instance: Script | null = null;
-  /** Runtime error that paused this behaviour; cleared when the script recompiles or Play restarts. */
-  error: ScriptDiagnostic | null = null;
-  private version = 0;
-  /** False until the instance's start() returns; a hot swap re-instantiates instead of resuming a half-started instance. */
-  private started = false;
-  private obj: GameObject | null = null;
+export class Script extends Behaviour {
+  private _asset: ScriptAsset | null = null;
+  private _overrides: Record<string, number> = {};
+  private _error: ScriptDiagnostic | null = null;
+  private _version = -1;
 
-  constructor(
-    readonly asset: ScriptAsset,
-    overrides: Record<string, number> = {},
-  ) {
-    super({});
-    this.overrides = { ...overrides };
-    // Inspector-facing view: keys are the script's current fields, values are override ?? default.
-    this.params = new Proxy({} as Record<string, number>, {
-      get: (_t, k) => (typeof k === 'string' && k in this.asset.defaults ? (this.overrides[k] ?? this.asset.defaults[k]) : undefined),
-      set: (_t, k, v) => {
-        if (typeof k !== 'string') return false;
-        this.overrides[k] = v;
-        if (this.instance) (this.instance as unknown as Record<string, unknown>)[k] = v;
-        return true;
-      },
-      has: (_t, k) => typeof k === 'string' && k in this.asset.defaults,
-      ownKeys: () => Object.keys(this.asset.defaults),
-      getOwnPropertyDescriptor: (_t, k) =>
-        typeof k === 'string' && k in this.asset.defaults
-          ? { value: this.overrides[k] ?? this.asset.defaults[k], writable: true, enumerable: true, configurable: true }
-          : undefined,
+  /** The object this script is attached to (same as gameObject). */
+  get object(): GameObject {
+    return this.gameObject;
+  }
+
+  /** The scene the object is in: findByName(), query(), getGroup(), activeCamera(), physics, background… */
+  get scene(): Scene {
+    const obj = attached(this, 'this.scene');
+    const scene = obj.scene;
+    if (!scene) throw new Error(`'${obj.name}' is not in a scene`);
+    return scene;
+  }
+
+  /** First object in the scene with this name. */
+  find(name: string): GameObject | null {
+    let root = attached(this, 'this.find()');
+    while (root.parent) root = root.parent;
+    let found: GameObject | null = null;
+    root.traverse((o) => {
+      if (found) return false;
+      if (o.name === name && o !== root) found = o;
     });
+    return found;
   }
 
-  get type(): string {
-    return this.asset.name;
+  /** The asset this script runs. */
+  get asset(): ScriptAsset | null {
+    return this._asset;
   }
 
-  start(obj: GameObject): void {
-    this.obj = obj;
-    this.error = null;
-    this.instance = null;
-    this.started = false;
-    this.version = this.asset.version;
-    this.instantiate(obj);
+  /** Parameter values set in the inspector, by field name. */
+  get overrides(): Readonly<Record<string, number>> {
+    return this._overrides;
   }
 
-  update(obj: GameObject, dt: number, time: number): void {
-    if (this.asset.version !== this.version) this.hotSwap(obj);
-    const inst = this.instance;
-    if (!inst || this.error) return;
-    try {
-      inst.update(dt, time);
-    } catch (err) {
-      this.fail(err, obj);
-    }
+  /** The runtime error that paused this script, until it recompiles or the scene restarts. */
+  get error(): ScriptDiagnostic | null {
+    return this._error;
   }
 
-  clone(): ScriptBehaviour {
-    const b = new ScriptBehaviour(this.asset, this.overrides);
-    b.enabled = this.enabled;
-    return b;
+  get typeName(): string {
+    return this._asset?.name ?? super.typeName;
   }
 
-  private instantiate(obj: GameObject): void {
-    const ctor = this.asset.ctor;
-    if (!ctor) return;
-    try {
-      const inst = new ctor();
-      this.applyParams(inst);
-      inst.object = obj;
-      this.instance = inst;
-      this.started = false;
-      inst.start();
-      this.started = true;
-    } catch (err) {
-      this.fail(err, obj);
-    }
+  paramNames(): string[] {
+    return this._asset ? Object.keys(this._asset.defaults) : super.paramNames();
+  }
+
+  getParam(name: string): number | undefined {
+    if (!this._asset) return super.getParam(name);
+    return name in this._asset.defaults ? (this._overrides[name] ?? this._asset.defaults[name]) : undefined;
+  }
+
+  setParam(name: string, value: number): void {
+    this._overrides[name] = value;
+    super.setParam(name, value);
+  }
+
+  /** Copies the current field values and keeps the asset link and overrides. */
+  clone(): Script {
+    const c = super.clone() as Script;
+    c._bindAsset(this._asset, this._overrides, false);
+    return c;
+  }
+
+  _bindAsset(asset: ScriptAsset | null, overrides: Readonly<Record<string, number>>, applyFields: boolean): void {
+    this._asset?._instances.delete(this);
+    this._asset = asset;
+    this._overrides = { ...overrides };
+    this._version = asset?.version ?? -1;
+    asset?._instances.add(this);
+    if (applyFields) this._applyOverrides();
+  }
+
+  _disposed(): void {
+    this._asset?._instances.delete(this);
+  }
+
+  _fail(err: unknown, hook: Parameters<Behaviour['_fail']>[1]): void {
+    const asset = this._asset;
+    if (!asset) return super._fail(err, hook);
+    this._failed = true;
+    // A start() that threw runs again (on a fresh state) once the script is fixed.
+    if (hook === 'start') this._started = false;
+    this._error = asset.toDiagnostic(err, 'runtime', this.attached ? this.gameObject.name : undefined);
+    asset.reportRuntimeError(this._error);
+  }
+
+  _resetLifecycle(): void {
+    super._resetLifecycle();
+    this._error = null;
   }
 
   /**
-   * The script was recompiled while playing: keep the running instance (and
-   * its state) but give it the new methods, plus any newly added fields.
+   * Adopts the asset's newly compiled class in place, so references to this component stay valid. A running script
+   * keeps its state and only gains new fields; one that hasn't started (or whose start() threw) is reset to the new
+   * defaults and starts again, and so is a script outside a running scene.
    */
-  private hotSwap(obj: GameObject): void {
-    this.version = this.asset.version;
-    const ctor = this.asset.ctor;
-    const inst = this.instance;
-    this.error = null;
-    if (!ctor) return;
-    if (!inst || !this.started) return this.instantiate(this.obj ?? obj);
+  _hotSwap(): void {
+    const asset = this._asset;
+    const ctor = asset?.ctor;
+    if (!asset || !ctor || this._version === asset.version) return;
+    this._version = asset.version;
+    let fresh: Record<string, unknown>;
     try {
-      const fresh = new ctor() as unknown as Record<string, unknown>;
-      const target = inst as unknown as Record<string, unknown>;
-      for (const k of Object.keys(fresh)) if (!(k in target)) target[k] = fresh[k];
-      Object.setPrototypeOf(inst, ctor.prototype);
-      this.applyParams(inst);
+      fresh = new ctor() as unknown as Record<string, unknown>;
     } catch (err) {
-      this.fail(err, obj);
+      this._fail(err, 'awake');
+      return;
+    }
+    const base = baseKeys();
+    const target = this as unknown as Record<string, unknown>;
+    const placeholder = Object.getPrototypeOf(this) === Script.prototype;
+    const keepState = this._awoken && this._started && !placeholder;
+    for (const k of Object.keys(fresh)) if (!base.has(k) && (!keepState || !(k in target))) target[k] = fresh[k];
+
+    // The class changes, so so does the set of registry lists and per-frame hooks it belongs in.
+    const registered = this._registeredIn;
+    registered?._unregister(this);
+    const lists = this._inLists ? this._lifeScene : null;
+    lists?._removeFromLists(this);
+    Object.setPrototypeOf(this, ctor.prototype);
+    registered?._register(this);
+    this._applyOverrides();
+    this._failed = false;
+    this._error = null;
+    if (!keepState) this._started = false;
+    if (this._enabledCalled && this._lifeScene) {
+      if (this._started) this._lifeScene._addToLists(this);
+      else this._lifeScene._queueStart(this);
     }
   }
 
-  private applyParams(inst: Script): void {
-    const target = inst as unknown as Record<string, unknown>;
-    for (const [k, v] of Object.entries(this.overrides)) if (k in this.asset.defaults) target[k] = v;
-  }
-
-  private fail(err: unknown, obj: GameObject): void {
-    this.error = this.asset.toDiagnostic(err, 'runtime', obj.name);
-    this.asset.reportRuntimeError(this.error);
+  private _applyOverrides(): void {
+    const defaults = this._asset?.defaults ?? {};
+    for (const [k, v] of Object.entries(this._overrides)) if (k in defaults) super.setParam(k, v);
   }
 }
+
+let scriptBaseKeys: Set<string> | null = null;
+/** Fields every Script has (engine state), which a hot swap must never overwrite. */
+function baseKeys(): Set<string> {
+  return (scriptBaseKeys ??= new Set(Object.keys(new Script())));
+}
+
+// Field initializers run before the script is attached, which would otherwise fail with a less helpful message.
+function attached(script: Script, what: string): GameObject {
+  if (!script.attached) throw new Error(`${what} is available from start() on, not in field initializers`);
+  return script.gameObject;
+}
+

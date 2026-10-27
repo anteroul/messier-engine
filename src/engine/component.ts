@@ -82,6 +82,9 @@ export abstract class Component {
     return out;
   }
 
+  /** Called once when the destruction completes (after onDestroy for behaviours). */
+  _disposed(): void {}
+
   /** Called by GameObject when this component is attached to or detached from it. */
   _setOwner(obj: GameObject | null): void {
     this._gameObject = obj;

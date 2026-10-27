@@ -5,7 +5,7 @@ import {
   DEG2RAD,
   PROJECTIONS,
   RAD2DEG,
-  ScriptBehaviour,
+  Script,
   Texture,
   createBehaviour,
   fitCollider,
@@ -260,10 +260,10 @@ export class InspectorPanel {
       if (v.startsWith('builtin:')) ed.addBehaviour(obj, createBehaviour(v.slice(8)));
       else if (v.startsWith('script:')) {
         const asset = scripts.find((sc) => `script:${sc.id}` === v);
-        if (asset) ed.addBehaviour(obj, new ScriptBehaviour(asset));
+        if (asset) ed.addBehaviour(obj, asset.create());
       } else if (v === 'new-script') {
         const asset = ed.createScript(`${obj.name} Script`);
-        ed.addBehaviour(obj, new ScriptBehaviour(asset));
+        ed.addBehaviour(obj, asset.create());
         ed.setView('scripts', asset);
       }
     });
@@ -273,11 +273,11 @@ export class InspectorPanel {
       const enabled = el('input', { type: 'checkbox', title: 'Enabled' });
       enabled.checked = b.enabled;
       enabled.addEventListener('change', () => (b.enabled = enabled.checked));
-      const isScript = b instanceof ScriptBehaviour;
+      const asset = b instanceof Script ? b.asset : null;
       const header = el('div', { class: 'behaviour-header' }, [
         enabled,
-        el('span', { class: isScript ? 'behaviour-script' : undefined, text: isScript ? `${b.type}.ts` : b.type }),
-        isScript ? button('Edit', () => ed.setView('scripts', b.asset), 'btn btn-small edit-script') : null,
+        el('span', { class: asset ? 'behaviour-script' : undefined, text: asset ? `${b.typeName}.ts` : b.typeName }),
+        asset ? button('Edit', () => ed.setView('scripts', asset), 'btn btn-small edit-script') : null,
         button('✕', () => ed.removeBehaviour(obj, b), 'btn btn-small'),
       ]);
       const box = el('div', { class: 'behaviour' }, [header]);
@@ -286,11 +286,11 @@ export class InspectorPanel {
         box.append(r.row);
         this.add(r.binding);
       }
-      if (b instanceof ScriptBehaviour) {
+      if (b instanceof Script && asset) {
         const status = el('p', { class: 'hint behaviour-status' });
         this.add({
           sync: () => {
-            const a = b.asset;
+            const a = asset;
             const compile = a.compileError;
             let text = '', cls = 'hint behaviour-status';
             if (b.error) {

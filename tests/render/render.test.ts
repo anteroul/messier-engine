@@ -186,7 +186,7 @@ const check = (name: string, ok: boolean, info = '') => {
 
 // ---- behaviour scripts: compile, parameters, runtime errors, hot reload
 {
-  const { GameObject, ScriptAsset, ScriptBehaviour } = engine;
+  const { GameObject, ScriptAsset } = engine;
   const source = `import { Script, vec3, type Vec3 } from 'messier';
 
 export default class Mover extends Script {
@@ -209,12 +209,10 @@ export default class Mover extends Script {
   check('script compiles', ok && asset.diagnostics.length === 0, JSON.stringify(asset.diagnostics));
   check('script fields become params', JSON.stringify(asset.defaults) === '{"speed":2}', JSON.stringify(asset.defaults));
   const obj = world.add(new GameObject('Mover obj'));
-  const b = new ScriptBehaviour(asset, { speed: 4 });
-  obj.behaviours.push(b);
+  const b = obj.attachComponent(asset.create({ speed: 4 }));
   check('script param overrides', b.params.speed === 4 && Object.keys(b.params).join() === 'speed' && b.clone().params.speed === 4);
   const reported: any[] = [];
   world.scripts.onRuntimeError = (_s: any, d: any) => reported.push(d);
-  b.start(obj);
   // 0.4 per step; the 4th update moves to 1.6 and then throws, which pauses the behaviour.
   for (let i = 0; i < 10; i++) world.update(0.1, i * 0.1, true);
   const x = obj.transform.position[0];
@@ -227,7 +225,7 @@ export default class Mover extends Script {
   asset.source = source.replace('if (p[0] > 1) (null as any).boom();', 'this.object.transform.position[1] = this.steps;');
   check('script recompiles', asset.compile());
   world.update(0.1, 1, true);
-  const steps = (b.instance as any).steps;
+  const steps = (b as any).steps;
   check('script hot reload keeps state', b.error === null && steps === 5 && obj.transform.position[1] === 5, `steps=${steps} y=${obj.transform.position[1]}`);
 
   // Scripts reach their scene through the hierarchy.
@@ -239,9 +237,7 @@ export default class SceneProbe extends Script {
   check('scene probe compiles', probe.compile(), JSON.stringify(probe.diagnostics));
   const holder = world.add(new GameObject('Holder'));
   const nested = holder.add(new GameObject('Nested'));
-  const pb = new ScriptBehaviour(probe);
-  nested.behaviours.push(pb);
-  pb.start(nested);
+  const pb = nested.attachComponent(probe.create());
   world.update(0.1, 1.1, true);
   check('script sees its scene', nested.transform.position[2] === 7 && nested.scene === world, `z=${nested.transform.position[2]} err=${pb.error?.message}`);
   world.remove(holder);
@@ -256,15 +252,14 @@ export default class Starter extends Script {
 }
 `));
   check('starter compiles', starter.compile(), JSON.stringify(starter.diagnostics));
-  const sb = new ScriptBehaviour(starter);
   const starterObj = world.add(new GameObject('Starter obj'));
-  starterObj.behaviours.push(sb);
+  const sb = starterObj.attachComponent(starter.create());
   const target = world.add(new GameObject('Target'));
-  sb.start(starterObj);
+  world.update(0.1, 1.15, true);
   check('script start() error pauses', sb.error !== null);
   starter.source = starter.source.replace("'Taget'", "'Target'");
   starter.compile();
-  sb.update(starterObj, 0.1, 1.2);
+  world.update(0.1, 1.2, true);
   check('fixed start() re-runs on hot swap', sb.error === null && target.transform.position[0] === 9, `err=${sb.error?.message}`);
 
   // Field initializers can't reach the scene yet; the compile error says so.
@@ -433,7 +428,7 @@ check('OBJ triangles', ico.children.reduce((n: number, c: any) => n + c.mesh.tri
 
 // ---- keyboard input: edge state lasts one update, axes, and a script reading it
 {
-  const { GameObject, ScriptAsset, ScriptBehaviour, InputState, input } = engine;
+  const { GameObject, ScriptAsset, InputState, input } = engine;
   const k = new InputState();
   k.keyDown('KeyW');
   k.keyDown('KeyW'); // auto-repeat
@@ -467,9 +462,7 @@ export default class Player extends Script {
 `));
   check('input script compiles', asset.compile(), JSON.stringify(asset.diagnostics));
   const obj = world.add(new GameObject('Player'));
-  const b = new ScriptBehaviour(asset);
-  obj.behaviours.push(b);
-  b.start(obj);
+  const b = obj.attachComponent(asset.create());
   input.reset();
   input.keyDown('KeyD');
   input.keyDown('ArrowUp');
@@ -480,17 +473,16 @@ export default class Player extends Script {
   }
   input.reset();
   const [x, , z] = obj.transform.position;
-  const jumps = (b.instance as any).jumps;
+  const jumps = (b as any).jumps;
   check('input drives a script', Math.abs(x - 1) < 1e-6 && Math.abs(z + 1) < 1e-6 && jumps === 1 && !b.error, `x=${x} z=${z} jumps=${jumps}`);
 }
 
 // Animate a bit so behaviours run.
-scene.traverse((o: any) => o.behaviours.forEach((b: any) => b.start(o)));
 for (let i = 0; i < 30; i++) scene.update(1 / 60, i / 60, true);
 {
   const glow = scene.findByName('Glow Orb');
   const hover = glow.behaviours[0];
-  check('demo script runs', hover?.type === 'Hover' && !hover.error && Math.abs(glow.transform.position[0] - -1) > 0.05, glow.transform.position.map((v: number) => v.toFixed(3)).join(','));
+  check('demo script runs', hover?.typeName === 'Hover' && !hover.error && Math.abs(glow.transform.position[0] - -1) > 0.05, glow.transform.position.map((v: number) => v.toFixed(3)).join(','));
 }
 
 const camera = new Camera();

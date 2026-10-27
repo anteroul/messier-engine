@@ -298,8 +298,7 @@ export default class Walker extends Script {
 `);
   ed.compileScript(s);
   const o = ed.engine.scene.findByName('Empty');
-  const ScriptBehaviour = o.behaviours[0].constructor; // EmptyScript's
-  ed.addBehaviour(o, new ScriptBehaviour(s));
+  ed.addBehaviour(o, s.create());
   ed.setMode('translate');
 });
 await page.click('[data-action="play"]');

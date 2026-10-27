@@ -4,7 +4,7 @@ import { Light, LIGHT_FIELDS, LIGHT_TYPE_INDEX } from './light';
 import { CameraComponent, CAMERA_FIELDS, PROJECTIONS } from './camera';
 import { BODY_TYPES, COLLIDER_SHAPES, RigidBody, RIGID_BODY_FIELDS } from './physics';
 import { BEHAVIOURS, createBehaviour, type Behaviour } from './behaviours';
-import { ScriptBehaviour } from './scripting';
+import { Script } from './scripting';
 import type { Mesh, ResourceRef } from './mesh';
 import { quat, type Quat, type Vec3 } from './math';
 import { assignKnown, isObject, pickData, type Json } from './data';
@@ -126,8 +126,8 @@ function objectToData(o: GameObject, warnings: string[]): ObjectData {
 }
 
 function behaviourToData(b: Behaviour): BehaviourData {
-  if (b instanceof ScriptBehaviour) return { script: b.asset.name, enabled: b.enabled, overrides: { ...b.overrides } };
-  return { type: b.type, enabled: b.enabled, params: { ...b.params } };
+  if (b instanceof Script && b.asset) return { script: b.asset.name, enabled: b.enabled, overrides: { ...b.overrides } };
+  return { type: b.typeName, enabled: b.enabled, params: { ...b.params } };
 }
 
 // --- Load ---------------------------------------------------------------------
@@ -197,7 +197,7 @@ function dataToObject(d: Json, scene: Scene, res: SceneResources, warnings: stri
   if (Array.isArray(d.behaviours)) {
     for (const bd of d.behaviours) {
       const b = isObject(bd) ? dataToBehaviour(bd, scene, o.name, warnings) : null;
-      if (b) o.behaviours.push(b);
+      if (b) o.attachComponent(b);
     }
   }
   if (Array.isArray(d.children)) {
@@ -220,7 +220,7 @@ function dataToBehaviour(d: Json, scene: Scene, owner: string, warnings: string[
       warnings.push(`${owner}: script "${d.script}" not found`);
       return null;
     }
-    b = new ScriptBehaviour(asset, numbers(d.overrides));
+    b = asset.create(numbers(d.overrides));
   } else if (typeof d.type === 'string' && d.type in BEHAVIOURS) {
     b = createBehaviour(d.type);
     for (const [k, v] of Object.entries(numbers(d.params))) if (k in b.params) b.params[k] = v;
