@@ -7,7 +7,8 @@ import {
   RigidBody,
   ScriptAsset,
   ScriptBehaviour,
-  Transform,
+  IDENTITY_TRS,
+  type LocalTRS,
   colliderCorners,
   fitCollider,
   getPrimitive,
@@ -49,7 +50,7 @@ export type EditorView = 'scene' | 'scripts';
 const SCROLL_KEYS = new Set(['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End']);
 
 interface PlaySnapshot {
-  transform: Transform;
+  transform: LocalTRS;
   lightColor?: Vec3;
   lightIntensity?: number;
   velocity?: Vec3;
@@ -100,7 +101,7 @@ export class Editor {
   private pointerStart: [number, number] = [0, 0];
   private pointerLast: [number, number] = [0, 0];
   private readonly keys = new Set<string>();
-  private transformBefore: Transform | null = null;
+  private transformBefore: LocalTRS | null = null;
   private playSnapshot: Map<GameObject, PlaySnapshot> | null = null;
   private cameraViewBeforePlay = false;
   private lastStats: RenderStats | null = null;
@@ -204,9 +205,9 @@ export class Editor {
     if (obj === parent || obj.isAncestorOf(parent) || obj.parent === parent) return;
     const oldParent = obj.parent ?? this.scene.root;
     const oldIndex = oldParent.children.indexOf(obj);
-    const oldTransform = obj.transform.clone();
+    const oldTransform = obj.transform.snapshot();
     obj.setParentKeepWorld(parent);
-    const newTransform = obj.transform.clone();
+    const newTransform = obj.transform.snapshot();
     this.history.push({
       label: `Parent ${obj.name}`,
       undo: () => {
@@ -225,20 +226,20 @@ export class Editor {
 
   resetTransform(obj: GameObject): void {
     this.beginTransformEdit(obj);
-    obj.transform.copyFrom(new Transform());
+    obj.transform.copyFrom(IDENTITY_TRS);
     this.commitTransformEdit(obj);
   }
 
   /** Snapshot taken at the start of a gizmo drag or inspector edit. */
   beginTransformEdit(obj: GameObject): void {
-    this.transformBefore = obj.transform.clone();
+    this.transformBefore = obj.transform.snapshot();
   }
 
   commitTransformEdit(obj: GameObject): void {
     const before = this.transformBefore;
     this.transformBefore = null;
     if (!before) return;
-    const after = obj.transform.clone();
+    const after = obj.transform.snapshot();
     const same =
       vec3.equals(before.position, after.position) &&
       vec3.equals(before.scale, after.scale) &&
@@ -459,7 +460,6 @@ export class Editor {
       this.controls.focus([0, 0.5, 0], 4);
       return;
     }
-    obj.updateWorldMatrix(obj.parent?.computeWorldMatrix() ?? null);
     const b = worldBounds(obj);
     if (b) this.controls.focus(vec3.lerp(b.min, b.max, 0.5), Math.max(0.5, vec3.distance(b.min, b.max) / 2));
     else this.controls.focus(obj.worldPosition(), 1.5);
@@ -568,7 +568,6 @@ export class Editor {
 
   /** Scales models authored in very large / small units to a few meters. */
   private normalizeImportedScale(model: GameObject): void {
-    model.updateWorldMatrix(null);
     const b = worldBounds(model);
     if (!b) return;
     const size = Math.max(b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]);
@@ -578,7 +577,6 @@ export class Editor {
       this.notify(`${model.name}: rescaled ×${s.toPrecision(3)} to fit the scene`);
     }
     // Rest the model on the ground.
-    model.updateWorldMatrix(null);
     const nb = worldBounds(model);
     if (nb) model.transform.position = vec3.add(model.transform.position, [0, -nb.min[1], 0]);
   }
@@ -597,7 +595,7 @@ export class Editor {
     const snap = new Map<GameObject, PlaySnapshot>();
     this.scene.traverse((o) => {
       snap.set(o, {
-        transform: o.transform.clone(),
+        transform: o.transform.snapshot(),
         lightColor: o.light ? vec3.clone(o.light.color) : undefined,
         lightIntensity: o.light?.intensity,
         velocity: o.rigidBody ? vec3.clone(o.rigidBody.velocity) : undefined,

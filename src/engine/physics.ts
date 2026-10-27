@@ -175,7 +175,7 @@ function readPose(obj: GameObject): Pose {
   // Top-level objects (parent = the never-transformed scene root) skip the float32 matrices for precision.
   if (!obj.parent?.parent) return { position: vec3.clone(local.position), rotation: quat.normalize(local.rotation), scale: absVec(local.scale) };
   const parentWorld = obj.parent.computeWorldMatrix();
-  const { s } = mat4.decompose(mat4.multiply(parentWorld, local.localMatrix()));
+  const { s } = mat4.decompose(mat4.multiply(parentWorld, local.localMatrix));
   return { position: vec3.transformPoint(parentWorld, local.position), rotation: obj.worldRotation(), scale: absVec(s) };
 }
 

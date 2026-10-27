@@ -1,4 +1,5 @@
-import { mat4, quat, vec3, type Mat4, type Quat, type Vec3 } from './math';
+import { mat4, type Mat4, type Quat, type Vec3 } from './math';
+import { Transform } from './transform';
 import type { Mesh } from './mesh';
 import type { Material } from './material';
 import type { Light } from './light';
@@ -11,43 +12,13 @@ let nextId = 1;
 // Scene of each scene root, so objects can find their scene through the hierarchy.
 const rootScenes = new WeakMap<GameObject, Scene>();
 
-export class Transform {
-  position: Vec3 = [0, 0, 0];
-  rotation: Quat = [0, 0, 0, 1];
-  scale: Vec3 = [1, 1, 1];
-
-  setEulerDeg(x: number, y: number, z: number): this {
-    this.rotation = quat.fromEulerDeg(x, y, z);
-    return this;
-  }
-
-  getEulerDeg(): Vec3 {
-    return quat.toEulerDeg(this.rotation);
-  }
-
-  localMatrix(out?: Mat4): Mat4 {
-    return mat4.fromTRS(this.position, this.rotation, this.scale, out);
-  }
-
-  copyFrom(t: Transform): this {
-    this.position = vec3.clone(t.position);
-    this.rotation = quat.clone(t.rotation);
-    this.scale = vec3.clone(t.scale);
-    return this;
-  }
-
-  clone(): Transform {
-    return new Transform().copyFrom(this);
-  }
-}
-
 /** A node in the scene graph. Components are plain optional fields. */
 export class GameObject {
   readonly id = nextId++;
   name: string;
-  transform = new Transform();
-  parent: GameObject | null = null;
-  readonly children: GameObject[] = [];
+  readonly transform: Transform = new Transform(this);
+  /** Child objects, in order. Change it through add()/remove() or transform.setParent(). */
+  readonly children: readonly GameObject[] = [];
   visible = true;
 
   mesh: Mesh | null = null;
@@ -58,40 +29,31 @@ export class GameObject {
   behaviours: Behaviour[] = [];
   rigidBody: RigidBody | null = null;
 
-  /** Updated by Scene.updateMatrices(). */
-  readonly worldMatrix: Mat4 = mat4.create();
-  readonly normalMatrix: Mat4 = mat4.create();
-
   constructor(name = 'GameObject') {
     this.name = name;
   }
 
-  add(child: GameObject, index = this.children.length): GameObject {
-    if (child === this || child.isAncestorOf(this)) throw new Error('Cannot parent an object to its own descendant');
-    child.parent?.remove(child);
-    child.parent = this;
-    this.children.splice(index, 0, child);
+  get parent(): GameObject | null {
+    return this.transform.parent?.gameObject ?? null;
+  }
+
+  /** Adds `child` at `index` (default: last), keeping its local transform. */
+  add(child: GameObject, index?: number): GameObject {
+    child.transform.setParent(this.transform, false, index);
     return child;
   }
 
   remove(child: GameObject): void {
-    const i = this.children.indexOf(child);
-    if (i >= 0) {
-      this.children.splice(i, 1);
-      child.parent = null;
-    }
+    if (child.parent === this) child.transform.setParent(null, false);
   }
 
   isAncestorOf(other: GameObject): boolean {
-    for (let p = other.parent; p; p = p.parent) if (p === this) return true;
-    return false;
+    return this.transform.isAncestorOf(other.transform);
   }
 
   /** The scene this object is in (through its root), or null when detached. */
   get scene(): Scene | null {
-    let root: GameObject = this;
-    while (root.parent) root = root.parent;
-    return rootScenes.get(root) ?? null;
+    return rootScenes.get(this.transform.root.gameObject) ?? null;
   }
 
   /** True when this object and all its ancestors are visible. */
@@ -105,58 +67,45 @@ export class GameObject {
     for (const c of this.children) c.traverse(fn);
   }
 
-  updateWorldMatrix(parentWorld: Mat4 | null): void {
-    this.transform.localMatrix(this.worldMatrix);
-    if (parentWorld) mat4.multiply(parentWorld, this.worldMatrix, this.worldMatrix);
-    mat4.normalMatrix(this.worldMatrix, this.normalMatrix);
-    for (const c of this.children) c.updateWorldMatrix(this.worldMatrix);
+  /** World matrix (cached and always current; don't modify). */
+  get worldMatrix(): Mat4 {
+    return this.transform.worldMatrix;
   }
 
-  /** World matrix computed on demand (does not rely on the cached matrix being fresh). */
+  get normalMatrix(): Mat4 {
+    return this.transform.normalMatrix;
+  }
+
+  /** A copy of the world matrix. */
   computeWorldMatrix(): Mat4 {
-    const m = this.transform.localMatrix();
-    return this.parent ? mat4.multiply(this.parent.computeWorldMatrix(), m) : m;
+    return mat4.clone(this.transform.worldMatrix);
   }
 
   worldPosition(): Vec3 {
-    return mat4.getTranslation(this.computeWorldMatrix());
+    return this.transform.worldPosition;
   }
 
   worldRotation(): Quat {
-    let q = quat.clone(this.transform.rotation);
-    for (let p = this.parent; p; p = p.parent) q = quat.multiply(p.transform.rotation, q);
-    return quat.normalize(q);
+    return this.transform.worldRotation;
   }
 
   /** Direction the object faces (local -Z) in world space. */
   forward(): Vec3 {
-    return vec3.normalize(quat.rotateVec3(this.worldRotation(), [0, 0, -1]));
+    return this.transform.forward;
   }
 
   /** Sets the world-space position, converting into the parent's space. */
   setWorldPosition(p: Vec3): void {
-    if (!this.parent) {
-      this.transform.position = vec3.clone(p);
-      return;
-    }
-    const inv = mat4.invert(this.parent.computeWorldMatrix());
-    this.transform.position = inv ? vec3.transformPoint(inv, p) : vec3.clone(p);
+    this.transform.worldPosition = p;
   }
 
   setWorldRotation(q: Quat): void {
-    const parentRot = this.parent ? this.parent.worldRotation() : quat.identity();
-    this.transform.rotation = quat.normalize(quat.multiply(quat.invert(parentRot), q));
+    this.transform.worldRotation = q;
   }
 
   /** Re-parents while keeping the current world transform. */
   setParentKeepWorld(parent: GameObject, index?: number): void {
-    const world = this.computeWorldMatrix();
-    parent.add(this, index);
-    const parentInv = mat4.invert(parent.computeWorldMatrix()) ?? mat4.create();
-    const { t, r, s } = mat4.decompose(mat4.multiply(parentInv, world));
-    this.transform.position = t;
-    this.transform.rotation = r;
-    this.transform.scale = s;
+    this.transform.setParent(parent.transform, true, index);
   }
 
   /** Deep copy. Meshes and textures are shared; materials, lights, cameras, behaviours and rigid bodies are copied. */
@@ -230,8 +179,9 @@ export class Scene {
     return best;
   }
 
+  /** Brings every world matrix up to date in one top-down pass (world matrices are also correct when read lazily). */
   updateMatrices(): void {
-    for (const c of this.root.children) c.updateWorldMatrix(null);
+    updateSubtree(this.root);
   }
 
   /** Runs behaviours and physics (when playing) and refreshes world matrices. */
@@ -244,4 +194,9 @@ export class Scene {
     }
     this.updateMatrices();
   }
+}
+
+function updateSubtree(obj: GameObject): void {
+  obj.transform.updateWorld();
+  for (const c of obj.children) updateSubtree(c);
 }
