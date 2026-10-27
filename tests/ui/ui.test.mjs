@@ -195,13 +195,13 @@ await page.$eval('#gpu-canvas', (e) => e.focus());
 await page.keyboard.down('Control');
 await page.keyboard.press('KeyD');
 await page.keyboard.up('Control');
-check('duplicate', (await state(() => window.editor.selected?.name)) === 'Point Light copy');
+check('duplicate', (await state(() => window.editor.selected?.name)) === 'Point Light (1)');
 await page.keyboard.press('Delete');
-check('delete', (await state(() => !window.engine.scene.findByName('Point Light copy'))));
+check('delete', (await state(() => !window.engine.scene.findByName('Point Light (1)'))));
 await page.keyboard.down('Control');
 await page.keyboard.press('KeyZ');
 await page.keyboard.up('Control');
-check('undo delete', (await state(() => !!window.engine.scene.findByName('Point Light copy'))));
+check('undo delete', (await state(() => !!window.engine.scene.findByName('Point Light (1)'))));
 
 // --- Play mode runs behaviours and restores on stop
 const rot0 = await state(() => [...window.engine.scene.findByName('Spinning Cube').transform.rotation]);

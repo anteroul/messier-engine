@@ -7,6 +7,7 @@ export class HierarchyPanel {
   private dirty = true;
   private readonly collapsed = new Set<number>();
   private readonly rows = new Map<GameObject, HTMLElement>();
+  private readonly rowObjects = new WeakMap<HTMLElement, GameObject>();
   private dragged: GameObject | null = null;
 
   constructor(
@@ -27,6 +28,13 @@ export class HierarchyPanel {
     container.tabIndex = 0;
     container.addEventListener('click', (e) => {
       if (!(e.target as HTMLElement).closest('.tree-row')) this.editor.selection.clear();
+    });
+    container.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      const row = (e.target as HTMLElement).closest<HTMLElement>('.tree-row');
+      // Focus first, so the menu hands focus back here and the panel's shortcuts keep working afterwards.
+      container.focus({ preventScroll: true });
+      this.editor.openHierarchyMenu(row ? (this.rowObjects.get(row) ?? null) : null, e.clientX, e.clientY);
     });
   }
 
@@ -107,6 +115,7 @@ export class HierarchyPanel {
       this.dragged = null;
     });
     this.rows.set(obj, row);
+    this.rowObjects.set(row, obj);
     return row;
   }
 

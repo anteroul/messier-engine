@@ -39,6 +39,8 @@ import {
 import { Gizmo, type GizmoMode, type Handle } from './gizmo';
 import { History } from './history';
 import { Selection } from './selection';
+import { ObjectActions } from './objectActions';
+import { ContextMenu, type MenuEntry, type MenuItem } from './contextMenu';
 import { HierarchyPanel } from './hierarchy';
 import { InspectorPanel } from './inspector';
 import { OrbitControls } from './orbitControls';
@@ -87,6 +89,8 @@ export class Editor {
   readonly project: ProjectManager;
   /** What's selected (hierarchy, inspector and viewport share it). */
   readonly selection = new Selection();
+  /** Hierarchy editing (create, cut/copy/paste, duplicate, delete, visibility) on the selection. */
+  readonly actions: ObjectActions;
   showHelpers = true;
   view: EditorView = 'scene';
   /** Look through the scene's active camera instead of the editor camera (turned on by Play). */
@@ -117,6 +121,17 @@ export class Editor {
     this.scripts = new ScriptsView(this, ui.scriptsView);
     this.history.onChange = () => this.updateToolbar();
     this.selection.changed.connect(() => this.selectionChanged());
+    const editor = this;
+    this.actions = new ObjectActions({
+      get scene() {
+        return editor.scene;
+      },
+      get history() {
+        return editor.history;
+      },
+      selection: this.selection,
+      objectsChanged: () => this.hierarchy.markDirty(),
+    });
     this.project = new ProjectManager(this);
     // Toolbar only: rebuilding the inspector here would steal focus from a field being edited.
     this.project.onChange = () => this.updateToolbar();
@@ -159,55 +174,81 @@ export class Editor {
 
   /** Adds an object to the scene as an undoable action and selects it. */
   addObject(obj: GameObject, parent: GameObject = this.scene.root, label = `Add ${obj.name}`): GameObject {
-    parent.add(obj);
-    const index = parent.children.indexOf(obj);
-    this.history.push({
-      label,
-      undo: () => {
-        parent.remove(obj);
-        this.selection.retain((o) => o !== obj && !obj.isAncestorOf(o));
-        this.hierarchy.markDirty();
-      },
-      redo: () => {
-        parent.add(obj, Math.min(index, parent.children.length));
-        this.hierarchy.markDirty();
-      },
-    });
-    this.hierarchy.markDirty();
-    this.select(obj);
-    return obj;
+    return this.actions.add(obj, parent, label);
   }
 
+  /** Deletes the selected objects (one undo step). */
   deleteSelected(): void {
-    const obj = this.selected;
-    if (!obj || !obj.parent) return;
-    const parent = obj.parent;
-    const index = parent.children.indexOf(obj);
-    parent.remove(obj);
-    this.select(null);
-    this.hierarchy.markDirty();
-    this.history.push({
-      label: `Delete ${obj.name}`,
-      undo: () => {
-        parent.add(obj, Math.min(index, parent.children.length));
-        this.hierarchy.markDirty();
-        this.select(obj);
-      },
-      redo: () => {
-        parent.remove(obj);
-        if (this.selected === obj) this.select(null);
-        this.hierarchy.markDirty();
-      },
-    });
+    this.actions.delete();
   }
 
+  /** Duplicates the selected objects, each copy right after its original (one undo step). */
   duplicateSelected(): void {
-    const obj = this.selected;
-    if (!obj || !obj.parent) return;
-    const copy = obj.clone();
-    copy.name = `${obj.name} copy`;
-    copy.transform.position = vec3.add(copy.transform.position, [0.5, 0, 0.5]);
-    this.addObject(copy, obj.parent, `Duplicate ${obj.name}`);
+    this.actions.duplicate();
+  }
+
+  undo(): void {
+    this.history.undo();
+    this.hierarchy.markDirty();
+  }
+
+  redo(): void {
+    this.history.redo();
+    this.hierarchy.markDirty();
+  }
+
+  /**
+   * Opens the hierarchy's context menu at client coordinates. `target` is the object under the cursor (null over
+   * empty space): right-clicking an unselected object selects just it, a selected one keeps the selection.
+   */
+  openHierarchyMenu(target: GameObject | null, x: number, y: number): ContextMenu {
+    if (target && !this.selection.has(target)) this.select(target);
+    const a = this.actions;
+    const has = () => a.hasSelection;
+    // Over an object, new objects become its children; over empty space they go to the root.
+    const parent = target ?? undefined;
+    const create = (label: string, make: (p?: GameObject) => GameObject): MenuItem => ({ label, action: () => make(parent) });
+    const entries: MenuEntry[] = [
+      { label: 'Undo', shortcut: 'Mod+Z', enabled: () => this.history.canUndo, action: () => this.undo() },
+      { label: 'Redo', shortcut: 'Mod+Shift+Z', enabled: () => this.history.canRedo, action: () => this.redo() },
+      'separator',
+      {
+        label: 'Create',
+        children: [
+          create('Empty', (p) => this.createEmpty(p)),
+          'separator',
+          create('Cube', (p) => this.createPrimitive('cube', p)),
+          create('Sphere', (p) => this.createPrimitive('sphere', p)),
+          create('Plane', (p) => this.createPrimitive('plane', p)),
+          create('Cylinder', (p) => this.createPrimitive('cylinder', p)),
+          create('Torus', (p) => this.createPrimitive('torus', p)),
+          'separator',
+          create('Point Light', (p) => this.createLight('point', p)),
+          create('Spot Light', (p) => this.createLight('spot', p)),
+          create('Directional Light', (p) => this.createLight('directional', p)),
+          'separator',
+          create('Camera', (p) => this.createCamera(p)),
+        ],
+      },
+      'separator',
+      { label: 'Cut', shortcut: 'Mod+X', enabled: has, action: () => a.cut() },
+      { label: 'Copy', shortcut: 'Mod+C', enabled: has, action: () => a.copy() },
+      { label: 'Paste', shortcut: 'Mod+V', enabled: () => a.canPaste, action: () => a.paste() },
+      { label: 'Paste as Child', shortcut: 'Mod+Shift+V', enabled: () => a.canPaste && !!this.selected, action: () => a.paste(true) },
+      'separator',
+      { label: 'Duplicate', shortcut: 'Mod+D', enabled: has, action: () => a.duplicate() },
+      { label: 'Delete', shortcut: 'Delete', enabled: has, action: () => a.delete() },
+      'separator',
+      { label: 'Visible', checked: () => a.visibleState() ?? false, enabled: has, action: () => a.toggleVisible() },
+    ];
+    return ContextMenu.open(entries, x, y);
+  }
+
+  /** Selects every object in the scene, in tree order. */
+  selectAll(): void {
+    const all: GameObject[] = [];
+    this.scene.traverse((o) => void all.push(o));
+    this.selection.selectAll(all);
   }
 
   /** Moves `obj` under `parent`, keeping its world transform. Undoable. */
@@ -477,16 +518,20 @@ export class Editor {
     this.updateToolbar();
   }
 
-  createPrimitive(kind: PrimitiveKind): GameObject {
+  /**
+   * The create* functions add at the scene root in front of the camera, or with `parent` at its local origin.
+   * Undoable; the new object is selected.
+   */
+  createPrimitive(kind: PrimitiveKind, parent?: GameObject): GameObject {
     const names: Record<PrimitiveKind, string> = { cube: 'Cube', sphere: 'Sphere', plane: 'Plane', cylinder: 'Cylinder', torus: 'Torus' };
     const obj = new GameObject(names[kind]);
     obj.mesh = getPrimitive(kind);
     obj.material = new Material(`${names[kind]} material`, { baseColor: [0.8, 0.8, 0.8, 1], roughness: 0.5 });
     obj.transform.position = this.spawnPoint(kind === 'plane' ? 0 : 0.5);
-    return this.addObject(obj);
+    return this.addCreated(obj, parent);
   }
 
-  createLight(type: LightType): GameObject {
+  createLight(type: LightType, parent?: GameObject): GameObject {
     const names: Record<LightType, string> = { directional: 'Directional Light', point: 'Point Light', spot: 'Spot Light' };
     const obj = new GameObject(names[type]);
     obj.light = new Light(type);
@@ -494,16 +539,16 @@ export class Editor {
     obj.transform.position = this.spawnPoint(type === 'directional' ? 4 : 2.5);
     if (type !== 'point') obj.transform.setEulerDeg(-60, 30, 0);
     if (type === 'directional') obj.light.castShadows = !this.scene.find((o) => !!o.light?.castShadows);
-    return this.addObject(obj);
+    return this.addCreated(obj, parent);
   }
 
   /** Adds a camera on the ground in front of the view, looking the way the editor camera does. */
-  createCamera(): GameObject {
+  createCamera(parent?: GameObject): GameObject {
     const obj = new GameObject('Camera');
     obj.camera = new CameraComponent();
     obj.transform.position = this.spawnPoint(1.5);
     obj.transform.rotation = quat.lookRotation(this.camera.forward());
-    return this.addObject(obj);
+    return this.addCreated(obj, parent);
   }
 
   /** Moves an object to the editor camera's position and orientation. Undoable. */
@@ -529,10 +574,18 @@ export class Editor {
     this.updateToolbar();
   }
 
-  createEmpty(): GameObject {
+  createEmpty(parent?: GameObject): GameObject {
     const obj = new GameObject('Empty');
     obj.transform.position = this.spawnPoint(0);
-    return this.addObject(obj);
+    return this.addCreated(obj, parent);
+  }
+
+  private addCreated(obj: GameObject, parent?: GameObject): GameObject {
+    if (!parent) return this.addObject(obj);
+    // A child starts at its parent's origin, keeping its own orientation (lights point down, cameras ahead).
+    obj.transform.position = [0, 0, 0];
+    obj.transform.rotation = quat.normalize(quat.multiply(quat.invert(parent.worldRotation()), obj.transform.rotation));
+    return this.addObject(obj, parent);
   }
 
   /** Point on the ground plane in front of the camera. */
@@ -931,6 +984,11 @@ export class Editor {
     );
   }
 
+  private objectsHaveFocus(): boolean {
+    const a = document.activeElement;
+    return a === this.ui.canvas || (a instanceof Node && this.ui.hierarchy.contains(a));
+  }
+
   private bindKeyboard(): void {
     window.addEventListener('keydown', (e) => {
       const mod = e.ctrlKey || e.metaKey;
@@ -976,20 +1034,28 @@ export class Editor {
       }
       if (mod && e.code === 'KeyZ') {
         e.preventDefault();
-        if (e.shiftKey) this.history.redo();
-        else this.history.undo();
-        this.hierarchy.markDirty();
+        if (e.shiftKey) this.redo();
+        else this.undo();
         return;
       }
       if (mod && e.code === 'KeyY') {
         e.preventDefault();
-        this.history.redo();
-        this.hierarchy.markDirty();
+        this.redo();
         return;
       }
       if (mod && e.code === 'KeyD') {
         e.preventDefault();
         this.duplicateSelected();
+        return;
+      }
+      // Clipboard and Select All act on objects only while the hierarchy or the viewport has focus, so Ctrl+C
+      // keeps its usual meaning elsewhere (e.g. copying text).
+      if (mod && !e.altKey && ['KeyC', 'KeyX', 'KeyV', 'KeyA'].includes(e.code) && this.objectsHaveFocus()) {
+        e.preventDefault();
+        if (e.code === 'KeyC') this.actions.copy();
+        else if (e.code === 'KeyX') this.actions.cut();
+        else if (e.code === 'KeyV') this.actions.paste(e.shiftKey);
+        else this.selectAll();
         return;
       }
       if (mod) return;
