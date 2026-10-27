@@ -305,3 +305,21 @@ const frame = (s: Scene) => {
   eq('a detached prefab never wakes; its instance does', take(), ['P.awake', 'P.onEnable', 'P.start', 'P.update', 'P.lateUpdate']);
   check('instance is a separate component', copy.getComponent(Logger) !== prefab.getComponent(Logger));
 }
+
+// ---- Scene.clone: a separate copy to run, sharing settings and scripts
+{
+  const scene = new Scene();
+  scene.background = [0.1, 0.2, 0.3];
+  scene.physics.gravity = [0, -5, 0];
+  const o = scene.add(new GameObject('o'));
+  add(o, 'orig');
+  const copy = scene.clone();
+  check('clone shares the script library and copies settings', copy.scripts === scene.scripts && copy.background[2] === 0.3 && copy.background !== scene.background && copy.physics.gravity[1] === -5);
+  const co = copy.findByName('o')!;
+  check('clone has its own objects and components', co !== o && co.getComponent(Logger) !== o.getComponent(Logger) && !copy.running);
+  copy.setRunning(true);
+  GameObject.destroy(co);
+  frame(copy);
+  check('running and destroying the copy leaves the original alone', o.parent === scene.root && !o.isDestroyed && !scene.running);
+  take();
+}

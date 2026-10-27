@@ -3,20 +3,29 @@ import { Scene, type GameObject } from './scene';
 import { Camera } from './camera';
 import { OverlayBuilder } from './overlay';
 import { input } from './input';
+import { Signal } from './signal';
+import { Time } from './time';
 
 export interface FrameInfo {
   dt: number;
   /** Seconds since the engine started. */
   time: number;
-  /** Seconds since Play mode started (0 when not playing). */
+  /** Seconds since Play mode started (Time.time; 0 when not playing). */
   playTime: number;
+  /** Fixed-step interpolation factor (Time.alpha). */
+  alpha: number;
 }
 
 type FrameCallback = (frame: FrameInfo) => void;
 
-/** Owns the main loop: update behaviours + physics -> world matrices -> hooks -> render. */
+/**
+ * Owns the main loop. Each frame, while playing: fixed steps (fixedUpdate, physics) → update → lateUpdate; then
+ * input edges reset, world matrices sync, hooks, render, and deferred destroys. Input itself arrives as DOM events
+ * between frames, so it's current before the frame starts.
+ */
 export class Engine {
-  readonly scene = new Scene();
+  /** Emitted after the active scene changes. */
+  readonly sceneChanged = new Signal<[scene: Scene, previous: Scene]>();
   /** Free view (the editor's viewport camera), used when no scene camera is in use. */
   readonly camera = new Camera();
   /** Render through the scene's active camera (Scene.activeCamera) when it has one, instead of `camera`. */
@@ -28,8 +37,8 @@ export class Engine {
   showGrid = true;
   fps = 0;
 
+  private _scene = new Scene();
   private time = 0;
-  private playTime = 0;
   private last = 0;
   private frameHandle = 0;
   private fpsAccum = 0;
@@ -50,6 +59,28 @@ export class Engine {
     return this.viewObject ? this.sceneView : this.camera;
   }
 
+  /** The active scene: the one that updates and renders. */
+  get scene(): Scene {
+    return this._scene;
+  }
+
+  /**
+   * Makes `scene` the active one. While playing, the previous scene stops running (onDisable/onDestroy) and the new
+   * one starts. Scenes are plain objects, so keep the ones you want to return to.
+   */
+  setActiveScene(scene: Scene): void {
+    const prev = this._scene;
+    if (scene === prev) return;
+    if (this.playing) {
+      prev.setRunning(false);
+      scene.physics.reset(scene);
+      scene.setRunning(true);
+    }
+    this._scene = scene;
+    this.viewObject = null;
+    this.sceneChanged.emit(scene, prev);
+  }
+
   onBeforeRender(cb: FrameCallback): void {
     this.beforeRenderHooks.push(cb);
   }
@@ -61,7 +92,7 @@ export class Engine {
   setPlaying(playing: boolean): void {
     if (playing === this.playing) return;
     this.playing = playing;
-    this.playTime = 0;
+    Time.reset();
     // Keys held across Play/Stop would otherwise stay down in the next session.
     input.reset();
     if (playing) this.scene.physics.reset(this.scene);
@@ -87,7 +118,6 @@ export class Engine {
 
   private step(dt: number): void {
     this.time += dt;
-    if (this.playing) this.playTime += dt;
     this.fpsAccum += dt;
     this.fpsFrames++;
     if (this.fpsAccum >= 0.5) {
@@ -96,24 +126,40 @@ export class Engine {
       this.fpsFrames = 0;
     }
 
-    this.scene.update(dt, this.playTime, this.playing);
+    const scene = this._scene;
+    if (this.playing) {
+      const steps = Time.beginFrame(dt);
+      for (let i = 0; i < steps; i++) {
+        scene.fixedUpdate(Time.fixedDeltaTime);
+        Time.fixedStepDone();
+      }
+      scene.updateBehaviours(Time.deltaTime, Time.time);
+      scene.lateUpdate(Time.deltaTime);
+    }
     input.endFrame();
+    scene.updateMatrices();
+    this.render(scene, dt);
+    scene.processDestroyed();
+  }
+
+  private render(scene: Scene, dt: number): void {
     // After the update, so a camera moved by a behaviour is rendered where it is now.
-    const camObj = this.useSceneCamera ? this.scene.activeCamera() : null;
+    const camObj = this.useSceneCamera ? scene.activeCamera() : null;
     this.viewObject = camObj;
     // Shadows are centered on view.target: put it where the shadow box covers most of what the camera sees.
-    camObj?.camera!.applyTo(this.sceneView, camObj.worldMatrix, this.scene.shadowExtent * 0.6);
+    camObj?.camera!.applyTo(this.sceneView, camObj.worldMatrix, scene.shadowExtent * 0.6);
     const view = this.view;
     const canvas = this.renderer.canvas;
     // Hidden viewport (e.g. the editor's Scripts tab): keep simulating, skip drawing.
     if (canvas.clientWidth === 0 || canvas.clientHeight === 0) return;
     view.aspect = canvas.clientWidth / Math.max(1, canvas.clientHeight);
     this.overlay.begin(view, canvas.clientHeight);
-    const frame: FrameInfo = { dt, time: this.time, playTime: this.playTime };
+    const frame: FrameInfo = { dt, time: this.time, playTime: this.playing ? Time.time : 0, alpha: this.playing ? Time.alpha : 0 };
     for (const cb of this.beforeRenderHooks) cb(frame);
 
-    const stats = this.renderer.render(this.scene, view, {
+    const stats = this.renderer.render(scene, view, {
       time: this.time,
+      alpha: frame.alpha,
       // The grid is an editing aid, not part of the game's view.
       grid: this.showGrid && !camObj,
       overlay: this.overlay,

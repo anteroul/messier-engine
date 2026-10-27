@@ -16,7 +16,6 @@ export const COLLIDER_SHAPES: readonly ColliderShape[] = ['box', 'sphere'];
 
 /** Flat meshes (planes) get a slab this thick (half extent) below the surface so things can rest on them. */
 const FLAT_HALF_EXTENT = 0.1;
-const MAX_SUBSTEPS = 8;
 /** Penetration (m) left uncorrected so resting contacts persist between steps. */
 const SLOP = 0.005;
 const BAUMGARTE = 0.2;
@@ -267,38 +266,22 @@ interface CachedImpulse {
 
 export class PhysicsWorld {
   gravity: Vec3 = [0, -9.81, 0];
-  /** Fixed simulation step in seconds. */
-  timeStep = 1 / 60;
   /** Solver iterations per step. More = stiffer stacks. */
   iterations = 10;
   /** Contacts in the last step (for stats). */
   contactCount = 0;
 
-  private accumulator = 0;
   private cache = new Map<string, CachedImpulse>();
   private bodyCount = 0;
 
   /** Forgets cached contacts and wakes every body. Called when Play starts. */
   reset(scene: Scene): void {
-    this.accumulator = 0;
     this.cache.clear();
     this.bodyCount = 0;
     scene.traverse((o) => o.rigidBody?.resetState());
   }
 
-  /** Advances the simulation by `dt` seconds of real time in fixed steps. */
-  update(scene: Scene, dt: number): void {
-    this.accumulator += dt;
-    let steps = 0;
-    while (this.accumulator >= this.timeStep && steps < MAX_SUBSTEPS) {
-      this.step(scene, this.timeStep);
-      this.accumulator -= this.timeStep;
-      steps++;
-    }
-    // Too slow to keep up: drop the backlog instead of spiralling.
-    if (steps === MAX_SUBSTEPS) this.accumulator = 0;
-  }
-
+  /** Advances the simulation by one fixed step of `h` seconds (Scene.fixedUpdate calls it). */
   step(scene: Scene, h: number): void {
     const bodies: Body[] = [];
     for (const rb of scene.query(RigidBody)) bodies.push(makeBody(rb.gameObject, rb, h));

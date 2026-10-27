@@ -32,6 +32,7 @@ import {
   type Ray,
   type ScriptSource,
   type RenderStats,
+  type Scene,
   type Vec3,
   type Vec4,
 } from '../engine';
@@ -49,14 +50,6 @@ export type EditorView = 'scene' | 'scripts';
 /** Game keys whose browser default (scrolling, activating the focused button) would fight the game. */
 const SCROLL_KEYS = new Set(['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End']);
 
-interface PlaySnapshot {
-  transform: LocalTRS;
-  lightColor?: Vec3;
-  lightIntensity?: number;
-  velocity?: Vec3;
-  angularVelocity?: Vec3;
-  camera?: CameraComponent;
-}
 
 const SELECTION_COLOR: Vec4 = [0.13, 0.83, 0.93, 0.9]; // --accent
 const COLLIDER_COLOR: Vec4 = [0.35, 1, 0.45, 0.85];
@@ -82,11 +75,11 @@ export interface EditorElements {
 
 /** Real-time scene editor: selection, gizmos, panels, undo/redo, play mode, import. */
 export class Editor {
-  readonly scene;
   readonly camera;
   readonly controls: OrbitControls;
   readonly gizmo: Gizmo;
-  readonly history = new History();
+  /** Undo history. Play gets a fresh one (its edits act on the play copy) and Stop brings the editing one back. */
+  history = new History();
   readonly hierarchy: HierarchyPanel;
   readonly inspector: InspectorPanel;
   readonly scripts: ScriptsView;
@@ -102,7 +95,9 @@ export class Editor {
   private pointerLast: [number, number] = [0, 0];
   private readonly keys = new Set<string>();
   private transformBefore: LocalTRS | null = null;
-  private playSnapshot: Map<GameObject, PlaySnapshot> | null = null;
+  /** The scene being edited, while Play runs a clone of it. */
+  private editScene: Scene | null = null;
+  private editHistory: History | null = null;
   private cameraViewBeforePlay = false;
   private lastStats: RenderStats | null = null;
   private statsTimer = 0;
@@ -111,7 +106,6 @@ export class Editor {
     readonly engine: Engine,
     private readonly ui: EditorElements,
   ) {
-    this.scene = engine.scene;
     this.camera = engine.camera;
     engine.useSceneCamera = false;
     this.controls = new OrbitControls(this.camera);
@@ -138,6 +132,11 @@ export class Editor {
 
   // ---------------------------------------------------------------------------
   // Selection & scene operations
+
+  /** The scene shown and edited: the engine's active scene (the play copy during Play). */
+  get scene(): Scene {
+    return this.engine.scene;
+  }
 
   select(obj: GameObject | null): void {
     if (this.selected === obj) return;
@@ -589,21 +588,18 @@ export class Editor {
   startPlay(): void {
     if (this.engine.playing) return;
     this.endActiveGesture();
-    const snap = new Map<GameObject, PlaySnapshot>();
-    this.scene.traverse((o) => {
-      snap.set(o, {
-        transform: o.transform.snapshot(),
-        lightColor: o.light ? vec3.clone(o.light.color) : undefined,
-        lightIntensity: o.light?.intensity,
-        velocity: o.rigidBody ? vec3.clone(o.rigidBody.velocity) : undefined,
-        angularVelocity: o.rigidBody ? vec3.clone(o.rigidBody.angularVelocity) : undefined,
-        camera: o.camera?.clone(),
-      });
-    });
-    this.playSnapshot = snap;
     for (const s of this.scene.scripts.scripts) s.clearRuntimeErrors();
-    this.scripts.refresh();
+    // Play runs a copy, so Stop restores everything (including objects created or destroyed by scripts) by
+    // switching back. Edits during Play go to the copy and get their own undo history.
+    const edit = this.scene;
+    const selected = pathOf(this.selected);
+    this.editScene = edit;
+    this.editHistory = this.history;
+    this.history = new History();
+    this.history.onChange = () => this.updateToolbar();
+    this.engine.setActiveScene(edit.clone());
     this.engine.setPlaying(true);
+    this.sceneSwitched(selected);
     // Play shows the game through its camera (when it has one) until Stop, unless toggled off meanwhile.
     this.cameraViewBeforePlay = this.cameraView;
     if (this.scene.activeCamera()) this.setCameraView(true);
@@ -615,21 +611,25 @@ export class Editor {
 
   stopPlay(): void {
     if (!this.engine.playing) return;
+    this.endActiveGesture();
+    const selected = pathOf(this.selected);
     this.engine.setPlaying(false);
-    for (const [o, s] of this.playSnapshot ?? []) {
-      o.transform.copyFrom(s.transform);
-      if (o.light && s.lightColor) o.light.color = s.lightColor;
-      if (o.light && s.lightIntensity !== undefined) o.light.intensity = s.lightIntensity;
-      if (o.rigidBody) {
-        if (s.velocity) o.rigidBody.velocity = s.velocity;
-        if (s.angularVelocity) o.rigidBody.angularVelocity = s.angularVelocity;
-        o.rigidBody.resetState();
-      }
-      if (o.camera && s.camera) o.camera.copyFrom(s.camera);
-    }
-    this.playSnapshot = null;
+    if (this.editScene) this.engine.setActiveScene(this.editScene);
+    if (this.editHistory) this.history = this.editHistory;
+    this.editScene = this.editHistory = null;
+    this.sceneSwitched(selected);
     this.setCameraView(this.cameraViewBeforePlay);
     document.body.classList.remove('playing');
+    this.updateToolbar();
+  }
+
+  /** After Play/Stop swapped scenes: select the counterpart of what was selected and rebuild the panels. */
+  private sceneSwitched(selectedPath: number[] | null): void {
+    this.selected = null;
+    this.hierarchy.markDirty();
+    this.select(selectedPath ? objectAt(this.scene.root, selectedPath) : null);
+    this.inspector.show(this.selected, true);
+    this.scripts.refresh();
     this.updateToolbar();
   }
 
@@ -1223,4 +1223,18 @@ function locateSyntaxError(code: string): { line: number; column: number } | nul
 
 function formatCount(n: number): string {
   return n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n);
+}
+
+/** Child indices from the scene root down to `obj` (null for no object or a detached one). */
+function pathOf(obj: GameObject | null): number[] | null {
+  if (!obj?.scene) return null;
+  const path: number[] = [];
+  for (let o: GameObject = obj; o.parent; o = o.parent) path.unshift(o.parent.children.indexOf(o));
+  return path;
+}
+
+function objectAt(root: GameObject, path: number[]): GameObject | null {
+  let o: GameObject | undefined = root;
+  for (const i of path) o = o?.children[i];
+  return o && o !== root ? o : null;
 }

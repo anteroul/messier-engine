@@ -488,6 +488,38 @@ for (let i = 0; i < 30; i++) scene.update(1 / 60, i / 60, true);
 const camera = new Camera();
 camera.aspect = W / H;
 
+// ---- engine frame order: fixed steps → update → lateUpdate → render → deferred destroys
+{
+  const { Engine, Behaviour, GameObject, Time } = engine;
+  // Its own canvas: the shared fake context is bound to the main renderer's device.
+  let tex: GPUTexture | null = null;
+  let dev: GPUDevice | null = null;
+  let fmt: GPUTextureFormat = 'bgra8unorm';
+  const ctx = {
+    configure(cfg: GPUCanvasConfiguration) {
+      dev = cfg.device;
+      fmt = cfg.format;
+    },
+    getCurrentTexture() {
+      return (tex ??= dev!.createTexture({ size: [64, 64], format: fmt, usage: GPUTextureUsage.RENDER_ATTACHMENT }));
+    },
+  };
+  const eng = await Engine.create({ clientWidth: 64, clientHeight: 64, width: 0, height: 0, getContext: () => ctx } as any);
+  const order: string[] = [];
+  class Probe extends Behaviour {
+    fixedUpdate() { order.push('fixed'); }
+    update() { order.push('update'); }
+    lateUpdate() { order.push('late'); GameObject.destroy(this.gameObject); }
+    onDestroy() { order.push('destroy'); }
+  }
+  eng.scene.add(new GameObject('probe')).addComponent(Probe);
+  eng.onBeforeRender(() => order.push('render'));
+  eng.setPlaying(true);
+  (eng as any).step(2.5 / 60);
+  check('engine frame order', order.join() === 'fixed,fixed,update,late,render,destroy' && Time.frameCount === 1, order.join());
+  eng.setPlaying(false);
+}
+
 // ---- raycast through the screen-space position of the spinning cube
 const cube = scene.findByName('Spinning Cube');
 const sp = camera.worldToScreen(cube.worldPosition(), W, H)!;

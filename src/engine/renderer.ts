@@ -28,6 +28,11 @@ const TEXTURE_FORMAT: GPUTextureFormat = 'rgba8unorm-srgb';
 
 export interface RenderOptions {
   time?: number;
+  /**
+   * How far the frame is between two fixed steps (Time.alpha, 0…1), for blending physics poses. Passed through
+   * for renderers that interpolate; this one draws the current poses.
+   */
+  alpha?: number;
   grid?: boolean;
   overlay?: OverlayBuilder | null;
 }

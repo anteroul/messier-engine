@@ -491,8 +491,8 @@ export class Scene {
   /** Half extent (world units) of the directional shadow frustum. */
   shadowExtent = 16;
   readonly physics = new PhysicsWorld();
-  /** TypeScript behaviour scripts available to this scene's objects. */
-  readonly scripts = new ScriptLibrary();
+  /** TypeScript behaviour scripts available to this scene's objects (shared with clones). */
+  readonly scripts: ScriptLibrary;
 
   /** Emitted when a behaviour's hook throws (the behaviour is then paused). Without listeners the error is logged. */
   readonly behaviourError = new Signal<[behaviour: Behaviour, error: unknown, hook: string]>();
@@ -514,8 +514,26 @@ export class Scene {
   // Fixed-step clock for the update() convenience; the engine drives the phases with Time instead.
   private readonly _clock = new Clock();
 
-  constructor() {
+  constructor(scripts = new ScriptLibrary()) {
+    this.scripts = scripts;
     this.root._makeSceneRoot(this);
+  }
+
+  /**
+   * A copy to run (the editor plays a clone so Stop can throw it away): same settings and script library, every
+   * object cloned with GameObject.clone(). The copy isn't running.
+   */
+  clone(): Scene {
+    const s = new Scene(this.scripts);
+    s.ambientColor = [...this.ambientColor];
+    s.ambientIntensity = this.ambientIntensity;
+    s.background = [...this.background];
+    s.exposure = this.exposure;
+    s.shadowExtent = this.shadowExtent;
+    s.physics.gravity = [...this.physics.gravity];
+    s.physics.iterations = this.physics.iterations;
+    for (const c of this.root.children) s.add(c.clone());
+    return s;
   }
 
   /** The top-level objects. */

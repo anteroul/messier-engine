@@ -222,6 +222,23 @@ check('stop restores transforms', rot0.every((v, i) => Math.abs(v - rot2[i]) < 1
 check('stop restores rigid body pose', (await state(() => window.engine.scene.findByName('Cube').transform.position[1])) === 3);
 check('stop restores scripted object', (await state(() => window.engine.scene.findByName('Empty').transform.position[1])) === 0);
 
+// --- Play runs a copy: objects destroyed or created during Play come back / go away on Stop
+await page.click('[data-action="play"]');
+await sleep(100);
+const duringPlay = await state(() => {
+  const { engine } = window;
+  const GO = engine.scene.root.constructor;
+  GO.destroy(engine.scene.findByName('Torus'));
+  GO.instantiate(engine.scene.findByName('Ball')).name = 'Spawned';
+  return { editing: window.editor.scene === engine.scene };
+});
+await sleep(100);
+const midPlay = await state(() => [!!window.engine.scene.findByName('Torus'), !!window.engine.scene.findByName('Spawned')]);
+await page.click('[data-action="play"]');
+await sleep(50);
+const afterStop = await state(() => [!!window.engine.scene.findByName('Torus'), !!window.engine.scene.findByName('Spawned')]);
+check('play runs on a copy that stop discards', duringPlay.editing && midPlay.join() === 'false,true' && afterStop.join() === 'true,false', JSON.stringify({ midPlay, afterStop }));
+
 // --- Script runtime error: reported with its source line, behaviour paused, nothing on the console
 await state(() => {
   const ed = window.editor;
