@@ -15,6 +15,8 @@
   --x: #f0525a;
   --y: #74d64d;
   --z: #528cff;
+  --hover: #202224;
+  --shadow: 0 8px 24px #0008;
   color-scheme: dark;
   font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
   font-size: 13px;
@@ -123,7 +125,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 4px;
-  box-shadow: 0 8px 24px #0008;
+  box-shadow: var(--shadow);
   display: flex;
   flex-direction: column;
 }
@@ -267,7 +269,7 @@ body.view-scripts #inspector-panel {
   border-left: 2px solid transparent;
 }
 .tree-row:hover {
-  background: #202224;
+  background: var(--hover);
 }
 .tree-row.selected {
   background: var(--accent-dim);
@@ -955,4 +957,59 @@ input.script-name {
 }
 .tk-priv {
   color: #e6a5c3;
+}
+
+/* ---------------- Context menu (contextMenu.ts) ---------------- */
+.context-menu {
+  position: fixed;
+  z-index: 100;
+  min-width: 210px;
+  padding: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font: inherit;
+  user-select: none;
+}
+.context-menu:focus {
+  outline: none;
+}
+.context-menu-item {
+  display: grid;
+  grid-template-columns: 14px 1fr auto;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 5px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.context-menu-item:focus {
+  outline: none;
+  background: var(--accent-dim);
+}
+.context-menu-item[aria-expanded='true'] {
+  background: var(--accent-dim);
+}
+.context-menu-item[aria-disabled='true'] {
+  color: var(--muted);
+  opacity: 0.55;
+  cursor: default;
+}
+.context-menu-check {
+  color: var(--accent);
+  text-align: center;
+}
+.context-menu-shortcut {
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: right;
+}
+.context-menu-separator {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--border);
 }
