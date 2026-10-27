@@ -34,7 +34,11 @@ nix develop .#tests -c node .claude/skills/run/shot.mjs \
 - Every run uses a fresh browser profile, so the **demo scene** loads, not an
   autosave.
 - With no `--url`, it starts its own Vite server on port 5198 (override with `RUN_PORT`).
-  Pass `--url http://localhost:5173/` to reuse a dev server that's already running.
+  Pass `--url http://localhost:5173/` to reuse a dev server that's already running. The script waits up to
+  30 s for that server to answer.
+- To check the **production build** (minified, with `_` properties mangled), run `npm run build`, start
+  `node node_modules/vite/bin/vite.js preview --port 4173` in the background (inside `nix shell nixpkgs#nodejs_22`),
+  and pass `--url http://localhost:4173/`. Stop the preview server afterwards.
 - Use a descriptive `--out` name when you take several shots. `tests/.out/`
   is scratch output.
 

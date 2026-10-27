@@ -56,20 +56,21 @@ if (!url) {
   const port = Number(process.env.RUN_PORT ?? 5198);
   url = `http://localhost:${port}/`;
   vite = spawn(process.execPath, [viteBin, '--port', String(port), '--strictPort'], { cwd: root, stdio: 'ignore' });
-  const deadline = Date.now() + 30_000;
-  for (;;) {
-    try {
-      if ((await fetch(url)).ok) break;
-    } catch {
-      /* not up yet */
-    }
-    if (Date.now() > deadline) {
-      vite.kill();
-      console.error(`Vite dev server did not start on port ${port} (is it already in use? set RUN_PORT)`);
-      process.exit(1);
-    }
-    await new Promise((r) => setTimeout(r, 250));
+}
+// Wait for the server (ours, or one started just before, like `vite preview` in the background).
+const deadline = Date.now() + 30_000;
+for (;;) {
+  try {
+    if ((await fetch(url)).ok) break;
+  } catch {
+    /* not up yet */
   }
+  if (Date.now() > deadline) {
+    vite?.kill();
+    console.error(`No server answered at ${url}${vite ? ' (is the port in use? set RUN_PORT)' : ''}`);
+    process.exit(1);
+  }
+  await new Promise((r) => setTimeout(r, 250));
 }
 
 const [w, h] = opts.size;

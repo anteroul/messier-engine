@@ -48,6 +48,8 @@
               ./package-lock.json
               ./tsconfig.json
               ./vite.config.ts
+              ./scripts/mangle-props.mjs
+              ./scripts/mangle-props.d.mts
               ./index.html
               ./src
               ./public
