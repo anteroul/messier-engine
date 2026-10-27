@@ -40,32 +40,12 @@
         </div>
 
         <div class="group scene-only">
-          <details class="menu add-menu">
-            <summary class="btn">＋ Add</summary>
-            <div class="menu-items">
-              <div class="menu-title">Mesh</div>
-              <button data-action="add-cube">Cube</button>
-              <button data-action="add-sphere">Sphere</button>
-              <button data-action="add-plane">Plane</button>
-              <button data-action="add-cylinder">Cylinder</button>
-              <button data-action="add-torus">Torus</button>
-              <button data-action="add-empty">Empty</button>
-              <div class="menu-title">Light</div>
-              <button data-action="add-point">Point Light</button>
-              <button data-action="add-spot">Spot Light</button>
-              <button data-action="add-directional">Directional Light</button>
-              <div class="menu-title">Camera</div>
-              <button data-action="add-camera">Camera</button>
-            </div>
-          </details>
           <button class="btn" data-action="import" title="Import .glb / .gltf / .obj models or .ts scripts (or drop files on the viewport)">⇪ Import</button>
         </div>
 
         <div class="group scene-only">
           <button class="btn" data-action="undo" title="Undo (Ctrl+Z)">↶</button>
           <button class="btn" data-action="redo" title="Redo (Ctrl+Shift+Z)">↷</button>
-          <button class="btn" data-action="duplicate" title="Duplicate (Ctrl+D)">⧉</button>
-          <button class="btn" data-action="delete" title="Delete (Del)">🗑</button>
           <button class="btn" data-action="focus" title="Focus selection (F)">◎</button>
         </div>
 
@@ -81,7 +61,31 @@
       </header>
 
       <aside id="hierarchy-panel" class="panel">
-        <div class="panel-title">Hierarchy</div>
+        <div class="panel-title panel-title-row">
+          <span>Hierarchy</span>
+          <div class="group panel-actions">
+            <details class="menu add-menu">
+              <summary class="btn btn-small" title="Add an object">＋ Add</summary>
+              <div class="menu-items">
+                <div class="menu-title">Mesh</div>
+                <button data-action="add-cube">Cube</button>
+                <button data-action="add-sphere">Sphere</button>
+                <button data-action="add-plane">Plane</button>
+                <button data-action="add-cylinder">Cylinder</button>
+                <button data-action="add-torus">Torus</button>
+                <button data-action="add-empty">Empty</button>
+                <div class="menu-title">Light</div>
+                <button data-action="add-point">Point Light</button>
+                <button data-action="add-spot">Spot Light</button>
+                <button data-action="add-directional">Directional Light</button>
+                <div class="menu-title">Camera</div>
+                <button data-action="add-camera">Camera</button>
+              </div>
+            </details>
+            <button class="btn btn-small" data-action="duplicate" title="Duplicate (Ctrl+D)">⧉</button>
+            <button class="btn btn-small" data-action="delete" title="Delete (Del)">🗑</button>
+          </div>
+        </div>
         <div id="hierarchy" class="panel-body"></div>
       </aside>
 

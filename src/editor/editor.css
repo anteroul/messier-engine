@@ -603,6 +603,20 @@ body.view-scripts #scripts-view {
   padding-top: 5px;
   padding-bottom: 5px;
 }
+/* Buttons in a panel header: undo the title's small caps styling. */
+.panel-actions {
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--text);
+}
+/* Same height whatever the glyph (the emoji icons are taller than text). */
+.panel-actions .btn {
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+}
 .script-row {
   display: flex;
   align-items: center;
