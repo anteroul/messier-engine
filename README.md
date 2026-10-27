@@ -29,7 +29,7 @@ real-time scene editor.
 - **No runtime dependencies**: the math, loaders, renderer and UI are all in2
   this repo. The only npm packages are build tools (Vite, TypeScript, WebGPU types).
 
-![Editor overview: hierarchy, viewport with gizmo, inspector](docs/messier-screenshot.png)
+![Editor overview: hierarchy, viewport with gizmo, inspector](docs/screenshot.png)
 
 ## Running on NixOS (flake)
 
