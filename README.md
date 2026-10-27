@@ -26,7 +26,7 @@ real-time scene editor.
   inspector, move/rotate/scale gizmos with snapping, undo/redo, duplicate and
   delete, and a Play mode that runs behaviours (scripts) and restores the scene
   when you stop.
-- **No runtime dependencies**: the math, loaders, renderer and UI are all in
+- **No runtime dependencies**: the math, loaders, renderer and UI are all in2
   this repo. The only npm packages are build tools (Vite, TypeScript, WebGPU types).
 
 ![Editor overview: hierarchy, viewport with gizmo, inspector](docs/messier-screenshot.png)
