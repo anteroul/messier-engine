@@ -2,9 +2,10 @@
   "name": "messier-engine-tests",
   "private": true,
   "type": "module",
-  "description": "Optional GPU smoke tests: headless renderer (Dawn) and editor UI (Chromium). Kept separate so the app has no native test dependencies.",
+  "description": "Unit tests (Node only) and optional GPU smoke tests: headless renderer (Dawn) and editor UI (Chromium). Kept separate so the app has no native test dependencies.",
   "scripts": {
-    "test": "npm run test:render && npm run test:ui",
+    "test": "npm run test:unit && npm run test:render && npm run test:ui",
+    "test:unit": "node unit/run.mjs",
     "test:render": "node render/run.mjs",
     "test:ui": "node ui/run.mjs"
   },

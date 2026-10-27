@@ -7,6 +7,8 @@ export * from './scene';
 export * from './camera';
 export * from './behaviours';
 export * from './input';
+export * from './signal';
+export * from './time';
 export * from './scripting';
 export * from './typescript';
 export * from './physics';
