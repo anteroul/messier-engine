@@ -4,6 +4,8 @@ export * from './mesh';
 export * from './material';
 export * from './light';
 export * from './transform';
+export * from './component';
+export * from './meshRenderer';
 export * from './scene';
 export * from './camera';
 export * from './behaviours';

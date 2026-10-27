@@ -1,3 +1,4 @@
+import { Component } from './component';
 import type { Vec3 } from './math';
 
 export type LightType = 'directional' | 'point' | 'spot';
@@ -11,7 +12,7 @@ export const LIGHT_FIELDS = ['type', 'color', 'intensity', 'range', 'innerAngle'
  * Light component. Position and direction come from the owning GameObject:
  * lights shine along the object's local -Z axis.
  */
-export class Light {
+export class Light extends Component {
   type: LightType;
   /** Linear RGB. */
   color: Vec3 = [1, 1, 1];
@@ -26,6 +27,7 @@ export class Light {
   castShadows = false;
 
   constructor(type: LightType = 'point', color: Vec3 = [1, 1, 1], intensity?: number) {
+    super();
     this.type = type;
     this.color = color;
     this.intensity = intensity ?? (type === 'directional' ? 3 : 25);
@@ -37,6 +39,7 @@ export class Light {
     l.innerAngle = this.innerAngle;
     l.outerAngle = this.outerAngle;
     l.castShadows = this.castShadows;
+    l.enabled = this.enabled;
     return l;
   }
 }

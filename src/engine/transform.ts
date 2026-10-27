@@ -153,6 +153,7 @@ export class Transform {
       this.rotation = r;
       this.scale = s;
     }
+    this.gameObject._parentChanged(old?.gameObject ?? null);
   }
 
   // ---- matrices

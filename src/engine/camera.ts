@@ -1,3 +1,4 @@
+import { Component } from './component';
 import { DEG2RAD, mat4, vec3, type Mat4, type Vec3 } from './math';
 
 export interface Ray {
@@ -83,7 +84,7 @@ type CameraSettings = Pick<CameraComponent, (typeof CAMERA_FIELDS)[number]>;
  * The engine renders through the scene's active camera (Scene.activeCamera) while
  * Engine.useSceneCamera is set.
  */
-export class CameraComponent {
+export class CameraComponent extends Component {
   projection: Projection = 'perspective';
   /** Perspective: vertical field of view in degrees. */
   fovDeg = 60;
@@ -95,6 +96,7 @@ export class CameraComponent {
   priority = 0;
 
   constructor(init: Partial<CameraSettings> = {}) {
+    super();
     Object.assign(this, init);
   }
 
@@ -109,7 +111,9 @@ export class CameraComponent {
   }
 
   clone(): CameraComponent {
-    return new CameraComponent().copyFrom(this);
+    const c = new CameraComponent().copyFrom(this);
+    c.enabled = this.enabled;
+    return c;
   }
 
   /**

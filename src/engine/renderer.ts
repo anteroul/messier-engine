@@ -7,8 +7,9 @@ import mipmapWGSL from './shaders/mipmap.wgsl?raw';
 import { mat4, vec3, type Mat4, type Vec3 } from './math';
 import { VERTEX_STRIDE_BYTES, type Mesh } from './mesh';
 import type { Material, Texture } from './material';
-import { LIGHT_TYPE_INDEX } from './light';
-import type { GameObject, Scene } from './scene';
+import { Light, LIGHT_TYPE_INDEX } from './light';
+import { MeshRenderer } from './meshRenderer';
+import type { Scene } from './scene';
 import type { Camera } from './camera';
 import { OVERLAY_STRIDE_FLOATS, type OverlayBuilder } from './overlay';
 
@@ -94,6 +95,7 @@ export class Renderer {
 
   private readonly frameData = new ArrayBuffer(FRAME_UNIFORM_SIZE);
   private readonly lightData = new Float32Array(MAX_LIGHTS * LIGHT_FLOATS);
+  private readonly draws: MeshRenderer[] = [];
   private readonly materialData = new Float32Array(MATERIAL_UNIFORM_SIZE / 4);
 
   static async create(canvas: HTMLCanvasElement): Promise<Renderer> {
@@ -447,25 +449,21 @@ export class Renderer {
     const stats = this.stats;
     stats.drawCalls = stats.triangles = stats.lights = stats.shadowCasters = 0;
 
-    // Gather visible renderables and lights.
-    const draws: GameObject[] = [];
-    const lightObjects: GameObject[] = [];
-    const visit = (o: GameObject) => {
-      if (!o.visible) return;
-      if (o.mesh && o.material && o.mesh.indices.length > 0) draws.push(o);
-      if (o.light && lightObjects.length < MAX_LIGHTS) lightObjects.push(o);
-      for (const c of o.children) visit(c);
-    };
-    for (const c of scene.root.children) visit(c);
+    // Gather live renderables and lights from the scene's component registry.
+    const draws = this.draws;
+    draws.length = 0;
+    for (const r of scene.query(MeshRenderer)) if (r.mesh && r.material && r.mesh.indices.length > 0) draws.push(r);
+    const lights = scene.query(Light);
+    const lightObjects = lights.length > MAX_LIGHTS ? lights.slice(0, MAX_LIGHTS) : lights;
 
     // Lights.
     let shadowIndex = -1;
     let shadowDir: Vec3 = [0, -1, 0];
     const ld = this.lightData;
-    lightObjects.forEach((obj, i) => {
-      const light = obj.light!;
-      const pos = mat4.getTranslation(obj.worldMatrix);
-      const dir = vec3.normalize(vec3.transformDir(obj.worldMatrix, [0, 0, -1]));
+    lightObjects.forEach((light, i) => {
+      const world = light.transform.worldMatrix;
+      const pos = mat4.getTranslation(world);
+      const dir = vec3.normalize(vec3.transformDir(world, [0, 0, -1]));
       const o = i * LIGHT_FLOATS;
       ld[o] = pos[0]; ld[o + 1] = pos[1]; ld[o + 2] = pos[2]; ld[o + 3] = LIGHT_TYPE_INDEX[light.type];
       ld[o + 4] = dir[0]; ld[o + 5] = dir[1]; ld[o + 6] = dir[2]; ld[o + 7] = light.range;
@@ -503,8 +501,8 @@ export class Renderer {
     this.ensureObjectCapacity(draws.length);
     const staging = this.objectStaging;
     draws.forEach((o, i) => {
-      staging.set(o.worldMatrix, (i * OBJECT_STRIDE) / 4);
-      staging.set(o.normalMatrix, (i * OBJECT_STRIDE) / 4 + 16);
+      staging.set(o.transform.worldMatrix, (i * OBJECT_STRIDE) / 4);
+      staging.set(o.transform.normalMatrix, (i * OBJECT_STRIDE) / 4 + 16);
       this.ensureMesh(o.mesh!);
     });
     if (draws.length > 0) device.queue.writeBuffer(this.objectBuffer!, 0, staging, 0, (draws.length * OBJECT_STRIDE) / 4);

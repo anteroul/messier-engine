@@ -1,3 +1,4 @@
+import { Component } from './component';
 import { mat4, quat, vec3, type Quat, type Vec3 } from './math';
 import type { Mesh } from './mesh';
 import type { GameObject, Scene } from './scene';
@@ -42,7 +43,7 @@ export const RIGID_BODY_FIELDS = [
   'linearDamping', 'angularDamping', 'useGravity', 'velocity', 'angularVelocity',
 ] as const;
 
-export class RigidBody {
+export class RigidBody extends Component {
   type: BodyType;
   shape: ColliderShape = 'box';
   /** Collider center in the object's local space (scaled with the object). */
@@ -74,6 +75,7 @@ export class RigidBody {
   lastRotation: Quat | null = null;
 
   constructor(type: BodyType = 'dynamic', opts: RigidBodyOptions = {}) {
+    super();
     this.type = type;
     Object.assign(this, opts);
   }
@@ -110,7 +112,7 @@ export class RigidBody {
   }
 
   clone(): RigidBody {
-    return new RigidBody(this.type, {
+    const rb = new RigidBody(this.type, {
       shape: this.shape,
       center: vec3.clone(this.center),
       halfExtents: vec3.clone(this.halfExtents),
@@ -124,6 +126,8 @@ export class RigidBody {
       velocity: vec3.clone(this.velocity),
       angularVelocity: vec3.clone(this.angularVelocity),
     });
+    rb.enabled = this.enabled;
+    return rb;
   }
 }
 
@@ -297,10 +301,7 @@ export class PhysicsWorld {
 
   step(scene: Scene, h: number): void {
     const bodies: Body[] = [];
-    scene.traverse((o) => {
-      if (!o.visible) return false;
-      if (o.rigidBody) bodies.push(makeBody(o, o.rigidBody, h));
-    });
+    for (const rb of scene.query(RigidBody)) bodies.push(makeBody(rb.gameObject, rb, h));
     // Sleeping bodies may have lost their support when bodies were added, removed or hidden, or scenery moved.
     if (bodies.length !== this.bodyCount || bodies.some((b) => b.rb.type === 'static' && b.teleported)) for (const b of bodies) wakeBody(b);
     this.bodyCount = bodies.length;
