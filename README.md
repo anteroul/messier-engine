@@ -182,7 +182,7 @@ const cube = new GameObject('Cube');
 cube.mesh = createCube(1);
 cube.material = new Material('Red', { baseColor: [0.8, 0.1, 0.1, 1], roughness: 0.4 });
 cube.transform.position = [0, 0.5, 0];
-cube.behaviours.push(new Rotator({ speedY: 90 }));
+cube.addComponent(Rotator, { speedY: 90 }); // components: addComponent / getComponent / removeComponent
 engine.scene.add(cube);
 
 const sun = new GameObject('Sun');
@@ -215,9 +215,15 @@ engine.setPlaying(true); // run behaviours and physics
 engine.start();
 ```
 
-To add a built-in behaviour, subclass `Behaviour` in `src/engine/behaviours.ts`
-and register it in `BEHAVIOURS`. It then shows up in the inspector's
-**Add…** menu, and its numeric `params` become editable fields automatically.
+Objects are composed from components (`MeshRenderer`, `Light`, `CameraComponent`,
+`RigidBody`, behaviours); `obj.mesh`, `obj.light` and friends are shortcuts. See
+[docs/scripting.md](docs/scripting.md) for the component, lifecycle, transform,
+signal and `Time` APIs.
+
+To add a built-in behaviour, subclass `Behaviour` in `src/engine/behaviours.ts`,
+give it a `static readonly typeName` and register it in `BEHAVIOURS`. It then
+shows up in the inspector's **Add…** menu, and its public number fields become
+editable parameters automatically.
 
 ## Behaviour scripts
 
@@ -244,10 +250,17 @@ export default class Hover extends Script {
 }
 ```
 
-- `this.object` is the `GameObject`, `this.scene` is the `Scene` it's in
-  (`findByName`, `traverse`, `activeCamera()`, `physics`, `background`…), and
-  `this.find(name)` looks up another object. For example, a follow camera can move `this.find('Main Camera')`
-  each frame, and `this.object.camera.fovDeg` changes a camera's zoom. `start()` runs when Play starts, `update(dt, time)` every frame.
+- A script is a component (`Script` extends `Behaviour`). `this.object` is the
+  `GameObject`, `this.transform` its transform, `this.scene` the `Scene` it's in
+  (`query()`, `getGroup()`, `findByName()`, `activeCamera()`, `physics`…), and
+  `this.find(name)` looks up another object. For example, a follow camera can move
+  `this.find('Main Camera')` each frame, and `this.object.camera.fovDeg` changes a camera's zoom.
+- Lifecycle hooks: `awake()`, `onEnable()`, `start()`, `fixedUpdate(fixedDt)`,
+  `update(dt, time)`, `lateUpdate(dt)`, `onDisable()`, `onDestroy()`. They run
+  only in Play, which runs a copy of the scene, so Stop undoes whatever scripts
+  did. Scripts can create and destroy objects (`GameObject.instantiate`,
+  `GameObject.destroy`), add components and use typed `Signal`s; see
+  [docs/scripting.md](docs/scripting.md).
 - Scripts compile while you type. Errors are underlined in the editor, listed
   under *Problems* and counted on the Scripts tab. Runtime errors are mapped
   back to the source line, and the throwing behaviour pauses until the script
@@ -321,11 +334,11 @@ forward events yourself with `input.keyDown(e.code)` / `input.keyUp(e.code)`.
 From code, scripts are assets in `scene.scripts`:
 
 ```ts
-import { ScriptAsset, ScriptBehaviour } from './engine';
+import { ScriptAsset } from './engine';
 
 const hover = engine.scene.scripts.add(new ScriptAsset('Hover', source));
 hover.compile(); // false on errors; see hover.diagnostics
-obj.behaviours.push(new ScriptBehaviour(hover, { speed: 0.5 })); // optional overrides
+obj.attachComponent(hover.create({ speed: 0.5 })); // a Script component, with optional overrides
 ```
 
 ## Project layout
@@ -335,16 +348,21 @@ flake.nix               Nix: dev shell, `nix run` dev server, static build, `.#s
 index.html              Editor shell (toolbar, panels, canvas)
 src/main.ts             Entry point: creates the engine and editor, restores the autosave or builds the demo project
 src/demo.ts             Demo scene content
+docs/scripting.md       Scripting API: components, lifecycle, transform, signals, Time
 src/engine/             The engine (no DOM dependencies except the canvas)
-  engine.ts             Main loop: behaviours + physics → world matrices → hooks → render
+  engine.ts             Main loop: fixed steps → update → lateUpdate → matrices → render → destroys; active scene
   input.ts              Keyboard state for scripts (isDown / pressed / axis); the host forwards key events
-  scripting.ts          Script base class, ScriptAsset (compile, diagnostics), ScriptBehaviour (hot reload)
+  scripting.ts          Script component, ScriptAsset (compile, diagnostics, in-place hot reload)
   typescript.ts         Tokenizer + position-preserving TypeScript type stripper
   renderer.ts           WebGPU device, pipelines, shadow + main passes, uploads
   shaders/*.wgsl        common (shared structs), mesh (PBR), shadow, grid, overlay, mipmap
-  scene.ts              Transform, GameObject (scene graph node), Scene
+  scene.ts              GameObject (components, groups, destroy/instantiate), Scene (registry, lifecycle)
+  transform.ts          Transform: hierarchy, cached local/world matrices, world-space helpers
+  component.ts          Component base class; meshRenderer.ts: MeshRenderer
+  behaviours.ts         Behaviour (lifecycle hooks) and the built-in behaviours
+  signal.ts time.ts     Typed signals; Time (frame timing, fixed-step accumulator)
   camera.ts             Camera (the view the renderer draws from) and CameraComponent (scene cameras)
-  mesh.ts material.ts light.ts behaviours.ts primitives.ts
+  mesh.ts material.ts light.ts primitives.ts
   physics.ts            RigidBody component, colliders, contact generation, impulse solver
   overlay.ts            Immediate-mode helper geometry (gizmos, icons, boxes)
   raycast.ts            Ray/AABB/triangle/sphere tests, scene picking, world bounds
@@ -360,14 +378,19 @@ src/editor/             Editor UI (plain DOM, no framework)
   gizmo.ts              Move/rotate/scale manipulator (picking + dragging + drawing)
   hierarchy.ts inspector.ts ui.ts history.ts orbitControls.ts editor.css
 public/models/          Sample assets (lantern.glb, icosahedron.obj/.mtl)
-scripts/                generate-sample-glb.mjs (regenerates lantern.glb)
-tests/                  Optional GPU smoke tests (separate package.json)
+scripts/                generate-sample-glb.mjs (regenerates lantern.glb), mangle-props.mjs (release build)
+tests/                  Unit tests and optional GPU smoke tests (separate package.json)
 ```
 
 ## Tests
 
-The app itself only needs `npm run typecheck` / `npm run build`. The optional
-smoke tests in `tests/` exercise the real GPU:
+The app itself only needs `npm run typecheck` / `npm run build`. `tests/` has
+unit tests that need only Node, and smoke tests that exercise the real GPU:
+
+- **`test:unit`** bundles `tests/unit/*.test.ts` with esbuild and runs them under
+  Node: signals, `Time`'s fixed-step accumulator, transforms, the component
+  registry, the behaviour lifecycle (order, activation, destroy during update…),
+  scripts and the docs example. `node unit/run.mjs lifecycle` runs one file.
 
 - **`test:render`** runs the engine under Node with Dawn (the `webgpu` npm
   package). It checks the math, loaders, picking, gizmo and physics logic,

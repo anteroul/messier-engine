@@ -1,5 +1,6 @@
 import type { GameObject, Scene } from './scene';
 import type { Transform } from './transform';
+import { Signal } from './signal';
 
 /** A concrete component class that addComponent() can construct. */
 export type ComponentType<T extends Component> = new () => T;
@@ -58,8 +59,9 @@ export abstract class Component {
 
   /**
    * A detached copy for GameObject.clone()/instantiate(). The default constructs the same class and copies own
-   * enumerable fields that don't start with `_`, copying arrays and typed arrays one level deep (vectors) and
-   * sharing other objects. Override it when a component holds state that needs deeper copies.
+   * enumerable fields that don't start with `_`: arrays and typed arrays one level deep (vectors), Signals as new
+   * empty signals (a copy has its own listeners), other objects shared. Override it when a component holds state
+   * that needs deeper copies.
    */
   clone(): Component {
     const c = new (this.constructor as new () => Component)();
@@ -68,7 +70,10 @@ export abstract class Component {
     for (const key of Object.keys(this)) {
       if (key.startsWith('_')) continue;
       const v = src[key];
-      dst[key] = Array.isArray(v) ? v.slice() : ArrayBuffer.isView(v) && !(v instanceof DataView) ? (v as Float32Array).slice() : v;
+      if (v instanceof Signal) dst[key] = new Signal();
+      else if (Array.isArray(v)) dst[key] = v.slice();
+      else if (ArrayBuffer.isView(v) && !(v instanceof DataView)) dst[key] = (v as Float32Array).slice();
+      else dst[key] = v;
     }
     c._enabled = this._enabled;
     return c;

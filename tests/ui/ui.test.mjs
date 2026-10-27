@@ -299,7 +299,7 @@ const autosaved = () =>
       }),
   );
 await sleep(1500);
-check('scripts autosave', (await autosaved())?.scripts.map((x) => x.name).join() === 'Hover,EmptyScript');
+check('scripts autosave', (await autosaved())?.scripts.map((x) => x.name).join() === 'Hover,Carousel,LapFlash,EmptyScript');
 
 // --- Keyboard input: during Play, keys drive scripts instead of editor shortcuts; Esc stops
 await state(() => {
@@ -436,7 +436,7 @@ const restored = await state(() => {
   engine.scene.findByName('Lantern')?.traverse((o) => void (o.mesh && lanternMeshes++));
   return { x: engine.scene.findByName('Torus').transform.position[0], lanternMeshes, scripts: engine.scene.scripts.scripts.map((s) => s.name).join(), name: editor.project.project.name };
 });
-check('autosave restores after reload', restored.x === 7.25 && restored.lanternMeshes === 4 && restored.scripts === 'Hover,EmptyScript,Walker' && restored.name === 'Demo', JSON.stringify(restored));
+check('autosave restores after reload', restored.x === 7.25 && restored.lanternMeshes === 4 && restored.scripts === 'Hover,Carousel,LapFlash,EmptyScript,Walker' && restored.name === 'Demo', JSON.stringify(restored));
 await page.screenshot({ path: `${OUT}/ui-restored.png` });
 
 const firstScene = await state(() => window.editor.project.sceneId);

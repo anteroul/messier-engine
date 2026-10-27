@@ -377,7 +377,7 @@ check('OBJ triangles', ico.children.reduce((n: number, c: any) => n + c.mesh.tri
   project.assets = [asset, { id: 'unused', name: 'unused', files: [{ name: 'x.obj', bytes: new Uint8Array(8) }] }];
   const decoded = Project.decode(project.encode());
   check('project encode/decode', decoded.name === 'Test' && decoded.scenes.length === 1 && decoded.assets.length === 1 &&
-    decoded.assets[0].files[0].bytes.byteLength === glbBytes.byteLength && decoded.scripts.map((s: any) => s.name).join() === 'Hover',
+    decoded.assets[0].files[0].bytes.byteLength === glbBytes.byteLength && decoded.scripts.map((s: any) => s.name).join() === 'Hover,Carousel,LapFlash',
     `${decoded.assets.length} assets, files ${decoded.assets[0]?.files.map((f: any) => `${f.name}:${f.bytes.byteLength}`).join(' ')}`);
 
   const dst = new Scene();

@@ -37,7 +37,7 @@ for (const file of files) {
     logLevel: 'warning',
   });
   console.log(`\n# ${file}`);
-  const res = spawnSync(process.execPath, [bundle], { stdio: 'inherit' });
+  const res = spawnSync(process.execPath, [bundle], { stdio: 'inherit', env: { ...process.env, PROJECT_ROOT: root } });
   if (res.status !== 0) failed++;
 }
 console.log(failed ? `\n${failed} unit test file(s) FAILED` : `\nALL ${files.length} unit test files PASSED`);

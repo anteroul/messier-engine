@@ -22,10 +22,13 @@ relevant ones.
 
 1. `npm run typecheck`: strict TS, `noUnusedLocals`/`noUnusedParameters` are on.
 2. `npm run build`: typecheck plus Vite production build.
-3. GPU smoke tests (needs a Vulkan-capable GPU):
+3. Tests (`npm test` runs all three; the GPU ones need a Vulkan-capable GPU):
    ```sh
    nix develop .#tests -c sh -c 'cd tests && npm install && npm test'
    ```
+   - `test:unit` (Node only, fast) covers signals, Time, transforms, the component
+     registry, the behaviour lifecycle and scripts. Add tests here for engine logic
+     that doesn't need the GPU. `node unit/run.mjs <name>` runs one file.
    - `test:render` (Dawn under Node) catches WGSL compile errors, pipeline or
      bind-group validation errors, and math/loader/picking regressions. It
      writes `tests/.out/frame.png`. **Look at it** after renderer or shader
@@ -41,18 +44,34 @@ relevant ones.
 
 ```
 Engine.step(dt)                         src/engine/engine.ts
-  scene.update(dt, playTime, playing)   behaviours (only when playing) + world matrices
+  (playing) Time.beginFrame → N × scene.fixedUpdate (behaviours, then physics)
+            scene.updateBehaviours → scene.lateUpdate
+  input.endFrame(); scene.updateMatrices()
   overlay.begin(); beforeRender hooks   editor builds gizmo/icons into OverlayBuilder
   renderer.render(scene, camera, …)     shadow pass → main MSAA pass (meshes, grid, overlay)
   afterRender hooks                     editor reads RenderStats
+  scene.processDestroyed()              deferred destroys (onDisable → onDestroy → detach)
 ```
 
-- **Scene graph** (`scene.ts`): `GameObject` holds optional components as plain
-  fields (`mesh`, `material`, `light`, `behaviours`). No ECS. The scene's
-  top-level objects are children of the invisible `scene.root`.
-  `worldMatrix`/`normalMatrix` are cached and refreshed by
-  `Scene.updateMatrices()`. Use `computeWorldMatrix()`/`worldPosition()` when
-  you need fresh values mid-frame (for example right after a gizmo edit).
+- **Scene graph** (`scene.ts`, `transform.ts`, `component.ts`): Unity-style
+  composition, not ECS. A `GameObject` has one `Transform` (which owns the
+  hierarchy) and a list of `Component`s. `obj.mesh`/`material`/`castShadows`
+  (→ `MeshRenderer`), `light`, `camera` and `rigidBody` are shortcuts over the
+  first component of that kind, so most code still reads like plain fields.
+  The scene's top-level objects are children of the invisible `scene.root`.
+  `Scene.query(Type)` lists *live* components (enabled, object active in the
+  hierarchy, in that scene; subclasses included). It's kept current by
+  `Component._sync()`, which runs on every enable, activation, reparent or destroy
+  change. The renderer, physics and `activeCamera()` iterate it. `visible` is an
+  alias of `activeSelf`, so inactive objects aren't drawn and their components
+  don't run.
+- **Transforms** cache local/world/normal matrices and compute them lazily.
+  Each transform remembers the local values it baked and its parent's world
+  version, so in-place edits (`position[1] = y`) are noticed. `worldMatrix` is
+  always current, even mid-frame, and `Scene.updateMatrices()` syncs everything
+  top-down once a frame. The world-space helpers live on `Transform`
+  (`worldPosition`, `setParent(p, keepWorld)`, `lookAt`…), and `GameObject`
+  keeps delegating shortcuts.
 - **Cameras** (`camera.ts`): `Camera` is the view the renderer draws from
   (look-at, perspective or orthographic, always reversed-Z). `engine.camera` is
   the free view the editor drives. A `CameraComponent` (`GameObject.camera`)
@@ -63,22 +82,33 @@ Engine.step(dt)                         src/engine/engine.ts
   highest priority. It also exposes that camera as `engine.viewObject` and
   skips the grid. The editor then skips its overlay and ignores viewport
   pointer input, because picking and gizmos use `engine.camera`.
-- **Physics** (`physics.ts`): `GameObject.rigidBody` plus `scene.physics`
-  (`PhysicsWorld`), stepped at a fixed 60 Hz from `Scene.update` after
-  behaviours, only while playing. Each step reads world poses from transforms
+- **Behaviours** (`behaviours.ts`): `Behaviour` is a component with Unity's
+  lifecycle hooks. They only run while the scene runs (`Scene.setRunning`, set by
+  `Engine.setPlaying`). Dispatch lists hold started, enabled behaviours whose
+  class overrides the hook. Changes during a dispatch are safe: loops are bounded,
+  removals become nulls, and the lists are compacted afterwards.
+  `GameObject.destroy` in a running scene marks the target at once and tears it
+  down in `processDestroyed`. Lifecycle state lives in `_`-prefixed fields that
+  `Behaviour._sync()` manages; don't set them elsewhere.
+- **Physics** (`physics.ts`): the `RigidBody` component plus `scene.physics`
+  (`PhysicsWorld`). It's stepped once per fixed step by `Scene.fixedUpdate`
+  (after `fixedUpdate` hooks) with `Time.fixedDeltaTime`, only while playing. Each step reads world poses from transforms
   and writes them back, and `Engine.setPlaying(true)` calls `physics.reset()`.
   A dynamic body whose pose changed outside the solver counts as teleported:
   it wakes and its velocity is zeroed. Kinematic velocity is derived from
   transform deltas.
 - **Scripting** (`scripting.ts`, `typescript.ts`): a `ScriptAsset` (in
-  `scene.scripts`) holds TypeScript source. `compile()` runs `stripTypes()`,
+  `scene.scripts`, which scene clones share) holds TypeScript source. A user
+  script *is* the component: `asset.create(overrides)` makes a `Script`
+  instance, and every successful compile hot-swaps live instances in place
+  (`Script._hotSwap`). The prototype changes, so registry and dispatch-list
+  membership is redone. Before an asset first compiles, its instances are
+  plain `Script` placeholders. `compile()` runs `stripTypes()`,
   which blanks types with spaces so every token keeps its line and column.
   It then rewrites `import … from 'messier'` into destructuring of the engine
   barrel, evaluates the result with `new Function` (with a `sourceURL`), and
-  probes the class's public number fields for `defaults`. A `ScriptBehaviour`
-  wraps one asset per object. Its `params` is a Proxy (override ?? default),
-  and it hot-swaps a running instance's prototype when `asset.version`
-  changes. Errors become `ScriptDiagnostic`s. Stack lines are mapped back
+  probes the class's public number fields for `defaults`. A `Script`'s
+  `params` is a Proxy (override ?? default). Errors become `ScriptDiagnostic`s. Stack lines are mapped back
   with a calibrated `Function` header offset, and JS syntax errors (which
   `Function` reports without a position) are located through the
   `ScriptLibrary.locateSyntaxError` hook, which the editor implements.
@@ -87,8 +117,8 @@ Engine.step(dt)                         src/engine/engine.ts
 - **Input** (`input.ts`): the `input` singleton holds keyboard state by
   `KeyboardEvent.code`. The engine never listens to the DOM. The editor
   forwards keydown/keyup in `bindKeyboard()`. `Engine.step` calls
-  `input.endFrame()` after `scene.update` (so `pressed`/`released` last one
-  update), and `setPlaying` resets it.
+  `input.endFrame()` after the update phases (so `pressed`/`released` last one
+  frame, including its fixed steps), and `setPlaying` resets it.
 - **Engine vs editor:** `src/engine/**` must not import from `src/editor/**`
   and must not touch the DOM beyond the canvas passed to `Renderer`. That
   boundary is what lets `tests/render` run the engine under Node. The editor
@@ -113,10 +143,20 @@ Engine.step(dt)                         src/engine/engine.ts
 - **Editor** (`src/editor/editor.ts`) owns the Scene/Scripts view tabs
   (`setView`; scene shortcuts are off in the Scripts tab), selection, pointer modes
   (`click` → `orbit` after a 4 px slop, `gizmo`, `pan`, `fly`), keyboard
-  shortcuts, play-mode snapshots and the undo `History`. Panels
+  shortcuts, Play and the undo `History`. `editor.scene` is `engine.scene`, the
+  active scene. Play runs `scene.clone()` with a fresh `History`, and Stop
+  switches back, so nothing has to be snapshotted or restored. Panels
   (`hierarchy.ts`, `inspector.ts`) call back into `Editor`.
 
 ## Invariants (breaking these causes silent rendering bugs)
+
+- **`_`-prefixed names are internal**, and release builds mangle them
+  (`scripts/mangle-props.mjs`: `_foo` → `_$1a`, still `_`-prefixed). Never access
+  them by string, and never give public API a `_` name. Runtime code tells
+  internal fields from public ones by the prefix (`Component.clone`/`toJSON`,
+  `Behaviour.paramNames`, script hot swap). That's why a behaviour's private
+  state must be `_`-prefixed (`private _baseY`), or it would show up as an
+  inspector parameter.
 
 - **Matrices are column-major** `Float32Array<ArrayBuffer>` (`Mat4`).
   `mat4.multiply(a, b)` = a·b (b applied first). Quaternions are `[x, y, z, w]`.
@@ -161,12 +201,17 @@ Engine.step(dt)                         src/engine/engine.ts
 ## Common tasks
 
 **Add a behaviour (script component).** Subclass `Behaviour` in
-`src/engine/behaviours.ts`, give it a unique `readonly type` string and numeric
-defaults in `super({...})`, and add it to `BEHAVIOURS`. The inspector picks it
-up automatically. Capture start state in `start()`, because Play/Stop only
-restores transforms, light color/intensity, camera settings and rigid body velocities.
-User-written behaviours don't need this: they're TypeScript `Script` classes
-edited in the Scripts tab (see README).
+`src/engine/behaviours.ts`, give it a unique `static readonly typeName`, public
+number fields as parameters (with a constructor taking a partial init), `_`
+names for private state, and add it to `BEHAVIOURS`. The inspector picks it
+up automatically. Override only the hooks you need. User-written behaviours are
+TypeScript `Script` classes edited in the Scripts tab (see `docs/scripting.md`).
+
+**Add a component type.** Extend `Component` (data) or `Behaviour` (hooks). The
+default `clone()` copies public fields (arrays one level deep, Signals fresh,
+other objects shared); override it if that's wrong. To save it with scenes,
+extend `objectToData`/`dataToObject` in `serialize.ts` (see below). Systems that
+process every instance should iterate `scene.query(Type)`, not the hierarchy.
 
 **Change the type stripper.** Add a snippet to `tests/render/ts-corpus.ts`.
 `test:render` checks that the stripper's output, after minification, is
@@ -238,6 +283,9 @@ counts, so update it too.
   error never reaches the console, which would fail `test:ui`. Script
   runtime errors aren't logged to the console either. The editor shows them
   instead.
+- During Play, `engine.scene` is the play copy, and the objects in it are
+  different instances from the ones you edited. UI tests that read state during
+  Play must look it up again through `window.engine.scene`.
 - The editor boots from the IndexedDB autosave when there is one. `test:ui`
   relies on puppeteer's fresh temporary profile to start from the demo, and its
   project checks (reload, scenes, Save/Open) run last because they replace the

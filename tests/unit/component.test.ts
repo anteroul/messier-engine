@@ -1,6 +1,7 @@
 import { check, eq, near, throws } from './harness';
 import { GameObject, Scene } from '@root/src/engine/scene.ts';
 import { Component } from '@root/src/engine/component.ts';
+import { Signal } from '@root/src/engine/signal.ts';
 import { MeshRenderer } from '@root/src/engine/meshRenderer.ts';
 import { Light } from '@root/src/engine/light.ts';
 import { CameraComponent } from '@root/src/engine/camera.ts';
@@ -11,6 +12,7 @@ import { createCube } from '@root/src/engine/primitives.ts';
 class Health extends Component {
   hp = 10;
   resist: number[] = [1, 2];
+  hurt = new Signal<[amount: number]>();
 }
 class Shield extends Health {
   strength = 3;
@@ -192,6 +194,8 @@ const names = (list: readonly Component[]) => list.map((c) => c.gameObject.name)
   const copy = GameObject.instantiate(orig);
   const ch = copy.getComponent(Health)!;
   check('instantiate clones components', ch !== hp && ch.hp === 7 && ch.resist !== hp.resist && ch.resist.join() === '1,2');
+  hp.hurt.connect(() => {});
+  check('signal fields get a fresh signal in the copy', ch.hurt !== hp.hurt && ch.hurt.connectionCount === 0);
   check('meshes are shared, materials copied', copy.mesh === orig.mesh && copy.material !== orig.material && copy.material?.name === 'mat');
   check('children and their components are cloned', copy.children[0]?.light !== null && copy.children[0].light !== child.light);
   check('instantiate puts the copy at the top level of the scene', copy.parent === scene.root);

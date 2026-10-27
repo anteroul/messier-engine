@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { check, eq } from './harness';
 import { GameObject, Scene } from '@root/src/engine/scene.ts';
 import { Behaviour } from '@root/src/engine/behaviours.ts';
@@ -61,4 +62,27 @@ export default class Spin extends Script {
   eq('defaults update unless overridden', [(a as any).speed, (b as any).speed, a.params.speed, b.params.speed], [3, 9, 3, 9]);
   a.params.speed = 4;
   eq('inspector edits become overrides and set the field', [a.overrides.speed, (a as any).speed], [4, 4]);
+}
+
+// ---- the example in docs/scripting.md compiles and does what it says
+{
+  const doc = readFileSync(`${process.env.PROJECT_ROOT}/docs/scripting.md`, 'utf8');
+  const example = /```ts\n(import \{ Script[\s\S]*?)```/.exec(doc)?.[1] ?? '';
+  const scene = new Scene();
+  const asset = scene.scripts.add(new ScriptAsset('Spinner', example));
+  check('docs example compiles', asset.compile(), JSON.stringify(asset.diagnostics));
+  const o = scene.add(new GameObject('Spinner obj'));
+  const s = o.attachComponent(asset.create());
+  const laps: number[] = [];
+  const logged: string[] = [];
+  const log = console.log;
+  console.log = (msg: string) => logged.push(msg);
+  try {
+    scene.update(0, 0, true);
+    (s as any).lap.connect((n: number) => laps.push(n));
+    for (let i = 0; i < 300; i++) scene.update(1 / 60, i / 60, true); // 5 s at 90°/s = 1.25 turns
+  } finally {
+    console.log = log;
+  }
+  eq('docs example announces its lap', [laps, logged], [[1], ['Spinner obj finished lap 1']]);
 }

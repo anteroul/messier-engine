@@ -47,6 +47,53 @@ export default class Hover extends Script {
 }
 `;
 
+// A parent object turned by one script, which announces each full turn with a signal; a script on a child listens.
+const CAROUSEL_SCRIPT = `import { Script, Signal } from 'messier';
+
+/** Turns the object around its Y axis and announces every full turn. */
+export default class Carousel extends Script {
+  /** Degrees per second. */
+  speed = 90;
+  /** Emitted after each full turn, with the number of turns so far. */
+  readonly lap = new Signal<[laps: number]>();
+  private angle = 0;
+  private laps = 0;
+
+  update(dt: number): void {
+    this.angle += this.speed * dt;
+    this.transform.setEulerDeg(0, this.angle, 0);
+    if (this.angle >= (this.laps + 1) * 360) this.lap.emit(++this.laps);
+  }
+}
+`;
+
+const LAP_FLASH_SCRIPT = `import { Script, type Signal } from 'messier';
+
+/** Flashes the object's material each time the Carousel it rides on completes a turn. */
+export default class LapFlash extends Script {
+  /** Extra emissive strength right after a lap. */
+  peak = 8;
+  /** How fast the flash fades, per second. */
+  fade = 6;
+  private glow = 0;
+
+  start(): void {
+    // Scripts can't import each other: find the Carousel on the parent by name and describe the part we use.
+    const carousel = this.object.parent?.getComponents(Script).find((s) => s.typeName === 'Carousel') as unknown as
+      | { lap: Signal<[laps: number]> }
+      | undefined;
+    // With this script as the owner, the listener is disconnected when the script is destroyed.
+    carousel?.lap.connect(() => (this.glow = this.peak), this);
+  }
+
+  update(dt: number): void {
+    this.glow = Math.max(0, this.glow - this.fade * dt);
+    const m = this.object.material;
+    if (m) m.emissiveStrength = 0.5 + this.glow;
+  }
+}
+`;
+
 function addBody(o: GameObject, type: BodyType, opts: ConstructorParameters<typeof RigidBody>[1] = {}): GameObject {
   o.rigidBody = new RigidBody(type);
   fitCollider(o.rigidBody, o.mesh);
@@ -118,6 +165,17 @@ export function buildDemoScene(scene: Scene): void {
   hover.compile();
   glow.attachComponent(hover.create());
   scene.add(glow);
+
+  const carousel = meshObject('Carousel', createCylinder(0.35, 0.3), new Material('Steel', { baseColor: [0.6, 0.62, 0.66, 1], metallic: 1, roughness: 0.35 }), [-3.6, 0.15, 2.6]);
+  carousel.add(meshObject('Arm', createCube(1), new Material('Dark Steel', { baseColor: [0.2, 0.2, 0.22, 1], metallic: 1, roughness: 0.4 }), [0.5, 0.45, 0])).transform.scale = [1, 0.06, 0.06];
+  const rider = carousel.add(meshObject('Rider', createSphere(0.22), new Material('Amber', { baseColor: [1, 0.55, 0.15, 1], emissive: [1, 0.45, 0.1], emissiveStrength: 0.5, roughness: 0.4 }), [1, 0.45, 0]));
+  const carouselScript = scene.scripts.add(new ScriptAsset('Carousel', CAROUSEL_SCRIPT));
+  const lapFlash = scene.scripts.add(new ScriptAsset('LapFlash', LAP_FLASH_SCRIPT));
+  carouselScript.compile();
+  lapFlash.compile();
+  carousel.attachComponent(carouselScript.create());
+  rider.attachComponent(lapFlash.create());
+  scene.add(carousel);
 
   // Play renders through this camera.
   const camera = new GameObject('Main Camera');
