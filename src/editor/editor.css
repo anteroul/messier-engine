@@ -257,7 +257,8 @@ body.view-scripts #inspector-panel {
 
 /* Hierarchy tree */
 .tree {
-  padding: 4px 0;
+  /* Room below the last row to right-click (root context menu) or drop onto the root. */
+  padding: 4px 0 48px;
 }
 .tree-row {
   display: flex;

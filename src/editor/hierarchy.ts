@@ -51,8 +51,10 @@ export class HierarchyPanel {
     if (this.dirty) this.rebuild();
   }
 
-  private rebuild(): void {
+  private rebuild(reveal = false): void {
     this.dirty = false;
+    // Keep the scroll position: a rebuild (after any edit) shouldn't jump, or close an open context menu by scrolling.
+    const scrollTop = this.container.scrollTop;
     this.rows.clear();
     const list = el('div', { class: 'tree' });
     const visit = (obj: GameObject, depth: number) => {
@@ -62,7 +64,8 @@ export class HierarchyPanel {
     for (const c of this.editor.scene.root.children) visit(c, 0);
     if (this.editor.scene.root.children.length === 0) list.append(el('div', { class: 'empty', text: 'Scene is empty' }));
     this.container.replaceChildren(list);
-    this.updateSelection();
+    this.container.scrollTop = scrollTop;
+    this.updateSelection(reveal);
   }
 
   private makeRow(obj: GameObject, depth: number): HTMLElement {
@@ -119,14 +122,15 @@ export class HierarchyPanel {
     return row;
   }
 
-  updateSelection(): void {
+  /** Highlights the selected rows; with `reveal`, expands and scrolls to the active object. */
+  updateSelection(reveal = true): void {
     const sel = this.editor.selected;
     // Expand ancestors so the active object is visible.
-    if (sel) {
+    if (sel && reveal) {
       let expanded = false;
       for (let p = sel.parent; p; p = p.parent) if (this.collapsed.delete(p.id)) expanded = true;
       if (expanded) {
-        this.rebuild();
+        this.rebuild(true);
         return;
       }
     }
@@ -135,6 +139,6 @@ export class HierarchyPanel {
       row.classList.toggle('selected', selection.has(obj));
       row.classList.toggle('active', obj === sel);
     }
-    this.rows.get(sel!)?.scrollIntoView({ block: 'nearest' });
+    if (reveal) this.rows.get(sel!)?.scrollIntoView({ block: 'nearest' });
   }
 }

@@ -91,6 +91,8 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
 | Input | Action |
 | --- | --- |
 | Left click | Select. The first click on a model selects its root; click again to drill into the part under the cursor. |
+| `Ctrl`+click / `Shift`+click | Add to or remove from the selection / select a range in the hierarchy. The inspector and gizmo show the last clicked object. |
+| Right click in the hierarchy | Context menu: undo/redo, create (as a child of the item under the cursor), cut/copy/paste, paste as child, duplicate, delete, visibility |
 | Left drag on empty space / Alt + left drag | Orbit |
 | Middle drag / Shift + left drag | Pan |
 | Mouse wheel | Zoom |
@@ -99,7 +101,9 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
 | `X` | Toggle snapping (0.25 units, 15°, 0.1 scale) |
 | `F` (or double-click in hierarchy) | Focus selection |
 | `Ctrl+Z` / `Ctrl+Shift+Z` / `Ctrl+Y` | Undo / redo |
-| `Ctrl+D` / `Del` | Duplicate / delete |
+| `Ctrl+D` / `Del` | Duplicate / delete the selection (copies go right after their originals, named `Cube (1)`…) |
+| `Ctrl+X` / `Ctrl+C` / `Ctrl+V` / `Ctrl+Shift+V` | Cut / copy / paste objects / paste as child of the active object (while the hierarchy or viewport has focus) |
+| `Ctrl+A` | Select all objects (while the hierarchy or viewport has focus) |
 | `P` | Play / stop (during Play, plain keys go to scripts; `Esc` stops) |
 | `Ctrl+E` | Switch between the **Scene** and **Scripts** tabs |
 | `Ctrl+S` / `Ctrl+Shift+S` | Save project / save as (in the code editor, `Ctrl+S` also compiles now) |

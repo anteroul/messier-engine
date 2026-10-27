@@ -203,6 +203,94 @@ await page.keyboard.press('KeyZ');
 await page.keyboard.up('Control');
 check('undo delete', (await state(() => !!window.engine.scene.findByName('Point Light (1)'))));
 
+// --- Hierarchy multi-selection and context menu
+// Rows are rebuilt whenever the hierarchy changes, so find the row and its position right before each click.
+const rowClick = async (name, opts = {}) => {
+  const [x, y] = await page.evaluate((n) => {
+    const r = [...document.querySelectorAll('.tree-row')].find((e) => e.querySelector('.tree-name').textContent === n);
+    r.scrollIntoView({ block: 'nearest' });
+    const b = r.getBoundingClientRect();
+    return [b.left + 40, b.top + b.height / 2];
+  }, name);
+  if (opts.mod) await page.keyboard.down(opts.mod);
+  await page.mouse.click(x, y, { button: opts.button ?? 'left' });
+  if (opts.mod) await page.keyboard.up(opts.mod);
+  await sleep(30);
+};
+const selNames = () => state(() => window.editor.selection.items.map((o) => o.name));
+const menuItem = (label) => page.evaluateHandle((l) => [...document.querySelectorAll('.context-menu-item')].find((i) => i.querySelector('.context-menu-label').textContent === l), label);
+const menuOpen = () => state(() => document.querySelectorAll('.context-menu').length);
+const combo = async (key, ...mods) => {
+  for (const m of mods) await page.keyboard.down(m);
+  await page.keyboard.press(key);
+  for (const m of mods.reverse()) await page.keyboard.up(m);
+  await sleep(30);
+};
+
+await rowClick('Gold Sphere');
+await rowClick('Torus', { mod: 'Control' });
+check('ctrl+click adds to the selection', JSON.stringify(await selNames()) === '["Gold Sphere","Torus"]');
+await rowClick('Floor');
+await rowClick('Gold Sphere', { mod: 'Shift' });
+check('shift+click selects a range', JSON.stringify(await selNames()) === '["Floor","Spinning Cube","Gold Sphere"]', JSON.stringify(await selNames()));
+await rowClick('Spinning Cube', { button: 'right' });
+check('right-click on a selected item keeps the multi-selection', (await menuOpen()) === 1 && (await selNames()).length === 3);
+const menuState = await state(() => [...document.querySelectorAll('.context-menu-item')].map((i) => `${i.textContent}${i.getAttribute('aria-disabled') ? '!' : ''}`));
+check('menu shows shortcuts and disables what does not apply', menuState.includes('UndoCtrl+Z') && menuState.includes('PasteCtrl+V!') && menuState.includes('✓Visible'), menuState.join(' | '));
+await page.keyboard.press('Escape');
+await sleep(30);
+check('Esc closes the menu', (await menuOpen()) === 0);
+
+await rowClick('Plastic Sphere', { button: 'right' });
+check('right-click on an unselected item selects only it', JSON.stringify(await selNames()) === '["Plastic Sphere"]');
+await (await menuItem('Duplicate')).click();
+await sleep(30);
+check('menu Duplicate', (await menuOpen()) === 0 && JSON.stringify(await selNames()) === '["Plastic Sphere (1)"]');
+await combo('KeyZ', 'Control');
+check('undo duplicate', (await state(() => !window.engine.scene.findByName('Plastic Sphere (1)'))) && JSON.stringify(await selNames()) === '["Plastic Sphere"]');
+
+// Shortcuts while the hierarchy has focus (no menu): copy two objects, paste, undo.
+await rowClick('Gold Sphere');
+await rowClick('Torus', { mod: 'Control' });
+await combo('KeyC', 'Control');
+await combo('KeyV', 'Control');
+check('ctrl+c / ctrl+v in the hierarchy', JSON.stringify(await selNames()) === '["Gold Sphere (1)","Torus (1)"]', JSON.stringify(await selNames()));
+await combo('KeyZ', 'Control');
+check('paste undoes in one step', (await state(() => !window.engine.scene.findByName('Gold Sphere (1)') && !window.engine.scene.findByName('Torus (1)'))));
+
+// Visible toggle with a mixed selection shows all; one undo restores both.
+await state(() => { window.engine.scene.findByName('Torus').visible = false; });
+await rowClick('Gold Sphere', { button: 'right' });
+check('mixed visibility shows an indeterminate mark', (await state(() => [...document.querySelectorAll('.context-menu-item')].find((i) => i.textContent.includes('Visible')).getAttribute('aria-checked'))) === 'mixed');
+await (await menuItem('Visible')).click();
+await sleep(30);
+check('Visible on a mixed selection shows all', (await state(() => window.engine.scene.findByName('Torus').visible && window.engine.scene.findByName('Gold Sphere').visible)));
+await combo('KeyZ', 'Control');
+check('undo visibility', (await state(() => !window.engine.scene.findByName('Torus').visible && window.engine.scene.findByName('Gold Sphere').visible)));
+await state(() => { window.engine.scene.findByName('Torus').visible = true; });
+
+// Create over empty space (root) and keyboard navigation into the submenu.
+const empty = await page.$eval('#hierarchy', (e) => { e.scrollTop = e.scrollHeight; const r = e.getBoundingClientRect(); return [r.left + 60, r.bottom - 12]; });
+await sleep(30);
+await page.mouse.click(empty[0], empty[1], { button: 'right' });
+await sleep(30);
+check('right-click on empty space opens the menu', (await menuOpen()) === 1);
+// Walk down to Create; every stop must be an enabled item (disabled ones like Paste are skipped).
+const visited = [];
+let menuFocus = '';
+for (let i = 0; i < 6 && menuFocus !== 'Create'; i++) {
+  await page.keyboard.press('ArrowDown');
+  const f = await state(() => ({ label: document.activeElement?.querySelector('.context-menu-label')?.textContent, disabled: document.activeElement?.getAttribute('aria-disabled') === 'true' }));
+  visited.push(f);
+  menuFocus = f.label;
+}
+check('arrow keys never stop on disabled items', visited.every((v) => !v.disabled), JSON.stringify(visited));
+await page.keyboard.press('ArrowRight');
+await page.keyboard.press('Enter'); // Empty
+await sleep(30);
+check('keyboard: arrows skip disabled items, Right opens Create, Enter picks Empty', menuFocus === 'Create' && (await state(() => window.editor.selected?.name === 'Empty' && window.editor.selected.parent === window.engine.scene.root)), String(menuFocus));
+await combo('KeyZ', 'Control');
+
 // --- Play mode runs behaviours and restores on stop
 const rot0 = await state(() => [...window.engine.scene.findByName('Spinning Cube').transform.rotation]);
 await page.click('[data-action="play"]');
