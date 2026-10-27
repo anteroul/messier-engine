@@ -2,7 +2,7 @@ import type { GameObject } from '../engine';
 import { el } from './ui';
 import type { Editor } from './editor';
 
-/** Scene tree panel: selection, collapse, drag-and-drop re-parenting. */
+/** Scene tree panel: selection (click, Ctrl/Cmd+click, Shift+click), collapse, drag-and-drop re-parenting. */
 export class HierarchyPanel {
   private dirty = true;
   private readonly collapsed = new Set<number>();
@@ -23,6 +23,16 @@ export class HierarchyPanel {
       this.editor.reparent(this.dragged, this.editor.scene.root);
       this.dragged = null;
     });
+    // Focusable, so keyboard shortcuts can target the hierarchy; clicking empty space clears the selection.
+    container.tabIndex = 0;
+    container.addEventListener('click', (e) => {
+      if (!(e.target as HTMLElement).closest('.tree-row')) this.editor.selection.clear();
+    });
+  }
+
+  /** Objects in the order their rows are shown (collapsed subtrees left out). */
+  visibleOrder(): GameObject[] {
+    return [...this.rows.keys()];
   }
 
   markDirty(): void {
@@ -64,7 +74,12 @@ export class HierarchyPanel {
       el('span', { class: 'tree-name', text: obj.name }),
     ]);
     row.style.paddingLeft = `${6 + depth * 14}px`;
-    row.addEventListener('click', () => this.editor.select(obj));
+    row.addEventListener('click', (e) => {
+      const sel = this.editor.selection;
+      if (e.shiftKey) sel.range(obj, this.visibleOrder());
+      else if (e.ctrlKey || e.metaKey) sel.toggle(obj);
+      else sel.set(obj);
+    });
     row.addEventListener('dblclick', () => this.editor.focusSelected());
 
     row.addEventListener('dragstart', (e) => {
@@ -97,7 +112,7 @@ export class HierarchyPanel {
 
   updateSelection(): void {
     const sel = this.editor.selected;
-    // Expand ancestors so the selection is visible.
+    // Expand ancestors so the active object is visible.
     if (sel) {
       let expanded = false;
       for (let p = sel.parent; p; p = p.parent) if (this.collapsed.delete(p.id)) expanded = true;
@@ -106,7 +121,11 @@ export class HierarchyPanel {
         return;
       }
     }
-    for (const [obj, row] of this.rows) row.classList.toggle('selected', obj === sel);
+    const selection = this.editor.selection;
+    for (const [obj, row] of this.rows) {
+      row.classList.toggle('selected', selection.has(obj));
+      row.classList.toggle('active', obj === sel);
+    }
     this.rows.get(sel!)?.scrollIntoView({ block: 'nearest' });
   }
 }

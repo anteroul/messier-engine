@@ -271,7 +271,17 @@ body.view-scripts #inspector-panel {
 }
 .tree-row.selected {
   background: var(--accent-dim);
+}
+/* The active object (inspector, gizmo) among the selected ones. */
+.tree-row.active {
   border-left-color: var(--accent);
+}
+#hierarchy:focus {
+  outline: none;
+}
+#hierarchy:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
 }
 .tree-row.drop-target {
   outline: 1px dashed var(--accent-2);

@@ -38,6 +38,7 @@ import {
 } from '../engine';
 import { Gizmo, type GizmoMode, type Handle } from './gizmo';
 import { History } from './history';
+import { Selection } from './selection';
 import { HierarchyPanel } from './hierarchy';
 import { InspectorPanel } from './inspector';
 import { OrbitControls } from './orbitControls';
@@ -84,7 +85,8 @@ export class Editor {
   readonly inspector: InspectorPanel;
   readonly scripts: ScriptsView;
   readonly project: ProjectManager;
-  selected: GameObject | null = null;
+  /** What's selected (hierarchy, inspector and viewport share it). */
+  readonly selection = new Selection();
   showHelpers = true;
   view: EditorView = 'scene';
   /** Look through the scene's active camera instead of the editor camera (turned on by Play). */
@@ -114,6 +116,7 @@ export class Editor {
     this.inspector = new InspectorPanel(this, ui.inspector);
     this.scripts = new ScriptsView(this, ui.scriptsView);
     this.history.onChange = () => this.updateToolbar();
+    this.selection.changed.connect(() => this.selectionChanged());
     this.project = new ProjectManager(this);
     // Toolbar only: rebuilding the inspector here would steal focus from a field being edited.
     this.project.onChange = () => this.updateToolbar();
@@ -138,12 +141,20 @@ export class Editor {
     return this.engine.scene;
   }
 
+  /** The active selected object: shown in the inspector and moved by the gizmo. */
+  get selected(): GameObject | null {
+    return this.selection.active;
+  }
+
+  /** Selects only `obj` (null clears the selection). */
   select(obj: GameObject | null): void {
-    if (this.selected === obj) return;
-    this.selected = obj;
+    this.selection.set(obj);
+  }
+
+  private selectionChanged(): void {
     this.gizmo.hover = null;
     this.hierarchy.updateSelection();
-    this.inspector.show(obj);
+    this.inspector.show(this.selected);
   }
 
   /** Adds an object to the scene as an undoable action and selects it. */
@@ -154,7 +165,7 @@ export class Editor {
       label,
       undo: () => {
         parent.remove(obj);
-        if (this.selected === obj || (this.selected && obj.isAncestorOf(this.selected))) this.select(null);
+        this.selection.retain((o) => o !== obj && !obj.isAncestorOf(o));
         this.hierarchy.markDirty();
       },
       redo: () => {
@@ -592,7 +603,7 @@ export class Editor {
     // Play runs a copy, so Stop restores everything (including objects created or destroyed by scripts) by
     // switching back. Edits during Play go to the copy and get their own undo history.
     const edit = this.scene;
-    const selected = pathOf(this.selected);
+    const selected = this.selectionPaths();
     this.editScene = edit;
     this.editHistory = this.history;
     this.history = new History();
@@ -612,7 +623,7 @@ export class Editor {
   stopPlay(): void {
     if (!this.engine.playing) return;
     this.endActiveGesture();
-    const selected = pathOf(this.selected);
+    const selected = this.selectionPaths();
     this.engine.setPlaying(false);
     if (this.editScene) this.engine.setActiveScene(this.editScene);
     if (this.editHistory) this.history = this.editHistory;
@@ -623,11 +634,17 @@ export class Editor {
     this.updateToolbar();
   }
 
-  /** After Play/Stop swapped scenes: select the counterpart of what was selected and rebuild the panels. */
-  private sceneSwitched(selectedPath: number[] | null): void {
-    this.selected = null;
+  /** Hierarchy paths of the selection, to find the same objects in another copy of the scene. */
+  private selectionPaths(): SelectionPaths {
+    return { items: this.selection.items.map(pathOf).filter((p): p is number[] => p !== null), active: pathOf(this.selected) };
+  }
+
+  /** After Play/Stop swapped scenes: select the counterparts of what was selected and rebuild the panels. */
+  private sceneSwitched(paths: SelectionPaths): void {
     this.hierarchy.markDirty();
-    this.select(selectedPath ? objectAt(this.scene.root, selectedPath) : null);
+    const find = (p: number[] | null) => (p ? objectAt(this.scene.root, p) : null);
+    const items = paths.items.map(find).filter((o): o is GameObject => o !== null);
+    this.selection.setMany(items, find(paths.active));
     this.inspector.show(this.selected, true);
     this.scripts.refresh();
     this.updateToolbar();
@@ -648,7 +665,7 @@ export class Editor {
       this.controls.fly(move, f.dt, k.has('ShiftLeft') || k.has('ShiftRight'));
     }
     // A selected object may have been removed by undo or by a parent deletion.
-    if (this.selected && !this.isInScene(this.selected)) this.select(null);
+    this.selection.retain((o) => this.isInScene(o));
 
     this.hierarchy.update();
     this.inspector.sync();
@@ -752,10 +769,12 @@ export class Editor {
         }
       }
     }
+    for (const o of this.selection.items) {
+      const b = worldBounds(o);
+      if (b) overlay.wireBox(boxCorners(b.min, b.max), SELECTION_COLOR, o === this.selected ? 1.5 : 1, true);
+    }
     const sel = this.selected;
     if (sel) {
-      const b = worldBounds(sel);
-      if (b) overlay.wireBox(boxCorners(b.min, b.max), SELECTION_COLOR, 1.5, true);
       const col = worldCollider(sel);
       if (col?.shape === 'box') overlay.wireBox(colliderCorners(col), COLLIDER_COLOR, 1.5, true);
       else if (col) for (const axis of col.axes) overlay.circle(col.center, axis, col.radius, COLLIDER_COLOR, 1.5, true, 48);
@@ -888,7 +907,12 @@ export class Editor {
     const up = (e: PointerEvent) => {
       if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
       const [x, y] = this.localPointer(e);
-      if (this.pointerMode === 'click') this.select(this.pickObject(x, y));
+      if (this.pointerMode === 'click') {
+        const hit = this.pickObject(x, y);
+        // Ctrl/Cmd+click adds or removes; a plain click selects only what's under the cursor (or nothing).
+        if (hit && (e.ctrlKey || e.metaKey)) this.selection.toggle(hit);
+        else if (!e.ctrlKey && !e.metaKey) this.select(hit);
+      }
       this.endActiveGesture();
       canvas.style.cursor = '';
     };
@@ -1223,6 +1247,11 @@ function locateSyntaxError(code: string): { line: number; column: number } | nul
 
 function formatCount(n: number): string {
   return n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n);
+}
+
+interface SelectionPaths {
+  items: number[][];
+  active: number[] | null;
 }
 
 /** Child indices from the scene root down to `obj` (null for no object or a detached one). */
