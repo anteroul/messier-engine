@@ -1,7 +1,19 @@
 import {
   BEHAVIOURS,
   BODY_TYPES,
+  ANCHORS_2D,
   COLLIDER_SHAPES,
+  SHAPE_KINDS_2D,
+  SPACES_2D,
+  Shape2D,
+  TEXT_ALIGNS,
+  TEXT_BASELINES,
+  Text2D,
+  type Anchor2D,
+  type ShapeKind2D,
+  type Space2D,
+  type TextAlign,
+  type TextBaseline,
   DEG2RAD,
   PROJECTIONS,
   RAD2DEG,
@@ -22,7 +34,9 @@ import {
   type Projection,
   type Vec3,
 } from '../engine';
-import { button, checkboxRow, colorRow, el, numberRow, row, section, selectRow, sliderRow, textRow, vec3Row, type Binding } from './ui';
+import {
+  button, checkboxRow, colorRow, el, numberRow, rgbaRow, row, section, selectRow, sliderRow, textAreaRow, textRow, vec3Row, type Binding,
+} from './ui';
 import type { Editor } from './editor';
 
 /** Property editor for the selected object (or scene settings when nothing is selected). */
@@ -241,6 +255,10 @@ export class InspectorPanel {
     }
 
     if (obj.camera) out.push(this.buildCamera(obj));
+    const shape = obj.getComponent(Shape2D);
+    if (shape) out.push(this.buildShape2D(shape));
+    const text = obj.getComponent(Text2D);
+    if (text) out.push(this.buildText2D(text));
 
     out.push(this.buildRigidBody(obj));
 
@@ -354,6 +372,93 @@ export class InspectorPanel {
       },
     });
     s.body.append(state, el('p', { class: 'hint', text: 'Cameras look along the object’s local −Z axis, with local +Y up.' }));
+    return s.root;
+  }
+
+  /** Space, anchor and order rows shared by Shape2D and Text2D. */
+  private placement2D(r: Shape2D | Text2D, body: HTMLElement): void {
+    const space = selectRow('Space', [...SPACES_2D], () => r.space, (v) => {
+      r.space = v as Space2D;
+      this.refresh();
+    });
+    const order = numberRow('Order', () => r.order, (v) => (r.order = Math.round(v)), { step: 1, min: -1000, max: 1000, precision: 0 });
+    body.append(space.row);
+    this.add(space.binding);
+    if (r.space === 'screen') {
+      const anchor = selectRow('Anchor', [...ANCHORS_2D], () => r.anchor, (v) => (r.anchor = v as Anchor2D));
+      body.append(anchor.row);
+      this.add(anchor.binding);
+    }
+    body.append(order.row);
+    this.add(order.binding);
+  }
+
+  private hint2D(r: Shape2D | Text2D): HTMLElement {
+    return el('p', {
+      class: 'hint',
+      text: r.space === 'screen'
+        ? 'Screen space: sizes and position are pixels from the anchor (+Y up). Drag it in the viewport to move it.'
+        : 'World space: drawn on the object’s local XY plane, facing +Z. Colors are display colors, unaffected by lighting.',
+    });
+  }
+
+  private buildShape2D(sh: Shape2D): HTMLElement {
+    const s = section('Shape 2D');
+    const kind = selectRow('Shape', [...SHAPE_KINDS_2D], () => sh.shape, (v) => {
+      sh.shape = v as ShapeKind2D;
+      this.refresh();
+    });
+    s.body.append(kind.row);
+    this.add(kind.binding);
+    this.placement2D(sh, s.body);
+    const unit = sh.space === 'screen' ? 1 : 0.05;
+    if (sh.shape !== 'path') {
+      const width = numberRow('Width', () => sh.width, (v) => (sh.width = v), { step: unit, min: 0 });
+      const height = numberRow('Height', () => sh.height, (v) => (sh.height = v), { step: unit, min: 0 });
+      s.body.append(width.row, height.row);
+      this.add(width.binding, height.binding);
+    }
+    if (sh.shape === 'rectangle') {
+      const radius = numberRow('Corner radius', () => sh.cornerRadius, (v) => (sh.cornerRadius = v), { step: unit, min: 0 });
+      s.body.append(radius.row);
+      this.add(radius.binding);
+    } else if (sh.shape === 'polygon') {
+      const sides = numberRow('Sides', () => sh.sides, (v) => (sh.sides = Math.max(3, Math.round(v))), { step: 1, min: 3, max: 64, precision: 0 });
+      s.body.append(sides.row);
+      this.add(sides.binding);
+    } else if (sh.shape === 'path') {
+      const closed = checkboxRow('Closed', () => sh.closed, (v) => (sh.closed = v));
+      s.body.append(closed.row, el('p', { class: 'hint', text: `${sh.points.length >> 1} points. Set \`points\` (flat x, y list) from a script.` }));
+      this.add(closed.binding);
+    }
+    const filled = checkboxRow('Filled', () => sh.filled, (v) => (sh.filled = v));
+    const fill = rgbaRow('Fill color', () => sh.fillColor, (c) => (sh.fillColor = c));
+    const strokeWidth = numberRow('Outline width', () => sh.strokeWidth, (v) => (sh.strokeWidth = v), { step: unit / 5, min: 0 });
+    const stroke = rgbaRow('Outline color', () => sh.strokeColor, (c) => (sh.strokeColor = c));
+    s.body.append(filled.row, fill.row, strokeWidth.row, stroke.row, this.hint2D(sh));
+    this.add(filled.binding, fill.bindings, strokeWidth.binding, stroke.bindings);
+    return s.root;
+  }
+
+  private buildText2D(t: Text2D): HTMLElement {
+    const s = section('Text 2D');
+    const text = textAreaRow('Text', () => t.text, (v) => (t.text = v));
+    s.body.append(text.row);
+    this.add(text.binding);
+    this.placement2D(t, s.body);
+    const unit = t.space === 'screen' ? 1 : 0.05;
+    const size = numberRow('Font size', () => t.fontSize, (v) => (t.fontSize = v), { step: unit, min: 0 });
+    const font = textRow('Font', () => t.fontFamily, (v) => (t.fontFamily = v.trim() || 'sans-serif'));
+    const bold = checkboxRow('Bold', () => t.bold, (v) => (t.bold = v));
+    const color = rgbaRow('Color', () => t.color, (c) => (t.color = c));
+    const align = selectRow('Align', [...TEXT_ALIGNS], () => t.align, (v) => (t.align = v as TextAlign));
+    const vAlign = selectRow('Vertical align', [...TEXT_BASELINES], () => t.verticalAlign, (v) => (t.verticalAlign = v as TextBaseline));
+    const lineHeight = numberRow('Line height', () => t.lineHeight, (v) => (t.lineHeight = v), { step: 0.05, min: 0.1, max: 10 });
+    const maxWidth = numberRow('Wrap width', () => t.maxWidth, (v) => (t.maxWidth = v), { step: unit * 10, min: 0 });
+    const outline = numberRow('Outline width', () => t.outlineWidth, (v) => (t.outlineWidth = v), { step: unit / 5, min: 0 });
+    const outlineColor = rgbaRow('Outline color', () => t.outlineColor, (c) => (t.outlineColor = c));
+    s.body.append(size.row, font.row, bold.row, color.row, align.row, vAlign.row, lineHeight.row, maxWidth.row, outline.row, outlineColor.row, this.hint2D(t));
+    this.add(size.binding, font.binding, bold.binding, color.bindings, align.binding, vAlign.binding, lineHeight.binding, maxWidth.binding, outline.binding, outlineColor.bindings);
     return s.root;
   }
 

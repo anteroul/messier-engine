@@ -2,6 +2,7 @@ import { mat4, vec3, type Vec3 } from './math';
 import type { Ray } from './camera';
 import type { GameObject, Scene } from './scene';
 import { VERTEX_STRIDE_FLOATS } from './mesh';
+import { Renderer2D } from './shapes2d';
 
 export interface RaycastHit {
   object: GameObject;
@@ -76,13 +77,56 @@ export function raycastObject(obj: GameObject, ray: Ray): number | null {
   return best;
 }
 
-/** Closest visible mesh hit in the scene. */
+/**
+ * Ray against an object's world-space 2D renderers (Shape2D, Text2D): their bounds rectangle on the local XY plane.
+ * Screen-space ones aren't in the world; see pickScreen2D().
+ */
+export function raycast2D(obj: GameObject, ray: Ray): number | null {
+  let best: number | null = null;
+  for (const r of obj.getComponents(Renderer2D)) {
+    if (!r.enabled || r.space !== 'world') continue;
+    const inv = mat4.invert(obj.worldMatrix);
+    if (!inv) return null;
+    const lo = vec3.transformPoint(inv, ray.origin);
+    const ld = vec3.transformDir(inv, ray.dir);
+    if (Math.abs(ld[2]) < 1e-12) continue;
+    const t = -lo[2] / ld[2];
+    if (t < 0) continue;
+    const x = lo[0] + ld[0] * t, y = lo[1] + ld[1] * t;
+    const [x0, y0, x1, y1] = r.localBounds();
+    if (x >= x0 && x <= x1 && y >= y0 && y <= y1 && (best === null || t < best)) best = t;
+  }
+  return best;
+}
+
+/**
+ * The topmost visible screen-space 2D renderer whose bounds contain the viewport point (CSS pixels, y down), or null.
+ */
+export function pickScreen2D(scene: Scene, x: number, y: number, width: number, height: number): Renderer2D | null {
+  let best: Renderer2D | null = null;
+  const m = new Float32Array(16);
+  for (const r of scene.query(Renderer2D)) {
+    if (r.space !== 'screen' || (best && r.order < best.order)) continue;
+    // Invert the 2D part of the local → pixel map.
+    r.targetMatrix(width, height, m);
+    const det = m[0] * m[5] - m[1] * m[4];
+    if (Math.abs(det) < 1e-12) continue;
+    const dx = x - m[12], dy = y - m[13];
+    const u = (m[5] * dx - m[4] * dy) / det, v = (m[0] * dy - m[1] * dx) / det;
+    const [x0, y0, x1, y1] = r.localBounds();
+    // Later ones draw on top at equal order.
+    if (u >= x0 && u <= x1 && v >= y0 && v <= y1) best = r;
+  }
+  return best;
+}
+
+/** Closest visible mesh (or world-space 2D) hit in the scene. */
 export function raycastScene(scene: Scene, ray: Ray, filter?: (o: GameObject) => boolean): RaycastHit | null {
   let best: RaycastHit | null = null;
   const visit = (o: GameObject) => {
     if (!o.visible) return;
-    if (o.mesh && (!filter || filter(o))) {
-      const t = raycastObject(o, ray);
+    if ((o.mesh || o.getComponent(Renderer2D)) && (!filter || filter(o))) {
+      const t = minHit(raycastObject(o, ray), raycast2D(o, ray));
       if (t !== null && (!best || t < best.distance)) best = { object: o, distance: t, point: vec3.addScaled(ray.origin, ray.dir, t) };
     }
     for (const c of o.children) visit(c);
@@ -91,21 +135,29 @@ export function raycastScene(scene: Scene, ray: Ray, filter?: (o: GameObject) =>
   return best;
 }
 
-/** World-space AABB of an object and all its descendants' meshes, or null if none. */
+const minHit = (a: number | null, b: number | null) => (a === null ? b : b === null ? a : Math.min(a, b));
+
+/** World-space AABB of an object and all its descendants' meshes and world-space 2D renderers, or null if none. */
 export function worldBounds(obj: GameObject): { min: Vec3; max: Vec3 } | null {
   let min: Vec3 = [Infinity, Infinity, Infinity];
   let max: Vec3 = [-Infinity, -Infinity, -Infinity];
   let any = false;
-  obj.traverse((o) => {
-    if (!o.mesh) return;
-    const m = o.mesh;
+  const add = (o: GameObject, lo: Readonly<Vec3>, hi: Readonly<Vec3>) => {
     for (let i = 0; i < 8; i++) {
-      const corner: Vec3 = [i & 4 ? m.boundsMax[0] : m.boundsMin[0], i & 2 ? m.boundsMax[1] : m.boundsMin[1], i & 1 ? m.boundsMax[2] : m.boundsMin[2]];
+      const corner: Vec3 = [i & 4 ? hi[0] : lo[0], i & 2 ? hi[1] : lo[1], i & 1 ? hi[2] : lo[2]];
       const w = vec3.transformPoint(o.worldMatrix, corner);
       min = vec3.min(min, w);
       max = vec3.max(max, w);
     }
     any = true;
+  };
+  obj.traverse((o) => {
+    if (o.mesh) add(o, o.mesh.boundsMin, o.mesh.boundsMax);
+    for (const r of o.getComponents(Renderer2D)) {
+      if (r.space !== 'world') continue;
+      const [x0, y0, x1, y1] = r.localBounds();
+      add(o, [x0, y0, 0], [x1, y1, 0]);
+    }
   });
   return any ? { min, max } : null;
 }

@@ -10,6 +10,8 @@ import {
   Bobber,
   RigidBody,
   ScriptAsset,
+  Shape2D,
+  Text2D,
   createCube,
   fitCollider,
   createCylinder,
@@ -176,6 +178,18 @@ export function buildDemoScene(scene: Scene): void {
   carousel.attachComponent(carouselScript.create());
   rider.attachComponent(lapFlash.create());
   scene.add(carousel);
+
+  // A world-space 2D sign: a rounded panel with a title on it (drawn after the panel, a hair in front).
+  const sign = new GameObject('Sign');
+  sign.transform.position = [0, 3.9, -6.5];
+  sign.attachComponent(new Shape2D({
+    width: 5.2, height: 1.4, cornerRadius: 0.3, fillColor: [0.05, 0.06, 0.09, 0.85], strokeWidth: 0.06, strokeColor: [0.13, 0.83, 0.93, 1],
+  }));
+  const title = new GameObject('Title');
+  title.transform.position = [0, 0, 0.01];
+  title.attachComponent(new Text2D({ text: 'Messier Engine', fontSize: 0.7, bold: true, order: 1 }));
+  sign.add(title);
+  scene.add(sign);
 
   // Play renders through this camera.
   const camera = new GameObject('Main Camera');

@@ -1,6 +1,12 @@
 import {
   CameraComponent,
   DEG2RAD,
+  draw2d,
+  pickScreen2D,
+  Renderer2D,
+  Shape2D,
+  Text2D,
+  type ShapeKind2D,
   GameObject,
   Light,
   Material,
@@ -47,7 +53,7 @@ import { OrbitControls } from './orbitControls';
 import { LEGACY_SCRIPTS_KEY, ProjectManager } from './project';
 import { ScriptsView } from './scriptsView';
 
-type PointerMode = 'none' | 'click' | 'orbit' | 'pan' | 'gizmo' | 'fly';
+type PointerMode = 'none' | 'click' | 'orbit' | 'pan' | 'gizmo' | 'drag2d' | 'fly';
 export type EditorView = 'scene' | 'scripts';
 
 /** Game keys whose browser default (scrolling, activating the focused button) would fight the game. */
@@ -228,6 +234,12 @@ export class Editor {
           create('Directional Light', (p) => this.createLight('directional', p)),
           'separator',
           create('Camera', (p) => this.createCamera(p)),
+          'separator',
+          create('Rectangle', (p) => this.createShape2D('rectangle', p)),
+          create('Ellipse', (p) => this.createShape2D('ellipse', p)),
+          create('Polygon', (p) => this.createShape2D('polygon', p)),
+          create('Text', (p) => this.createText2D(false, p)),
+          create('Screen Text (HUD)', (p) => this.createText2D(true, p)),
         ],
       },
       'separator',
@@ -574,6 +586,51 @@ export class Editor {
     this.updateToolbar();
   }
 
+  /** A world-space 2D shape standing upright in front of the view, facing it. */
+  createShape2D(kind: Exclude<ShapeKind2D, 'path'>, parent?: GameObject): GameObject {
+    const names: Record<typeof kind, string> = { rectangle: 'Rectangle', ellipse: 'Ellipse', polygon: 'Polygon' };
+    const colors: Record<typeof kind, Vec4> = { rectangle: [0.95, 0.55, 0.25, 1], ellipse: [0.3, 0.75, 0.95, 1], polygon: [0.55, 0.85, 0.4, 1] };
+    const obj = new GameObject(names[kind]);
+    obj.attachComponent(new Shape2D({
+      shape: kind,
+      fillColor: colors[kind],
+      strokeWidth: 0.04,
+      strokeColor: [0.08, 0.08, 0.1, 1],
+      cornerRadius: kind === 'rectangle' ? 0.1 : 0,
+    }));
+    this.placeFacingView(obj, 0.5);
+    return this.addCreated(obj, parent);
+  }
+
+  /** World-space text in front of the view, or (`screen`) a HUD label near the top-left corner of the viewport. */
+  createText2D(screen: boolean, parent?: GameObject): GameObject {
+    const obj = new GameObject(screen ? 'Screen Text' : 'Text');
+    if (screen) {
+      obj.attachComponent(new Text2D({
+        space: 'screen', anchor: 'top-left', text: 'Screen Text', fontSize: 28, align: 'left', verticalAlign: 'top', outlineWidth: 2,
+      }));
+      // Pixels from the anchor, y up: 16 px in from the corner.
+      obj.transform.position = [16, -16, 0];
+      return this.addObject(obj, parent);
+    }
+    obj.attachComponent(new Text2D({ text: 'Text', fontSize: 0.5 }));
+    this.placeFacingView(obj, 0.5);
+    return this.addCreated(obj, parent);
+  }
+
+  private placeFacingView(obj: GameObject, height: number): void {
+    obj.transform.position = this.spawnPoint(height);
+    const f = this.camera.forward();
+    // Upright, with +Z (the side 2D renderers face) toward the camera.
+    if (Math.hypot(f[0], f[2]) > 1e-3) obj.transform.rotation = quat.lookRotation(vec3.normalize([f[0], 0, f[2]]));
+  }
+
+  /** Whether the object draws in screen space (and so has no gizmo in the 3D view). */
+  isScreenSpace(obj: GameObject | null): boolean {
+    const r = obj?.getComponent(Renderer2D);
+    return !!r && r.space === 'screen' && !obj!.mesh;
+  }
+
   createEmpty(parent?: GameObject): GameObject {
     const obj = new GameObject('Empty');
     obj.transform.position = this.spawnPoint(0);
@@ -823,6 +880,10 @@ export class Editor {
       }
     }
     for (const o of this.selection.items) {
+      if (this.isScreenSpace(o)) {
+        this.outlineScreen2D(o, o === this.selected);
+        continue;
+      }
       const b = worldBounds(o);
       if (b) overlay.wireBox(boxCorners(b.min, b.max), SELECTION_COLOR, o === this.selected ? 1.5 : 1, true);
     }
@@ -831,7 +892,20 @@ export class Editor {
       const col = worldCollider(sel);
       if (col?.shape === 'box') overlay.wireBox(colliderCorners(col), COLLIDER_COLOR, 1.5, true);
       else if (col) for (const axis of col.axes) overlay.circle(col.center, axis, col.radius, COLLIDER_COLOR, 1.5, true, 48);
-      this.gizmo.draw(overlay, sel, vh);
+      if (!this.isScreenSpace(sel)) this.gizmo.draw(overlay, sel, vh);
+    }
+  }
+
+  /** Selection outline of a screen-space object, drawn into the HUD layer. */
+  private outlineScreen2D(o: GameObject, active: boolean): void {
+    const c = this.ui.canvas;
+    for (const r of o.getComponents(Renderer2D)) {
+      if (r.space !== 'screen' || !r.isActiveAndEnabled) continue;
+      const m = r.targetMatrix(c.clientWidth, c.clientHeight);
+      const [x0, y0, x1, y1] = r.localBounds();
+      const corners: [number, number][] = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+      const pts = corners.map(([x, y]): [number, number] => [m[0] * x + m[4] * y + m[12], m[1] * x + m[5] * y + m[13]]);
+      draw2d.polyline(pts, SELECTION_COLOR, active ? 1.5 : 1, true);
     }
   }
 
@@ -849,13 +923,17 @@ export class Editor {
   }
 
   private pickGizmo(x: number, y: number): Handle | null {
-    if (!this.selected) return null;
+    if (!this.selected || this.isScreenSpace(this.selected)) return null;
     const c = this.ui.canvas;
     return this.gizmo.pick(this.selected, x, y, c.clientWidth, c.clientHeight);
   }
 
   /** Object under the cursor: light and camera icons first, then meshes. */
   private pickObject(x: number, y: number): GameObject | null {
+    const c = this.ui.canvas;
+    // The HUD is in front of everything.
+    const hud = pickScreen2D(this.scene, x, y, c.clientWidth, c.clientHeight);
+    if (hud) return hud.gameObject;
     const ray = this.rayAt(x, y);
     if (this.showHelpers) {
       let bestHelper: GameObject | null = null;
@@ -895,6 +973,8 @@ export class Editor {
     if (this.pointerMode === 'gizmo' && this.selected) {
       this.gizmo.end();
       this.commitTransformEdit(this.selected);
+    } else if (this.pointerMode === 'drag2d' && this.selected) {
+      this.commitTransformEdit(this.selected);
     }
     this.pointerMode = 'none';
   }
@@ -916,6 +996,13 @@ export class Editor {
           this.pointerMode = 'gizmo';
           this.beginTransformEdit(this.selected);
           this.gizmo.begin(handle, this.selected, this.rayAt(x, y), x, y, canvas.clientHeight);
+          return;
+        }
+        // Dragging the selected HUD element moves it in pixels.
+        const hud = e.shiftKey ? null : pickScreen2D(this.scene, x, y, canvas.clientWidth, canvas.clientHeight)?.gameObject;
+        if (hud && hud === this.selected) {
+          this.pointerMode = 'drag2d';
+          this.beginTransformEdit(hud);
           return;
         }
         this.pointerMode = e.shiftKey ? 'pan' : 'click';
@@ -942,6 +1029,14 @@ export class Editor {
         }
         case 'gizmo':
           if (this.selected) this.gizmo.update(this.selected, this.rayAt(x, y), x, y);
+          canvas.style.cursor = 'grabbing';
+          break;
+        case 'drag2d':
+          if (this.selected) {
+            // Screen space is y up from the anchor; pointer deltas are y down.
+            const p = this.selected.worldPosition();
+            this.selected.setWorldPosition([p[0] + dx, p[1] - dy, p[2]]);
+          }
           canvas.style.cursor = 'grabbing';
           break;
         case 'click':
@@ -1141,6 +1236,11 @@ export class Editor {
       'add-spot': () => this.createLight('spot'),
       'add-directional': () => this.createLight('directional'),
       'add-camera': () => this.createCamera(),
+      'add-rectangle': () => this.createShape2D('rectangle'),
+      'add-ellipse': () => this.createShape2D('ellipse'),
+      'add-polygon': () => this.createShape2D('polygon'),
+      'add-text': () => this.createText2D(false),
+      'add-screen-text': () => this.createText2D(true),
     };
     const root = document.body;
     root.addEventListener('click', (e) => {

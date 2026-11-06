@@ -388,7 +388,7 @@ const autosaved = () =>
   );
 await sleep(1500);
 // The demo's own scripts, then those of its Gem Rush scene.
-const DEMO_SCRIPTS = 'Hover,Carousel,LapFlash,GameManager,PlayerBall,FollowCamera,GemSpawner,Gem,Spark,Sentinel,ScorePips';
+const DEMO_SCRIPTS = 'Hover,Carousel,LapFlash,GameManager,PlayerBall,FollowCamera,GemSpawner,Gem,Spark,Sentinel,ScorePips,ScoreHud';
 check('scripts autosave', (await autosaved())?.scripts.map((x) => x.name).join() === `${DEMO_SCRIPTS},EmptyScript`);
 
 // --- Keyboard input: during Play, keys drive scripts instead of editor shortcuts; Esc stops
@@ -511,6 +511,63 @@ await sleep(300);
 await page.screenshot({ path: `${OUT}/ui-final.png` });
 const stats = await page.$eval('#stats', (e) => e.textContent);
 check('stats overlay', /fps/.test(stats), stats);
+// --- 2D: world-space text and shapes, a HUD label edited in the inspector and dragged in the viewport
+await page.keyboard.press('Escape');
+await page.click('.add-menu summary');
+await page.click('[data-action="add-ellipse"]');
+await sleep(50);
+await page.click('.add-menu summary');
+await page.click('[data-action="add-text"]');
+await sleep(50);
+const worldText = await state(() => {
+  const o = window.editor.selected;
+  const t = o.components.find((c) => 'fontSize' in c);
+  const [x0, , x1] = t.localBounds();
+  return { name: o.name, space: t.space, sized: x1 - x0 > 0.3 };
+});
+check('Add > Text creates world-space text', worldText.name === 'Text' && worldText.space === 'world' && worldText.sized, JSON.stringify(worldText));
+await page.click('.add-menu summary');
+await page.click('[data-action="add-screen-text"]');
+await sleep(50);
+const hudPanel = await page.$eval('#inspector', (e) => e.innerText);
+check('Add > Screen Text shows the Text 2D inspector', hudPanel.includes('Text 2D') && hudPanel.includes('Anchor') && hudPanel.includes('Outline width'));
+await page.focus('#inspector textarea');
+await page.keyboard.down('Control');
+await page.keyboard.press('KeyA');
+await page.keyboard.up('Control');
+await page.keyboard.type('Score 42');
+await page.keyboard.press('Enter');
+await page.keyboard.type('Lives 3');
+const hudText = await state(() => window.editor.selected.components.find((c) => 'fontSize' in c).text);
+check('inspector edits text live (multi-line)', hudText === 'Score 42\nLives 3', JSON.stringify(hudText));
+await page.$eval('#inspector textarea', (e) => e.blur());
+await sleep(100);
+const canvasBox = await state(() => {
+  const r = document.getElementById('gpu-canvas').getBoundingClientRect();
+  return [r.left, r.top];
+});
+// The label's top-left corner is 16 px in from the viewport's; grab it inside the first line.
+await page.mouse.move(canvasBox[0] + 40, canvasBox[1] + 30);
+await page.mouse.down();
+await page.mouse.move(canvasBox[0] + 70, canvasBox[1] + 50, { steps: 4 });
+await page.mouse.move(canvasBox[0] + 100, canvasBox[1] + 70, { steps: 4 });
+await page.mouse.up();
+const dragged = await state(() => [...window.editor.selected.transform.position]);
+check('drag moves a selected HUD element in pixels', dragged[0] === 76 && dragged[1] === -56, dragged.join(','));
+await page.$eval('#gpu-canvas', (e) => e.focus());
+await page.keyboard.down('Control');
+await page.keyboard.press('KeyZ');
+await page.keyboard.up('Control');
+check('undo HUD drag', (await state(() => window.editor.selected.transform.position.join())) === '16,-16,0');
+await page.keyboard.press('Escape');
+await page.mouse.click(canvasBox[0] + 40, canvasBox[1] + 30);
+await sleep(50);
+check('click picks HUD text', (await state(() => window.editor.selected?.name)) === 'Screen Text');
+await sleep(150);
+await page.screenshot({ path: `${OUT}/ui-2d.png` });
+const atlasUsed = await state(() => window.engine.renderer.stats.elements2D >= 5);
+check('2D elements render (sign, title, ellipse, text, HUD)', atlasUsed);
+
 // --- Projects: autosave survives a reload, scenes, Save (download fallback) and Open
 page.on('dialog', (d) => void d.accept()); // "Discard unsaved changes?"
 await state(() => {

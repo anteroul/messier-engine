@@ -5,6 +5,7 @@ import {
   Material,
   RigidBody,
   ScriptAsset,
+  Text2D,
   createCube,
   createPlane,
   createSphere,
@@ -469,6 +470,67 @@ function findScript<T>(scene: Scene, name: string): T | null {
 }
 `;
 
+const SCORE_HUD_SCRIPT = `import { Script, Text2D, type Scene, type Signal } from 'messier';
+
+/** Writes the score and the win message into this object's Text2D, and pops the text when the score changes. */
+export default class ScoreHud extends Script {
+  /** Font size multiplier right after a change. */
+  pop = 1.4;
+  /** How fast the pop settles, per second. */
+  settle = 4;
+  private label: Text2D | null = null;
+  private baseSize = 0;
+  private boost = 0;
+  private goal = 0;
+  private finished = false;
+
+  start(): void {
+    this.label = this.object.getComponent(Text2D);
+    if (this.label) this.baseSize = this.label.fontSize;
+    const game = findScript<GameApi>(this.scene, 'GameManager');
+    if (!game) return;
+    this.goal = game.goal;
+    this.show(game.points);
+    game.scoreChanged.connect((score, goal) => {
+      this.goal = goal;
+      this.show(score);
+      this.boost = 1;
+    }, this);
+    game.won.connect(() => {
+      this.finished = true;
+      this.show(this.goal);
+    }, this);
+    game.restarted.connect(() => {
+      this.finished = false;
+      this.show(0);
+    }, this);
+  }
+
+  update(dt: number): void {
+    if (!this.label) return;
+    this.boost = Math.max(0, this.boost - dt * this.settle);
+    this.label.fontSize = this.baseSize * (1 + (this.pop - 1) * this.boost);
+  }
+
+  private show(score: number): void {
+    if (!this.label) return;
+    this.label.text = this.finished ? 'You win!\\nPress R to play again' : \`Gems \${score} / \${this.goal}\`;
+  }
+}
+
+interface GameApi {
+  readonly points: number;
+  readonly goal: number;
+  scoreChanged: Signal<[score: number, goal: number]>;
+  won: Signal<[]>;
+  restarted: Signal<[]>;
+}
+
+function findScript<T>(scene: Scene, name: string): T | null {
+  return (scene.query(Script).find((s) => s.typeName === name) as unknown as T | undefined) ?? null;
+}
+`;
+
 /** Script names and sources of the demo game, in the order they're listed in the Scripts tab. */
 export const DEMO_GAME_SCRIPTS: readonly (readonly [name: string, source: string])[] = [
   ['GameManager', GAME_MANAGER_SCRIPT],
@@ -479,6 +541,7 @@ export const DEMO_GAME_SCRIPTS: readonly (readonly [name: string, source: string
   ['Spark', SPARK_SCRIPT],
   ['Sentinel', SENTINEL_SCRIPT],
   ['ScorePips', SCORE_PIPS_SCRIPT],
+  ['ScoreHud', SCORE_HUD_SCRIPT],
 ];
 
 const ARENA_HALF = 9;
@@ -584,6 +647,23 @@ export function buildDemoGame(scene: Scene): void {
   }
   pips.attachComponent(script('ScorePips'));
   scene.add(pips);
+
+  // Screen-space text: the score at the top (kept current by ScoreHud), the controls at the bottom.
+  const hud = new GameObject('Score HUD');
+  hud.attachComponent(new Text2D({
+    space: 'screen', anchor: 'top', text: `Gems 0 / ${goal}`, fontSize: 30, bold: true, color: [1, 0.93, 0.55, 1], verticalAlign: 'top',
+    outlineWidth: 3, outlineColor: [0.03, 0.03, 0.08, 0.9],
+  }));
+  hud.transform.position = [0, -14, 0];
+  hud.attachComponent(script('ScoreHud'));
+  scene.add(hud);
+  const help = new GameObject('Controls HUD');
+  help.attachComponent(new Text2D({
+    space: 'screen', anchor: 'bottom', text: 'WASD / arrows: roll   Space: jump   R: restart', fontSize: 15, color: [1, 1, 1, 0.8],
+    verticalAlign: 'bottom', outlineWidth: 2, outlineColor: [0, 0, 0, 0.6],
+  }));
+  help.transform.position = [0, 12, 0];
+  scene.add(help);
 
   const camera = new GameObject('Main Camera');
   camera.camera = new CameraComponent({ fovDeg: 55 });

@@ -90,6 +90,60 @@ Objects also have `childAdded`, `childRemoved` and `destroyed` signals.
 A component class only needs to extend `Component` (data) or `Behaviour` (hooks). `clone()` copies public fields
 for `instantiate`; override it for deeper copies. Signal fields get a fresh signal in each copy.
 
+## 2D shapes and text
+
+`Shape2D` and `Text2D` are components. With `space: 'world'` they lie on the object's local XY plane (facing +Z,
+sizes in meters); with `space: 'screen'` they're a HUD, positioned in pixels from `anchor` (+Y up). Colors are
+display-space RGBA (0…1), like CSS colors.
+
+```ts
+import { Script, Text2D } from 'messier';
+
+export default class Score extends Script {
+  private label: Text2D | null = null;
+  private points = 0;
+
+  start(): void {
+    this.label = this.object.getComponent(Text2D);
+  }
+
+  addPoint(): void {
+    this.points++;
+    if (this.label) this.label.text = `Score ${this.points}`;
+  }
+}
+```
+
+| `Shape2D` | |
+| --- | --- |
+| `shape` | `'rectangle'` (with `cornerRadius`), `'ellipse'`, `'polygon'` (`sides`) or `'path'` (`points`: flat x, y list, `closed`) |
+| `width` / `height` | size in local units |
+| `filled`, `fillColor`, `strokeWidth`, `strokeColor` | fill and outline (`strokeWidth` 0 = none) |
+
+| `Text2D` | |
+| --- | --- |
+| `text` | the string (`\n` breaks lines) |
+| `fontSize`, `fontFamily`, `bold`, `color` | em size in local units, any CSS font family |
+| `align` / `verticalAlign` | which side of the text is at the object's origin |
+| `lineHeight`, `maxWidth` | line spacing (× size); wrap width (0 = none) |
+| `outlineWidth`, `outlineColor` | outline around the glyphs |
+
+Both have `space`, `anchor` (screen space: `'top-left'`, `'top'`, … `'center'` … `'bottom-right'`) and `order` (higher
+draws on top).
+
+For throwaway drawing, `draw2d` draws over the frame in pixels from the top-left corner (y down). It only lasts one
+frame, so call it from `update` every frame:
+
+```ts
+draw2d.rect(10, 10, 200, 24, { fill: '#0008', stroke: '#fff', strokeWidth: 1 }, 6); // last arg: corner radius
+draw2d.rect(12, 12, 196 * health, 20, { fill: [0.9, 0.2, 0.2] });
+draw2d.circle(x, y, 8, { fill: '#ffcc33' });
+draw2d.line(x1, y1, x2, y2, '#f00', 2);
+draw2d.polygon([[0, 0], [20, 10], [0, 20]], { fill: '#fff' });
+draw2d.text('Paused', draw2d.width / 2, 40, { size: 32, align: 'center', bold: true, outlineWidth: 2 });
+draw2d.measureText('Paused', { size: 32 }); // { width, height }
+```
+
 ## Scene
 
 ```ts

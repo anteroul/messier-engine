@@ -226,6 +226,48 @@ export function textRow(label: string, get: () => string, set: (v: string) => vo
   return { row: row(label, input), binding };
 }
 
+/** Multi-line text; Enter inserts a newline, Ctrl+Enter or leaving the field applies. Updates live while typing. */
+export function textAreaRow(label: string, get: () => string, set: (v: string) => void): { row: HTMLElement; binding: Binding } {
+  const input = el('textarea', { class: 'text textarea', rows: 2, spellcheck: 'false' });
+  const binding: Binding = {
+    sync() {
+      if (!isFocused(input) && input.value !== get()) input.value = get();
+    },
+  };
+  input.addEventListener('input', () => set(input.value));
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) input.blur();
+    e.stopPropagation();
+  });
+  binding.sync();
+  return { row: row(label, input), binding };
+}
+
+/** Display-space RGBA color: a color picker plus an opacity field (0…1). */
+export function rgbaRow(label: string, get: () => readonly number[], set: (c: [number, number, number, number]) => void): { row: HTMLElement; bindings: Binding[] } {
+  const toHex = (c: readonly number[]) => '#' + [0, 1, 2].map((i) => Math.round(Math.min(1, Math.max(0, c[i])) * 255).toString(16).padStart(2, '0')).join('');
+  const color = el('input', { type: 'color', class: 'color' });
+  const colorBinding: Binding = {
+    sync() {
+      if (isFocused(color)) return;
+      const v = toHex(get());
+      if (color.value !== v) color.value = v;
+    },
+  };
+  color.addEventListener('input', () => {
+    const v = parseInt(color.value.slice(1), 16);
+    set([((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255, get()[3] ?? 1]);
+  });
+  colorBinding.sync();
+  const alpha = numberInput(() => get()[3] ?? 1, (a) => {
+    const c = get();
+    set([c[0], c[1], c[2], a]);
+  }, { step: 0.05, min: 0, max: 1, precision: 2 });
+  alpha.input.title = 'Opacity';
+  alpha.input.classList.add('alpha');
+  return { row: row(label, color, alpha.input), bindings: [colorBinding, alpha.binding] };
+}
+
 export function button(text: string, onClick: () => void, cls = 'btn'): HTMLButtonElement {
   const b = el('button', { class: cls, text, type: 'button' });
   b.addEventListener('click', onClick);

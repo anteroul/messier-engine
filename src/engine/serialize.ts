@@ -5,6 +5,8 @@ import { CameraComponent, CAMERA_FIELDS, PROJECTIONS } from './camera';
 import { BODY_TYPES, COLLIDER_SHAPES, RigidBody, RIGID_BODY_FIELDS } from './physics';
 import { BEHAVIOURS, createBehaviour, type Behaviour } from './behaviours';
 import { Script } from './scripting';
+import { ANCHORS_2D, SHAPE2D_FIELDS, SHAPE_KINDS_2D, Shape2D, SPACES_2D, Text2D, TEXT2D_FIELDS } from './shapes2d';
+import { TEXT_ALIGNS, TEXT_BASELINES } from './font';
 import type { Mesh, ResourceRef } from './mesh';
 import { quat, type Quat, type Vec3 } from './math';
 import { assignKnown, isObject, pickData, type Json } from './data';
@@ -37,6 +39,9 @@ export interface ObjectData {
   light?: Json;
   camera?: Json;
   rigidBody?: Json;
+  /** Shape2D fields plus `points` (flat x, y list). */
+  shape2d?: Json;
+  text2d?: Json;
   behaviours?: BehaviourData[];
   children?: ObjectData[];
 }
@@ -120,6 +125,13 @@ function objectToData(o: GameObject, warnings: string[]): ObjectData {
   if (o.light) d.light = pickData(o.light, LIGHT_FIELDS);
   if (o.camera) d.camera = pickData(o.camera, CAMERA_FIELDS);
   if (o.rigidBody) d.rigidBody = pickData(o.rigidBody, RIGID_BODY_FIELDS);
+  const shape = o.getComponent(Shape2D);
+  if (shape) {
+    d.shape2d = pickData(shape, SHAPE2D_FIELDS);
+    if (shape.points.length > 1) d.shape2d.points = shape.points.slice(0, shape.points.length & ~1);
+  }
+  const text = o.getComponent(Text2D);
+  if (text) d.text2d = pickData(text, TEXT2D_FIELDS);
   if (o.behaviours.length) d.behaviours = o.behaviours.map(behaviourToData);
   if (o.children.length) d.children = o.children.map((c) => objectToData(c, warnings));
   return d;
@@ -194,6 +206,21 @@ function dataToObject(d: Json, scene: Scene, res: SceneResources, warnings: stri
     if (!COLLIDER_SHAPES.includes(rb.shape)) rb.shape = 'box';
     o.rigidBody = rb;
   }
+  if (isObject(d.shape2d)) {
+    const sh = assignKnown(new Shape2D(), d.shape2d, SHAPE2D_FIELDS);
+    const pts = d.shape2d.points;
+    if (Array.isArray(pts) && pts.every((x) => typeof x === 'number' && Number.isFinite(x))) sh.points = pts.slice(0, pts.length & ~1) as number[];
+    if (!SHAPE_KINDS_2D.includes(sh.shape)) sh.shape = 'rectangle';
+    fix2D(sh);
+    o.attachComponent(sh);
+  }
+  if (isObject(d.text2d)) {
+    const t = assignKnown(new Text2D(), d.text2d, TEXT2D_FIELDS);
+    if (!TEXT_ALIGNS.includes(t.align)) t.align = 'center';
+    if (!TEXT_BASELINES.includes(t.verticalAlign)) t.verticalAlign = 'middle';
+    fix2D(t);
+    o.attachComponent(t);
+  }
   if (Array.isArray(d.behaviours)) {
     for (const bd of d.behaviours) {
       const b = isObject(bd) ? dataToBehaviour(bd, scene, o.name, warnings) : null;
@@ -204,6 +231,11 @@ function dataToObject(d: Json, scene: Scene, res: SceneResources, warnings: stri
     for (const c of d.children) if (isObject(c)) o.add(dataToObject(c, scene, res, warnings, depth + 1));
   }
   return o;
+}
+
+function fix2D(r: Shape2D | Text2D): void {
+  if (!SPACES_2D.includes(r.space)) r.space = 'world';
+  if (!ANCHORS_2D.includes(r.anchor)) r.anchor = 'center';
 }
 
 function numbers(v: unknown): Record<string, number> {

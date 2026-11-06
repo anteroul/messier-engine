@@ -8,6 +8,12 @@ real-time scene editor.
 - **Dynamic lights**: up to 128 directional, point and spot lights, all
   updated every frame from the scene graph. The first shadow-casting
   directional light gets a 2048² PCF shadow map.
+- **2D shapes and text**: rectangles (optionally rounded), ellipses, regular
+  polygons and arbitrary paths, filled and outlined, plus signed-distance-field
+  text that stays sharp at any size, with outlines, alignment and wrapping.
+  Either in the world (on the object's XY plane, depth tested) or on screen as a
+  HUD anchored to the viewport. Scripts can also draw immediate-mode shapes and
+  text with `draw2d`.
 - **Cameras**: perspective or orthographic camera components on scene
   objects. Play renders through the active camera, and scripts can move it
   or change its lens.
@@ -158,6 +164,15 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
   the camera while editing. While you look through a scene camera, the
   viewport doesn't orbit or select. Stop restores camera settings that
   scripts changed.
+- **2D shapes and text:** **＋ Add → 2D** creates a rectangle, ellipse,
+  polygon or text standing in front of the view, or a *Screen Text (HUD)*
+  label in the viewport's top-left corner. In world space, sizes are meters and
+  the shape faces the object's +Z. In screen space, the position is in pixels
+  from the chosen *Anchor* (+Y up) and the editor shows a pixel outline instead
+  of the gizmo: click a HUD element to select it, then drag it to move it.
+  Colors are display colors (like CSS), not affected by lighting. Higher
+  *Order* draws on top. The Gem Rush score at the top of the screen is a
+  `Text2D` that its `ScoreHud` script rewrites.
 - **Physics:** select an object and click **Add** in the inspector's *Rigid
   Body* section. The collider is fitted to the mesh (spheres get a sphere
   collider, flat meshes like planes become static slabs) and drawn in green.
@@ -375,7 +390,7 @@ src/engine/             The engine (no DOM dependencies except the canvas)
   scripting.ts          Script component, ScriptAsset (compile, diagnostics, in-place hot reload)
   typescript.ts         Tokenizer + position-preserving TypeScript type stripper
   renderer.ts           WebGPU device, pipelines, shadow + main passes, uploads
-  shaders/*.wgsl        common (shared structs), mesh (PBR), shadow, grid, overlay, mipmap
+  shaders/*.wgsl        common (shared structs), mesh (PBR), shadow, grid, overlay, mipmap, shape2d (2D + SDF text)
   scene.ts              GameObject (components, groups, destroy/instantiate), Scene (registry, lifecycle)
   transform.ts          Transform: hierarchy, cached local/world matrices, world-space helpers
   component.ts          Component base class; meshRenderer.ts: MeshRenderer
@@ -385,6 +400,9 @@ src/engine/             The engine (no DOM dependencies except the canvas)
   mesh.ts material.ts light.ts primitives.ts
   physics.ts            RigidBody component, colliders, contact generation, impulse solver
   overlay.ts            Immediate-mode helper geometry (gizmos, icons, boxes)
+  shapes2d.ts           Shape2D / Text2D components (world or screen space)
+  draw2d.ts             2D tessellation (fill, stroke, ear clipping, glyph quads) and the draw2d immediate API
+  font.ts               SDF glyph atlas (rasterize, distance transform, shelf packing) and text layout
   raycast.ts            Ray/AABB/triangle/sphere tests, scene picking, world bounds
   math.ts               vec3 / quat / mat4 (column-major), color helpers
   loaders/              glTF 2.0 / GLB, OBJ + MTL, resource resolvers, model assets
@@ -410,17 +428,20 @@ unit tests that need only Node, and smoke tests that exercise the real GPU:
 - **`test:unit`** bundles `tests/unit/*.test.ts` with esbuild and runs them under
   Node: signals, `Time`'s fixed-step accumulator, transforms, the component
   registry, the behaviour lifecycle (order, activation, destroy during update…),
-  scripts and the docs example. `node unit/run.mjs lifecycle` runs one file.
+  scripts, 2D tessellation, text layout and the distance field, and the docs
+  example. `node unit/run.mjs lifecycle` runs one file.
 
 - **`test:render`** runs the engine under Node with Dawn (the `webgpu` npm
   package). It checks the math, loaders, picking, gizmo and physics logic,
   compares the type stripper's output with esbuild on a snippet corpus and on
   the repo's own sources, runs behaviour scripts (errors, hot reload), checks that
-  rendering the demo scene produces no WebGPU validation errors, and writes
+  rendering the demo scene (with 2D shapes, a HUD and stand-in glyphs, since Node
+  can't rasterize fonts) produces no WebGPU validation errors, and writes
   `tests/.out/frame.png`.
 - **`test:ui`** starts Vite and drives the editor in headless Chromium:
   selection, gizmo drag, undo/redo, inspector edits, the Add menu,
-  duplicate/delete, Play/Stop, drill-down picking, re-parenting, and the
+  duplicate/delete, Play/Stop, drill-down picking, re-parenting, 2D text
+  (inspector edits, dragging and picking a HUD label), and the
   Scripts tab (creating, editing, error markers, undo, running and deleting
   scripts). It also fails on any console error.
 
@@ -450,6 +471,9 @@ The tests need a working Vulkan driver. On NixOS that means
   *mask* works. One directional shadow map, no point or spot shadows.
   Environment lighting is a sky/ground gradient approximation, not
   image-based lighting.
+- **2D:** text uses the browser's fonts through an `OffscreenCanvas`, without
+  kerning or right-to-left shaping. 2D shapes aren't lit, don't cast shadows
+  and don't collide. Text outlines reach about 0.15 × the font size.
 - **Physics:** box and sphere colliders only (no mesh, capsule or compound
   colliders). Only objects with a rigid body collide; use a static body for
   scenery. There's no continuous collision detection, so very fast, small

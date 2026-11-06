@@ -4,6 +4,7 @@ import shadowWGSL from './shaders/shadow.wgsl?raw';
 import gridWGSL from './shaders/grid.wgsl?raw';
 import overlayWGSL from './shaders/overlay.wgsl?raw';
 import mipmapWGSL from './shaders/mipmap.wgsl?raw';
+import shape2dWGSL from './shaders/shape2d.wgsl?raw';
 import { mat4, vec3, type Mat4, type Vec3 } from './math';
 import { VERTEX_STRIDE_BYTES, type Mesh } from './mesh';
 import type { Material, Texture } from './material';
@@ -12,6 +13,9 @@ import { MeshRenderer } from './meshRenderer';
 import type { Scene } from './scene';
 import type { Camera } from './camera';
 import { OVERLAY_STRIDE_FLOATS, type OverlayBuilder } from './overlay';
+import { Batch2D, VERTEX2D_FLOATS, type Draw2D } from './draw2d';
+import { ATLAS_SIZE, fontAtlas } from './font';
+import { Renderer2D } from './shapes2d';
 
 export const MAX_LIGHTS = 128;
 const SHADOW_MAP_SIZE = 2048;
@@ -35,6 +39,10 @@ export interface RenderOptions {
   alpha?: number;
   grid?: boolean;
   overlay?: OverlayBuilder | null;
+  /** Immediate-mode 2D layer drawn over everything else (the engine passes `draw2d`). */
+  draw2d?: Draw2D | null;
+  /** Draw screen-space Shape2D/Text2D components (default true). */
+  screen2D?: boolean;
 }
 
 export interface RenderStats {
@@ -42,6 +50,8 @@ export interface RenderStats {
   triangles: number;
   lights: number;
   shadowCasters: number;
+  /** Shape2D/Text2D components drawn. */
+  elements2D: number;
 }
 
 const ALPHA_BLEND: GPUBlendState = {
@@ -60,7 +70,7 @@ export class Renderer {
   readonly sampleCount = 4;
   width = 0;
   height = 0;
-  readonly stats: RenderStats = { drawCalls: 0, triangles: 0, lights: 0, shadowCasters: 0 };
+  readonly stats: RenderStats = { drawCalls: 0, triangles: 0, lights: 0, shadowCasters: 0, elements2D: 0 };
 
   private readonly context: GPUCanvasContext;
   private msaaTexture: GPUTexture | null = null;
@@ -78,6 +88,8 @@ export class Renderer {
   private readonly overlayDepthPipeline: GPURenderPipeline;
   private readonly overlayTopPipeline: GPURenderPipeline;
   private readonly mipPipeline: GPURenderPipeline;
+  private readonly world2DPipeline: GPURenderPipeline;
+  private readonly screen2DPipeline: GPURenderPipeline;
 
   private readonly frameBuffer: GPUBuffer;
   private readonly lightBuffer: GPUBuffer;
@@ -97,6 +109,18 @@ export class Renderer {
 
   private overlayBuffer: GPUBuffer | null = null;
   private overlayCapacity = 0;
+
+  private readonly atlasTexture: GPUTexture;
+  private readonly view2DBuffers: [GPUBuffer, GPUBuffer];
+  /** World-space and screen-space 2D bind groups (same atlas, different view matrix). */
+  private readonly view2DGroups: [GPUBindGroup, GPUBindGroup];
+  private buffer2D: GPUBuffer | null = null;
+  private capacity2D = 0;
+  private atlasGeneration = -1;
+  private readonly world2D = new Batch2D();
+  private readonly screen2D = new Batch2D();
+  private readonly list2D: { r: Renderer2D; key: number }[] = [];
+  private readonly matrix2D = new Float32Array(16);
 
   private readonly frameData = new ArrayBuffer(FRAME_UNIFORM_SIZE);
   private readonly lightData = new Float32Array(MAX_LIGHTS * LIGHT_FLOATS);
@@ -239,6 +263,43 @@ export class Renderer {
       primitive: { topology: 'triangle-list' },
     });
 
+    const layout2D = device.createBindGroupLayout({
+      label: '2d',
+      entries: [
+        { binding: 0, visibility: VS, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: FS, texture: { sampleType: 'float' } },
+        { binding: 2, visibility: FS, sampler: { type: 'filtering' } },
+      ],
+    });
+    const module2D = device.createShaderModule({ label: 'shape2d', code: shape2dWGSL });
+    const make2DPipeline = (label: string, depthCompare: GPUCompareFunction) =>
+      device.createRenderPipeline({
+        label,
+        layout: device.createPipelineLayout({ bindGroupLayouts: [layout2D] }),
+        vertex: {
+          module: module2D,
+          entryPoint: 'vs_main',
+          buffers: [
+            {
+              arrayStride: VERTEX2D_FLOATS * 4,
+              attributes: [
+                { shaderLocation: 0, offset: 0, format: 'float32x3' },
+                { shaderLocation: 1, offset: 12, format: 'float32x2' },
+                { shaderLocation: 2, offset: 20, format: 'float32x4' },
+                { shaderLocation: 3, offset: 36, format: 'float32' },
+              ],
+            },
+          ],
+        },
+        fragment: { module: module2D, entryPoint: 'fs_main', targets: [{ format: this.format, blend: ALPHA_BLEND }] },
+        primitive: { topology: 'triangle-list', cullMode: 'none' },
+        // Soft edges: test against the scene but don't write, so later 2D layers blend over earlier ones.
+        depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: false, depthCompare },
+        multisample,
+      });
+    this.world2DPipeline = make2DPipeline('2d-world', 'greater-equal');
+    this.screen2DPipeline = make2DPipeline('2d-screen', 'always');
+
     // --- Static resources ---------------------------------------------------
     this.frameBuffer = device.createBuffer({ label: 'frame', size: FRAME_UNIFORM_SIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.lightBuffer = device.createBuffer({ label: 'lights', size: MAX_LIGHTS * LIGHT_FLOATS * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
@@ -264,6 +325,32 @@ export class Renderer {
     const white = device.createTexture({ size: [1, 1], format: TEXTURE_FORMAT, usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
     device.queue.writeTexture({ texture: white }, new Uint8Array([255, 255, 255, 255]), { bytesPerRow: 4 }, [1, 1]);
     this.whiteTextureView = white.createView();
+
+    this.atlasTexture = device.createTexture({
+      label: 'font-atlas',
+      size: [ATLAS_SIZE, ATLAS_SIZE],
+      format: 'r8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    const atlasSampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+    const atlasView = this.atlasTexture.createView();
+    const makeView2D = (label: string): [GPUBuffer, GPUBindGroup] => {
+      const buffer = device.createBuffer({ label, size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      const group = device.createBindGroup({
+        label,
+        layout: layout2D,
+        entries: [
+          { binding: 0, resource: { buffer } },
+          { binding: 1, resource: atlasView },
+          { binding: 2, resource: atlasSampler },
+        ],
+      });
+      return [buffer, group];
+    };
+    const [worldBuf, worldGroup] = makeView2D('2d-world');
+    const [screenBuf, screenGroup] = makeView2D('2d-screen');
+    this.view2DBuffers = [worldBuf, screenBuf];
+    this.view2DGroups = [worldGroup, screenGroup];
 
     this.frameBindGroup = device.createBindGroup({
       label: 'frame',
@@ -430,6 +517,76 @@ export class Renderer {
     this.device.queue.writeBuffer(this.overlayBuffer!, 0, data);
   }
 
+  /**
+   * Builds the 2D vertex streams (world-space components, then screen-space components and the immediate layer) and
+   * uploads them with any new glyphs. Returns the vertex counts of the two parts.
+   */
+  private prepare2D(scene: Scene, camera: Camera, viewProj: Mat4, options: RenderOptions): [number, number] {
+    const cssW = this.canvas.clientWidth || this.width, cssH = this.canvas.clientHeight || this.height;
+    const world = this.world2D, screen = this.screen2D;
+    world.reset();
+    screen.reset();
+    const showScreen = options.screen2D ?? true;
+    const list = this.list2D;
+    list.length = 0;
+    const cam = camera.position;
+    for (const r of scene.query(Renderer2D)) {
+      if (r.space === 'screen') {
+        if (showScreen) list.push({ r, key: 0 });
+      } else {
+        const w = r.transform.worldMatrix;
+        list.push({ r, key: (w[12] - cam[0]) ** 2 + (w[13] - cam[1]) ** 2 + (w[14] - cam[2]) ** 2 });
+      }
+    }
+    // By order, then back to front (world space; ties keep hierarchy order, as sort is stable).
+    list.sort((a, b) => a.r.order - b.r.order || b.key - a.key);
+    for (const { r } of list) {
+      const batch = r.space === 'screen' ? screen : world;
+      batch.matrix = r.targetMatrix(cssW, cssH, this.matrix2D);
+      r.build(batch);
+      batch.matrix = null;
+    }
+    this.stats.elements2D = list.length;
+    list.length = 0;
+    const immediate = options.draw2d;
+    if (immediate) {
+      immediate.width = cssW;
+      immediate.height = cssH;
+    }
+    const worldFloats = world.length, screenFloats = screen.length + (immediate?.batch.length ?? 0);
+    const total = worldFloats + screenFloats;
+    if (total === 0) return [0, 0];
+
+    const device = this.device;
+    const atlas = fontAtlas;
+    if (atlas.generation !== this.atlasGeneration) {
+      // A new or cleared atlas: upload all of it.
+      this.atlasGeneration = atlas.generation;
+      atlas.dirtyMin = 0;
+      atlas.dirtyMax = ATLAS_SIZE - 1;
+    }
+    if (atlas.dirtyMin <= atlas.dirtyMax) {
+      const y0 = atlas.dirtyMin, rows = atlas.dirtyMax - atlas.dirtyMin + 1;
+      device.queue.writeTexture({ texture: this.atlasTexture, origin: [0, y0] }, atlas.data, { offset: y0 * ATLAS_SIZE, bytesPerRow: ATLAS_SIZE }, [ATLAS_SIZE, rows]);
+      atlas.markClean();
+    }
+
+    const bytes = total * 4;
+    if (bytes > this.capacity2D) {
+      this.buffer2D?.destroy();
+      this.capacity2D = Math.max(64 * 1024, 2 ** Math.ceil(Math.log2(bytes)));
+      this.buffer2D = device.createBuffer({ label: '2d', size: this.capacity2D, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+    }
+    const buf = this.buffer2D!;
+    if (worldFloats) device.queue.writeBuffer(buf, 0, world.data, 0, worldFloats);
+    if (screen.length) device.queue.writeBuffer(buf, worldFloats * 4, screen.data, 0, screen.length);
+    if (immediate?.batch.length) device.queue.writeBuffer(buf, (worldFloats + screen.length) * 4, immediate.batch.data, 0, immediate.batch.length);
+    device.queue.writeBuffer(this.view2DBuffers[0], 0, viewProj);
+    // CSS pixels (y down) → NDC.
+    device.queue.writeBuffer(this.view2DBuffers[1], 0, new Float32Array([2 / cssW, 0, 0, 0, 0, -2 / cssH, 0, 0, 0, 0, 0, 0, -1, 1, 0.5, 1]));
+    return [worldFloats / VERTEX2D_FLOATS, screenFloats / VERTEX2D_FLOATS];
+  }
+
   private computeShadowMatrix(dir: Vec3, focus: Vec3, extent: number): Mat4 {
     const up: Vec3 = Math.abs(dir[1]) > 0.99 ? [1, 0, 0] : [0, 1, 0];
     // Snap the focus point to shadow-map texels to avoid shimmering when the camera moves.
@@ -452,7 +609,7 @@ export class Renderer {
     camera.aspect = this.width / this.height;
     const device = this.device;
     const stats = this.stats;
-    stats.drawCalls = stats.triangles = stats.lights = stats.shadowCasters = 0;
+    stats.drawCalls = stats.triangles = stats.lights = stats.shadowCasters = stats.elements2D = 0;
 
     // Gather live renderables and lights from the scene's component registry.
     const draws = this.draws;
@@ -491,7 +648,8 @@ export class Renderer {
     const fv = new Float32Array(this.frameData);
     const fi = new Int32Array(this.frameData);
     const fu = new Uint32Array(this.frameData);
-    fv.set(camera.viewProjection(), 0);
+    const viewProj = camera.viewProjection();
+    fv.set(viewProj, 0);
     fv.set(lightViewProj, 16);
     fv.set([camera.position[0], camera.position[1], camera.position[2], 1], 32);
     const amb = vec3.scale(scene.ambientColor, scene.ambientIntensity);
@@ -517,6 +675,7 @@ export class Renderer {
 
     const overlay = options.overlay && !options.overlay.isEmpty ? options.overlay : null;
     if (overlay) this.uploadOverlay(overlay);
+    const [world2DCount, screen2DCount] = this.prepare2D(scene, camera, viewProj, options);
 
     const encoder = device.createCommandEncoder({ label: 'frame' });
 
@@ -580,18 +739,35 @@ export class Renderer {
       pass.draw(6);
     }
 
-    if (overlay) {
-      const depthCount = overlay.depth.length / OVERLAY_STRIDE_FLOATS;
-      const topCount = overlay.top.length / OVERLAY_STRIDE_FLOATS;
+    if (world2DCount > 0) {
+      pass.setPipeline(this.world2DPipeline);
+      pass.setBindGroup(0, this.view2DGroups[0]);
+      pass.setVertexBuffer(0, this.buffer2D!);
+      pass.draw(world2DCount);
+      stats.drawCalls++;
+    }
+
+    // Editor helpers hidden by the scene, then the HUD, then the helpers that stay on top (gizmo, selection).
+    const depthCount = overlay ? overlay.depth.length / OVERLAY_STRIDE_FLOATS : 0;
+    const topCount = overlay ? overlay.top.length / OVERLAY_STRIDE_FLOATS : 0;
+    if (depthCount > 0) {
+      pass.setPipeline(this.overlayDepthPipeline);
+      pass.setBindGroup(0, this.frameBindGroup);
       pass.setVertexBuffer(0, this.overlayBuffer!);
-      if (depthCount > 0) {
-        pass.setPipeline(this.overlayDepthPipeline);
-        pass.draw(depthCount);
-      }
-      if (topCount > 0) {
-        pass.setPipeline(this.overlayTopPipeline);
-        pass.draw(topCount, 1, depthCount);
-      }
+      pass.draw(depthCount);
+    }
+    if (screen2DCount > 0) {
+      pass.setPipeline(this.screen2DPipeline);
+      pass.setBindGroup(0, this.view2DGroups[1]);
+      pass.setVertexBuffer(0, this.buffer2D!);
+      pass.draw(screen2DCount, 1, world2DCount);
+      stats.drawCalls++;
+    }
+    if (topCount > 0) {
+      pass.setPipeline(this.overlayTopPipeline);
+      pass.setBindGroup(0, this.frameBindGroup);
+      pass.setVertexBuffer(0, this.overlayBuffer!);
+      pass.draw(topCount, 1, depthCount);
     }
     pass.end();
 

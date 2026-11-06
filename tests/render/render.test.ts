@@ -573,11 +573,49 @@ scene.traverse((o: any) => {
   check('render through scene camera', !err, err?.message ?? '');
 }
 
+// ---- 2D: Node has no OffscreenCanvas, so glyphs come from a stand-in rasterizer (a box per letter, a ring for 'O')
+// that still goes through the distance field, atlas upload and SDF shader. The demo's world-space sign shows them.
+{
+  const { fontAtlas, draw2d, Shape2D, Text2D } = engine;
+  fontAtlas.setRasterizer({
+    glyph(ch: string, _font: unknown, px: number, pad: number) {
+      const adv = 0.62 * px;
+      if (ch === ' ') return { width: 0, height: 0, coverage: [], originX: 0, originY: 0, advance: adv };
+      const w = Math.round(0.5 * px), h = Math.round(0.7 * px), W = w + pad * 2, H = h + pad * 2;
+      const cov = new Float32Array(W * H);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const ring = ch === 'O' && x > w * 0.25 && x < w * 0.75 && y > h * 0.2 && y < h * 0.8;
+        cov[(y + pad) * W + x + pad] = ring ? 0 : 1;
+      }
+      return { width: W, height: H, coverage: cov, originX: pad, originY: pad + h, advance: adv };
+    },
+    metrics: (_f: unknown, px: number) => ({ ascent: 0.8 * px, descent: 0.2 * px }),
+  });
+  const hud = new GameObject('HUD');
+  hud.attachComponent(new Shape2D({ space: 'screen', anchor: 'top-left', width: 220, height: 56, cornerRadius: 10, fillColor: [0, 0, 0, 0.55], strokeWidth: 2, strokeColor: [0.13, 0.83, 0.93, 1] }));
+  hud.transform.position = [126, -44, 0];
+  const label = new GameObject('Label');
+  label.attachComponent(new Text2D({ space: 'screen', anchor: 'top-left', text: 'SCORE O', fontSize: 28, outlineWidth: 3, order: 1 }));
+  label.transform.position = [126, -44, 0];
+  scene.add(hud);
+  scene.add(label);
+  // Immediate mode on top: a star polygon and a line.
+  const star: [number, number][] = [];
+  for (let i = 0; i < 10; i++) {
+    const a = -Math.PI / 2 + (i * Math.PI) / 5, r = i % 2 ? 18 : 40;
+    star.push([W - 70 + Math.cos(a) * r, 70 + Math.sin(a) * r]);
+  }
+  draw2d.polygon(star, { fill: '#ffcc33', stroke: '#000', strokeWidth: 2 });
+  draw2d.line(W - 140, 130, W - 10, 130, '#ff4466', 4);
+  draw2d.text('draw2d', W - 75, 140, { size: 18, align: 'center', color: '#ffffff' });
+}
+
 renderer.device.pushErrorScope('validation');
-const stats = renderer.render(scene, camera, { grid: true, overlay, time: 0.5 });
+const stats = renderer.render(scene, camera, { grid: true, overlay, time: 0.5, draw2d: engine.draw2d });
 const validation = await renderer.device.popErrorScope();
 check('render validation', !validation, validation?.message ?? '');
 check('render stats', stats.drawCalls > 10 && stats.lights >= 7 && stats.shadowCasters > 0, JSON.stringify(stats));
+check('2D elements drawn', stats.elements2D === 4, String(stats.elements2D));
 
 // ---- read back
 const bytesPerRow = Math.ceil((W * 4) / 256) * 256;

@@ -3,6 +3,7 @@ import { Scene, type GameObject } from './scene';
 import { Camera } from './camera';
 import { OverlayBuilder } from './overlay';
 import { input } from './input';
+import { draw2d } from './draw2d';
 import { Signal } from './signal';
 import { Time } from './time';
 
@@ -139,6 +140,8 @@ export class Engine {
     input.endFrame();
     scene.updateMatrices();
     this.render(scene, dt);
+    // Immediate 2D drawing lasts one frame, rendered or not.
+    draw2d.clear();
     scene.processDestroyed();
   }
 
@@ -163,6 +166,7 @@ export class Engine {
       // The grid is an editing aid, not part of the game's view.
       grid: this.showGrid && !camObj,
       overlay: this.overlay,
+      draw2d,
     });
     for (const cb of this.afterRenderHooks) cb(stats);
   }

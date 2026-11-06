@@ -1,6 +1,7 @@
 import { check, eq } from './harness';
 import { GameObject, Scene } from '@root/src/engine/scene.ts';
 import { Script } from '@root/src/engine/scripting.ts';
+import { Text2D } from '@root/src/engine/shapes2d.ts';
 import { Time } from '@root/src/engine/time.ts';
 import { input } from '@root/src/engine/input.ts';
 import { vec3 } from '@root/src/engine/math.ts';
@@ -140,12 +141,15 @@ frame(scene);
 check('win slows time down', Time.timeScale < 1, `${Time.timeScale}`);
 check('win clears gems', scene.getGroup('gems').length === 0);
 check('win disables the spawner and sentinels', !byName(scene, 'GemSpawner') && !scene.query(Script).some((s) => s.typeName === 'Sentinel'));
+const hudText = () => scene.findByName('Score HUD')!.getComponent(Text2D)!.text;
+check('HUD shows the win', hudText().startsWith('You win!'), hudText());
 run(scene, 2.5);
 check('time scale eases back to 1', Time.timeScale === 1, `${Time.timeScale}`);
 input.keyDown('KeyR');
 frame(scene);
 input.keyUp('KeyR');
 check('R restarts', game.points === 0 && !!byName(scene, 'GemSpawner') && scene.query(Script).filter((s) => s.typeName === 'Sentinel').length === 2);
+check('HUD resets', hudText() === `Gems 0 / ${game.goal}`, hudText());
 run(scene, 2);
 check('gems spawn again', scene.getGroup('gems').length > 0);
 

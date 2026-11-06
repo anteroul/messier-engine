@@ -48,9 +48,9 @@ Engine.step(dt)                         src/engine/engine.ts
             scene.updateBehaviours → scene.lateUpdate
   input.endFrame(); scene.updateMatrices()
   overlay.begin(); beforeRender hooks   editor builds gizmo/icons into OverlayBuilder
-  renderer.render(scene, camera, …)     shadow pass → main MSAA pass (meshes, grid, overlay)
+  renderer.render(scene, camera, …)     shadow pass → main MSAA pass (meshes, grid, world 2D, overlay, HUD)
   afterRender hooks                     editor reads RenderStats
-  scene.processDestroyed()              deferred destroys (onDisable → onDestroy → detach)
+  draw2d.clear(); scene.processDestroyed()  immediate 2D layer reset; deferred destroys (onDisable → onDestroy → detach)
 ```
 
 - **Scene graph** (`scene.ts`, `transform.ts`, `component.ts`): Unity-style
@@ -114,6 +114,15 @@ Engine.step(dt)                         src/engine/engine.ts
   `ScriptLibrary.locateSyntaxError` hook, which the editor implements.
   `scripting.ts` imports `./index` for the script API. That import is
   circular and only read lazily, so keep it that way.
+- **2D** (`shapes2d.ts`, `draw2d.ts`, `font.ts`): `Shape2D` and `Text2D` extend the abstract `Renderer2D`
+  component. Each frame the renderer queries them, tessellates them on the CPU into a `Batch2D` through
+  `targetMatrix()` (world matrix, or for `space: 'screen'` a map to CSS pixels from the anchor with Y flipped),
+  and draws world-space ones after the grid (depth-tested, no depth write, sorted by `order` then back to front)
+  and screen-space ones plus the `draw2d` immediate layer between the depth-tested and on-top overlay. Shapes are
+  plain triangles (MSAA smooths them); text is glyph quads sampling the shared `fontAtlas`, a single-channel
+  signed distance field built from glyphs that an `OffscreenCanvas` rasterizes (none under Node:
+  `fontAtlas.setRasterizer()` lets tests supply glyphs). Outlines are the same quads drawn first with a lower
+  distance threshold. `raycastScene`/`worldBounds` include world-space 2D bounds; `pickScreen2D` picks the HUD.
 - **Input** (`input.ts`): the `input` singleton holds keyboard state by
   `KeyboardEvent.code`. The engine never listens to the DOM. The editor
   forwards keydown/keyup in `bindKeyboard()`. `Engine.step` calls
@@ -174,20 +183,23 @@ Engine.step(dt)                         src/engine/engine.ts
   - `Light` (64 B, 16 floats): `common.wgsl` ↔ the light packing loop in
     `Renderer.render()`. Type codes come from `LIGHT_TYPE_INDEX`.
   - `Material` (48 B): `mesh.wgsl` ↔ `Renderer.prepareMaterial()`.
+  - 2D vertex (40 B: position 3, uv 2, color 4, threshold 1; threshold < 0 = solid): `shape2d.wgsl` ↔
+    `VERTEX2D_FLOATS` / `Batch2D.vertex()` and the 2D pipeline's attributes.
   - `Object` (model + normal matrix, 128 B) lives in 256 B dynamic-offset
     slots (`OBJECT_STRIDE`) and is shared by the mesh and shadow pipelines.
 - **Shaders:** `common.wgsl` is *prepended* to `mesh`, `grid` and `overlay`.
   It declares `@group(0) @binding(0) frame`, so don't redeclare it.
-  `shadow.wgsl` and `mipmap.wgsl` are standalone. Shaders load with Vite
+  `shadow.wgsl`, `mipmap.wgsl` and `shape2d.wgsl` are standalone. Shaders load with Vite
   `?raw` imports, and `tests/render/run.mjs` emulates that with an esbuild plugin.
 - **Bind groups:** group 0 = frame (uniform, lights storage, shadow map,
   comparison sampler), group 1 = material, group 2 = object (dynamic offset).
   The shadow pass uses its own group-0 layout, because binding the frame
-  group would put the shadow map in a usage conflict.
+  group would put the shadow map in a usage conflict. The 2D pipelines have their own group 0 too (view matrix,
+  font atlas, sampler), so rebind the frame group before drawing anything that uses it after them.
 - **Color spaces:** material and light colors are **linear**. Textures are
   `rgba8unorm-srgb`. The canvas is non-sRGB and the shader applies ACES +
-  gamma 2.2 itself. `scene.background` is display-space (written straight to
-  the clear color). UI pickers convert with `hexToLinear`/`linearToHex` or,
+  gamma 2.2 itself. `scene.background` and 2D colors (`Shape2D`, `Text2D`, `draw2d`) are display-space
+  (written as is, no tone mapping). UI pickers convert with `hexToLinear`/`linearToHex` or,
   for display-space values, `hexToRgb`/`rgbToHex`.
 - **Mesh vertex format:** interleaved `position(3) normal(3) uv(2)` floats,
   32 B stride, `uint32` indices, CCW front faces. Procedural meshes call
@@ -233,6 +245,10 @@ and the `*_FIELDS` list),
 extend the WGSL struct and the TS packing (keep 16-byte alignment, and grow
 `*_UNIFORM_SIZE` if needed), add an inspector row in `inspector.ts`, and map it
 in the glTF/OBJ loaders if a standard field exists.
+
+**Add a 2D field.** Add it to `Shape2D`/`Text2D` and to `SHAPE2D_FIELDS`/`TEXT2D_FIELDS` (the default
+`clone()` copies public fields), add an inspector row in `buildShape2D`/`buildText2D`, and include it in
+`Text2D.layout()`'s cache key if it changes the layout. Validate enum values in `dataToObject`.
 
 **Add a primitive.** Write the generator in `primitives.ts` (finish with
 `.fixWinding()`, and `tag()` it with its arguments so scenes can rebuild it), add it to
