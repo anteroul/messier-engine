@@ -1,7 +1,8 @@
 import './editor/editor.css';
-import { Engine, loadModelAssetFromURL, type Vec3 } from './engine';
+import { Engine, GameObject, Scene, loadModelAssetFromURL, serializeScene, type SceneData, type Vec3 } from './engine';
 import { Editor } from './editor/editor';
 import { buildDemoScene } from './demo';
+import { buildDemoGame } from './demoGame';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -45,6 +46,7 @@ async function main(): Promise<void> {
 
 async function loadDemo(engine: Engine, editor: Editor): Promise<void> {
   buildDemoScene(engine.scene);
+  const game = buildDemoGameData(engine);
   editor.restoreLegacyScripts();
   editor.afterSceneLoad();
   // Sample assets exercising the glTF and OBJ loaders. They become project assets, so the demo saves like any scene.
@@ -65,7 +67,17 @@ async function loadDemo(engine: Engine, editor: Editor): Promise<void> {
       }
     }),
   );
-  editor.project.adoptCurrentScene('Demo');
+  editor.project.adoptCurrentScene('Demo', 'Main', [{ name: 'Gem Rush', data: game }]);
+}
+
+/** The demo game as a second scene. Its scripts go into the editor's library, which every scene of the project shares. */
+function buildDemoGameData(engine: Engine): SceneData {
+  const game = new Scene(engine.scene.scripts);
+  buildDemoGame(game);
+  const data = serializeScene(game);
+  // Script instances register with their asset for hot swaps; let go of this throwaway scene's.
+  for (const o of [...game.rootObjects]) GameObject.destroy(o);
+  return data;
 }
 
 void main();

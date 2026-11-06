@@ -95,10 +95,14 @@ export class ProjectManager {
   // ---------------------------------------------------------------------------
   // Boot
 
-  /** Makes the scene currently in the editor (the demo) the first scene of a new, unsaved project. */
-  adoptCurrentScene(projectName: string, sceneName = 'Main'): void {
+  /**
+   * Makes the scene currently in the editor (the demo) the first scene of a new, unsaved project, followed by
+   * `moreScenes` (built in code too; their scripts must already be in the editor's script library).
+   */
+  adoptCurrentScene(projectName: string, sceneName = 'Main', moreScenes: { name: string; data: SceneData }[] = []): void {
     this.project.name = projectName;
     this.project.scenes = [{ id: newId(), name: sceneName, data: serializeScene(this.editor.scene) }];
+    for (const { name, data } of moreScenes) this.project.scenes.push({ id: newId(), name, data });
     this.project.startScene = this.sceneId = this.project.scenes[0].id;
     this.ready = true;
     this.sync();

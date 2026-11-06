@@ -67,7 +67,7 @@ export default class Spin extends Script {
 // ---- the example in docs/scripting.md compiles and does what it says
 {
   const doc = readFileSync(`${process.env.PROJECT_ROOT}/docs/scripting.md`, 'utf8');
-  const example = /```ts\n(import \{ Script[\s\S]*?)```/.exec(doc)?.[1] ?? '';
+  const example = /```ts\r?\n(import \{ Script[\s\S]*?)```/.exec(doc)?.[1] ?? '';
   const scene = new Scene();
   const asset = scene.scripts.add(new ScriptAsset('Spinner', example));
   check('docs example compiles', asset.compile(), JSON.stringify(asset.diagnostics));

@@ -127,7 +127,9 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
   the scene. Switching scenes clears undo.
   - Everything **autosaves** in the browser (IndexedDB) about a second after a
     change, so a reload continues where you left off. The first load (or a
-    browser without an autosave) starts with the demo project.
+    browser without an autosave) starts with the demo project. Its second
+    scene, **Gem Rush**, is a small game written entirely as scripts (see
+    [Demo game](#demo-game)).
   - **Save** (`Ctrl+S`) writes one `.messier` file: the scenes as JSON plus the
     original files of every imported model. Chromium writes back to the file you
     opened or saved; other browsers download it. **Open** a project with
@@ -228,6 +230,20 @@ To add a built-in behaviour, subclass `Behaviour` in `src/engine/behaviours.ts`,
 give it a `static readonly typeName` and register it in `BEHAVIOURS`. It then
 shows up in the inspector's **Add…** menu, and its public number fields become
 editable parameters automatically.
+
+## Demo game
+
+Pick **Gem Rush** in the scene picker and press Play. Roll the ball with
+WASD or the arrow keys, jump with Space, and collect 10 gems while staying
+clear of the red sentinels (each hit costs a point, a fall off the arena two).
+Winning slows time down for a moment; `R` restarts.
+
+All of its rules are scripts in the Scripts tab (source in
+[src/demoGame.ts](src/demoGame.ts)), so it doubles as a tour and a test of the
+scripting API: input, forces and impulses on a rigid body, kinematic bodies,
+raycasts, signals between scripts, groups, `instantiate`/`destroy` of hidden
+templates, enabling and disabling behaviours, `Time.timeScale` and every
+lifecycle hook. `tests/unit/demo-game.test.ts` plays it headlessly.
 
 ## Behaviour scripts
 

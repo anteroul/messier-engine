@@ -387,7 +387,9 @@ const autosaved = () =>
       }),
   );
 await sleep(1500);
-check('scripts autosave', (await autosaved())?.scripts.map((x) => x.name).join() === 'Hover,Carousel,LapFlash,EmptyScript');
+// The demo's own scripts, then those of its Gem Rush scene.
+const DEMO_SCRIPTS = 'Hover,Carousel,LapFlash,GameManager,PlayerBall,FollowCamera,GemSpawner,Gem,Spark,Sentinel,ScorePips';
+check('scripts autosave', (await autosaved())?.scripts.map((x) => x.name).join() === `${DEMO_SCRIPTS},EmptyScript`);
 
 // --- Keyboard input: during Play, keys drive scripts instead of editor shortcuts; Esc stops
 await state(() => {
@@ -524,7 +526,7 @@ const restored = await state(() => {
   engine.scene.findByName('Lantern')?.traverse((o) => void (o.mesh && lanternMeshes++));
   return { x: engine.scene.findByName('Torus').transform.position[0], lanternMeshes, scripts: engine.scene.scripts.scripts.map((s) => s.name).join(), name: editor.project.project.name };
 });
-check('autosave restores after reload', restored.x === 7.25 && restored.lanternMeshes === 4 && restored.scripts === 'Hover,Carousel,LapFlash,EmptyScript,Walker' && restored.name === 'Demo', JSON.stringify(restored));
+check('autosave restores after reload', restored.x === 7.25 && restored.lanternMeshes === 4 && restored.scripts === `${DEMO_SCRIPTS},EmptyScript,Walker` && restored.name === 'Demo', JSON.stringify(restored));
 await page.screenshot({ path: `${OUT}/ui-restored.png` });
 
 const firstScene = await state(() => window.editor.project.sceneId);
@@ -536,7 +538,28 @@ const fresh = await state(() => ({
   objects: window.engine.scene.root.children.map((o) => o.name).join(),
   canUndo: window.editor.history.canUndo,
 }));
-check('new scene', fresh.options === 2 && fresh.objects === 'Sun,Main Camera' && !fresh.canUndo, JSON.stringify(fresh));
+check('new scene', fresh.options === 3 && fresh.objects === 'Sun,Main Camera' && !fresh.canUndo, JSON.stringify(fresh));
+
+// --- The Gem Rush demo game plays in the editor: keys roll the ball, gems spawn, no script errors
+const gemRush = await state(() => window.editor.project.project.scenes.find((s) => s.name === 'Gem Rush')?.id);
+await page.select('.scene-select', gemRush);
+await sleep(300);
+await page.evaluate(() => document.getElementById('gpu-canvas').focus());
+await page.keyboard.press('KeyP');
+await page.keyboard.down('KeyW');
+await sleep(1500);
+await page.keyboard.up('KeyW');
+const gameNames = DEMO_SCRIPTS.split(',').slice(3);
+const game = await page.evaluate((names) => ({
+  playing: window.engine.playing,
+  gems: window.engine.scene.getGroup('gems').length,
+  z: window.engine.scene.findByName('Player').transform.position[2],
+  errors: window.engine.scene.scripts.scripts.filter((s) => names.includes(s.name)).flatMap((s) => s.diagnostics.map((d) => `${s.name}:${d.line} ${d.message}`)),
+}), gameNames);
+await page.screenshot({ path: `${OUT}/ui-gem-rush.png` });
+await page.keyboard.press('Escape');
+await sleep(200);
+check('Gem Rush plays', game.playing && game.gems > 0 && game.z < 4.5 && game.errors.length === 0, JSON.stringify(game));
 await page.select('.scene-select', firstScene);
 await sleep(300);
 check('switch back to first scene', (await state(() => window.engine.scene.findByName('Torus')?.transform.position[0])) === 7.25);
@@ -573,7 +596,7 @@ const saved = await state(async () => {
     bytes: Array.from(bytes),
   };
 });
-check('Ctrl+S during Play stops and saves', saved && saved.name === 'Demo.messier' && !saved.playing && !saved.dirty && saved.scenes === 2 &&
+check('Ctrl+S during Play stops and saves', saved && saved.name === 'Demo.messier' && !saved.playing && !saved.dirty && saved.scenes === 3 &&
   saved.rot.every((v, i) => Math.abs(v - rotBefore[i]) < 1e-6), JSON.stringify(saved && { ...saved, bytes: saved.bytes.length }));
 
 if (saved) {
@@ -593,7 +616,7 @@ if (saved) {
     x: window.engine.scene.findByName('Torus')?.transform.position[0],
     dirty: window.editor.project.dirty,
   }));
-  check('open project file', opened.name === 'Demo' && opened.scenes === 2 && opened.x === 7.25 && !opened.dirty, JSON.stringify(opened));
+  check('open project file', opened.name === 'Demo' && opened.scenes === 3 && opened.x === 7.25 && !opened.dirty, JSON.stringify(opened));
 }
 
 check('no console errors/warnings', errors.length === 0, errors.join(' | '));

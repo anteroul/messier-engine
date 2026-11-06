@@ -31,7 +31,17 @@ export default class Spinner extends Script {
 }
 ```
 
-The demo project's `Carousel` and `LapFlash` scripts show a signal crossing between two objects.
+The demo project's `Carousel` and `LapFlash` scripts show a signal crossing between two objects. Its **Gem Rush**
+scene is a whole game made of scripts (`GameManager`, `PlayerBall`, `GemSpawner`, `Gem`, `Sentinel`…): a bigger
+example of input, physics, signals, groups and spawning from templates.
+
+Scripts can't import each other. To call another script, find it by name and describe the part you use:
+
+```ts
+interface GameApi { addPoints(n: number): void; won: Signal<[]> }
+const game = this.scene.query(Script).find((s) => s.typeName === 'GameManager') as unknown as GameApi | undefined;
+game?.won.connect(() => (this.enabled = false), this);
+```
 
 ## Lifecycle
 
