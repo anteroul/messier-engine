@@ -878,6 +878,11 @@ input.script-name {
   color: #d4d7de;
   pointer-events: none;
 }
+/* The UA sheet gives <code> `font-family: monospace`; without this the highlight
+   uses a different font than the textarea and drifts away from the caret. */
+.code-highlight code {
+  font: inherit;
+}
 .code-input {
   position: absolute;
   inset: 0;

@@ -131,6 +131,9 @@ const scriptState = () =>
 let ss = await scriptState();
 check('new script opens Scripts tab', ss.view === 'scripts' && ss.name === 'EmptyScript' && (await state(() => document.querySelector('.view-tab.active')?.dataset.action)) === 'view-scripts', JSON.stringify(ss));
 check('script template compiles', ss.ok && ss.status.includes('Compiled'), ss.status);
+// The caret lives in the transparent textarea, so the highlight underneath must use the exact same font.
+const fonts = await state(() => [document.querySelector('.code-input'), document.querySelector('.code-highlight code')].map((e) => getComputedStyle(e).font));
+check('code highlight font matches textarea', fonts[0] === fonts[1], JSON.stringify(fonts));
 /** Puts the caret at the end of the first line containing `text`. */
 const caretAfter = (text) =>
   page.evaluate((text) => {
