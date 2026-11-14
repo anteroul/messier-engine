@@ -6,6 +6,7 @@ import { buildDemoProject } from './demoProject';
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 async function main(): Promise<void> {
+  for (const el of document.querySelectorAll('.app-version')) el.textContent = __APP_VERSION__;
   const canvas = $<HTMLCanvasElement>('gpu-canvas');
   let engine: Engine;
   try {
