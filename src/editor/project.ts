@@ -12,9 +12,11 @@ import {
   tagAssetResources,
   type Asset,
   type ProjectManifest,
+  type ProjectScene,
   type SceneData,
 } from '../engine';
 import type { Editor } from './editor';
+import { download } from './build';
 
 // Project persistence for the editor: the open project, its scenes, Save/Open
 // of .messier files, and an IndexedDB autosave of the working copy.
@@ -95,20 +97,9 @@ export class ProjectManager {
   // ---------------------------------------------------------------------------
   // Boot
 
-  /**
-   * Makes the scene currently in the editor (the demo) the first scene of a new, unsaved project, followed by
-   * `moreScenes` (built in code too; their scripts must already be in the editor's script library).
-   */
-  adoptCurrentScene(projectName: string, sceneName = 'Main', moreScenes: { name: string; data: SceneData }[] = []): void {
-    this.project.name = projectName;
-    this.project.scenes = [{ id: newId(), name: sceneName, data: serializeScene(this.editor.scene) }];
-    for (const { name, data } of moreScenes) this.project.scenes.push({ id: newId(), name, data });
-    this.project.startScene = this.sceneId = this.project.scenes[0].id;
-    this.ready = true;
-    this.sync();
-    this.savedJSON = this.json();
-    this.setDirty(false);
-    this.onChange?.();
+  /** Makes `project` (built in code: the demo) the open project, unsaved to a file but not dirty. */
+  async openProject(project: Project): Promise<void> {
+    await this.load(project, null);
   }
 
   /** Restores the autosaved working copy. Returns false when there is none (or it can't be read). */
@@ -176,7 +167,7 @@ export class ProjectManager {
     const s = this.project.getScene(id);
     if (!s || !name.trim()) return;
     s.name = name.trim();
-    this.changed();
+    this.markChanged();
   }
 
   async deleteScene(id: string): Promise<void> {
@@ -188,15 +179,24 @@ export class ProjectManager {
     }
     if (!this.canSwitch() || !confirm(`Delete scene "${s.name}"? This can't be undone.`)) return;
     this.project.scenes.splice(this.project.scenes.indexOf(s), 1);
+    this.project.build.scenes = this.project.build.scenes.filter((e) => e.id !== id);
     if (this.project.startScene === id) this.project.startScene = this.project.scenes[0].id;
     if (id === this.sceneId) await this.showScene(this.project.scenes[0].id);
-    this.changed();
+    this.markChanged();
   }
 
   renameProject(name: string): void {
     if (!name.trim()) return;
     this.project.name = name.trim();
-    this.changed();
+    this.markChanged();
+  }
+
+  /** A fresh copy of a project scene, for loading scenes at runtime during Play (see sceneManager). */
+  async instantiate(entry: ProjectScene): Promise<Scene> {
+    const warnings: string[] = [];
+    const scene = await this.resources.instantiate(entry, this.editor.scene.scripts, warnings);
+    this.report(warnings, `Loaded ${entry.name} without`);
+    return scene;
   }
 
   // ---------------------------------------------------------------------------
@@ -305,6 +305,11 @@ export class ProjectManager {
     this.onChange?.();
   }
 
+  /** Copies the live scene and scripts into the project now, instead of at the next periodic check. */
+  flush(warnings?: string[]): void {
+    this.sync(warnings);
+  }
+
   /** Copies the live scene and scripts into the project. Skipped while playing: Play mutates the scene and Stop restores it. */
   private sync(warnings?: string[]): void {
     if (!this.ready || this.busy || this.editor.engine.playing) return;
@@ -326,7 +331,8 @@ export class ProjectManager {
     if (json !== this.autosavedJSON) void this.autosave(json);
   }
 
-  private changed(): void {
+  /** Call after changing the project directly (names, build settings): updates the dirty flag and the UI. */
+  markChanged(): void {
     this.check();
     this.onChange?.();
   }
@@ -423,14 +429,6 @@ async function writeFile(handle: FileSystemFileHandle, bytes: Uint8Array<ArrayBu
   await w.close();
 }
 
-function download(bytes: Uint8Array<ArrayBuffer>, name: string): void {
-  const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 10_000);
-}
 
 // --- IndexedDB ----------------------------------------------------------------
 

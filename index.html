@@ -21,7 +21,11 @@
               <button data-action="save-project">Save <kbd>Ctrl+S</kbd></button>
               <button data-action="save-project-as">Save As… <kbd>Ctrl+Shift+S</kbd></button>
               <div class="menu-title">Scene</div>
-              <button data-action="new-scene">New Scene</button>
+              <input class="text scene-name" type="text" spellcheck="false" title="Name of the open scene (Enter renames it)" aria-label="Scene name" />
+              <button data-action="new-scene"><span class="icon">＋</span>New Scene</button>
+              <button data-action="delete-scene"><span class="icon">🗑</span>Delete Scene</button>
+              <div class="menu-title">Game</div>
+              <button data-action="build-settings"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.7 6.3a4 4 0 0 0 5.3 5.3L21.5 10a6 6 0 0 1-7.9 6.5L7 23.1a2.1 2.1 0 0 1-3-3l6.6-6.6A6 6 0 0 1 17.1 5.6z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>Build… <kbd>Ctrl+Shift+B</kbd></button>
             </div>
           </details>
           <select class="scene-select" title="Scene (each project can hold several)" aria-label="Scene"></select>
@@ -56,6 +60,7 @@
           <button class="btn scene-only" data-action="helpers" title="Toggle light and camera helpers (H)">Helpers</button>
           <button class="btn scene-only" data-action="camera-view" title="Look through the scene camera (C). Play turns it on.">🎥 Camera</button>
           <button class="btn play" data-action="play" title="Play / Stop (P)">▶ Play</button>
+          <button class="btn" data-action="build-settings" title="Build the game (Ctrl+Shift+B)"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.7 6.3a4 4 0 0 0 5.3 5.3L21.5 10a6 6 0 0 1-7.9 6.5L7 23.1a2.1 2.1 0 0 1-3-3l6.6-6.6A6 6 0 0 1 17.1 5.6z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>Build</button>
           <button class="btn" data-action="help" title="Shortcuts (?)">?</button>
         </div>
       </header>
@@ -135,6 +140,7 @@
           <tr><td>Ctrl+E</td><td>Switch between the Scene and Scripts tabs</td></tr>
           <tr><td>Ctrl+S / Ctrl+Shift+S</td><td>Save project / Save as (Scripts: also compiles now)</td></tr>
           <tr><td>Ctrl+O</td><td>Open project (.messier)</td></tr>
+          <tr><td>Ctrl+Shift+B</td><td>Build settings: choose scenes and download the game as a .zip</td></tr>
           <tr><td>Ctrl+/</td><td>Scripts: toggle comment</td></tr>
           <tr><td>G / H</td><td>Toggle grid / light and camera helpers</td></tr>
           <tr><td>C</td><td>Look through the scene camera (Play turns it on)</td></tr>

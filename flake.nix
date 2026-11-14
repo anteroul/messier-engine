@@ -50,6 +50,8 @@
               ./vite.config.ts
               ./scripts/mangle-props.mjs
               ./scripts/mangle-props.d.mts
+              ./scripts/player-plugin.mjs
+              ./scripts/player-plugin.d.mts
               ./index.html
               ./src
               ./public

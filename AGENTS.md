@@ -149,6 +149,14 @@ Engine.step(dt)                         src/engine/engine.ts
   versions (dirty flag, IndexedDB autosave), and never syncs while playing.
   Loading ignores unknown keys and keeps defaults for missing or mistyped
   values. Problems become warnings, not exceptions.
+- **Builds** (`src/editor/build.ts`, `src/player.ts`, `scripts/player-plugin.mjs`, `sceneManager.ts`):
+  `Project.build` holds the scene order/inclusion and title (saved in the manifest). Build fetches
+  `messier-player.js` (the plugin bundles `src/player.ts` with a nested Vite build: served by the dev server,
+  emitted by `vite build`, always minified and mangled) and writes a .zip with one `index.html`: that script
+  inline plus `project.subset(buildScenes()).encode()` as base64. The player compiles the scripts and plays the
+  scenes through `sceneManager`. The editor attaches `sceneManager` during Play with the same build order, and
+  handles `engine.sceneChanged` while playing as a runtime scene load. `src/player.ts` may only import the
+  engine barrel; it's the whole game runtime.
 - **Editor** (`src/editor/editor.ts`) owns the Scene/Scripts view tabs
   (`setView`; scene shortcuts are off in the Scripts tab), selection, pointer modes
   (`click` → `orbit` after a 4 px slop, `gizmo`, `pan`, `fly`), keyboard
@@ -264,6 +272,26 @@ and only Esc (stop) and Ctrl shortcuts reach the editor, so new single-key
 shortcuts are automatically unavailable while playing.
 Update the help table in `index.html` and the README controls table.
 
+**Change what a built game does.** Edit `src/player.ts` (boot, input, error page) or `gameHTML()` in
+`src/editor/build.ts` (the page). Check it for real: `test:ui` builds the demo, unzips it to
+`tests/.out/game/index.html`, plays it from `file://` and screenshots `ui-game*.png`.
+
+**Add or change a showcase game.** Each scene of the demo project beyond `Main` is built by a function: the games
+in `src/demos/` (listed in `DEMO_GAMES`; `shared.ts` has the helpers) and Gem Rush in `src/demoGame.ts`. A game's
+rules are script source strings, which `tsc` never checks, so play it in `tests/unit/demos.test.ts` (that's what
+catches typos) and avoid backticks and `${}` inside them. Builders only lay out objects (pools are inactive
+children the script hands out), so scenes round-trip through `serialize.ts`. The engine has no bloom: halos are
+stacked translucent `Shape2D` discs (`glow()`). Keep `ambientIntensity` low (0.1 to 0.3) or metals wash out, and
+unlit emissive strengths near 1. The menu scene must be named `ARCADE_SCENE`, and its stands are named after the
+scenes they load. `test:ui` writes `ui-<game>.png` and `ui-game-<game>.png`: **look at them**.
+
+**Change anything in the demo project.** `buildDemoProject()` (`src/demoProject.ts`, engine-only) assembles it:
+`Main` from `src/demo.ts` plus the sample models, then the showcase scenes, with fixed scene and asset ids. The
+editor opens it through the normal project load on a first visit, and `examples/Demo.messier` is the same project
+saved. After changing a builder, a demo script or a sample model, run `npm run generate:demo` and commit the file:
+`tests/unit/demo-project.test.ts` fails while it's stale. Keep the builders deterministic (`seeded()`, no
+`Math.random` or dates at build time).
+
 **Make an edit undoable.** Push a `Command` with `undo`/`redo` closures to
 `editor.history` *after* applying the change. For transform edits, use
 `beginTransformEdit(obj)` / `commitTransformEdit(obj)`, which skip no-op
@@ -271,7 +299,7 @@ commands. Call `hierarchy.markDirty()` after structural changes.
 
 **Change the sample glTF.** Edit `scripts/generate-sample-glb.mjs` and run
 `npm run generate:sample`. `tests/render` asserts the lantern's mesh and light
-counts, so update it too.
+counts, so update it too. Then run `npm run generate:demo`, because the demo project embeds the file.
 
 ## Gotchas learned the hard way
 

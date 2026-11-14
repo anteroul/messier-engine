@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
 import { mangleOptions } from './scripts/mangle-props.mjs';
+import { playerPlugin } from './scripts/player-plugin.mjs';
 
 export default defineConfig(({ command }) => ({
   server: { port: 5173 },
@@ -7,4 +8,6 @@ export default defineConfig(({ command }) => ({
   build: { target: 'es2022', sourcemap: true },
   // Release builds rename `_`-prefixed (internal) properties; see scripts/mangle-props.mjs.
   esbuild: command === 'build' ? mangleOptions(new URL('./src', import.meta.url)) : undefined,
+  // Serves / emits messier-player.js, the game runtime File → Build puts in exported games.
+  plugins: [playerPlugin()],
 }));

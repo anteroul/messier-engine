@@ -26,6 +26,7 @@ import {
   raySphere,
   raycastScene,
   quat,
+  sceneManager,
   vec3,
   worldBounds,
   boxCorners,
@@ -52,6 +53,7 @@ import { InspectorPanel } from './inspector';
 import { OrbitControls } from './orbitControls';
 import { LEGACY_SCRIPTS_KEY, ProjectManager } from './project';
 import { ScriptsView } from './scriptsView';
+import { BuildDialog } from './build';
 
 type PointerMode = 'none' | 'click' | 'orbit' | 'pan' | 'gizmo' | 'drag2d' | 'fly';
 export type EditorView = 'scene' | 'scripts';
@@ -93,6 +95,8 @@ export class Editor {
   readonly inspector: InspectorPanel;
   readonly scripts: ScriptsView;
   readonly project: ProjectManager;
+  /** File → Build: which scenes go in a game, and the export. */
+  readonly build: BuildDialog;
   /** What's selected (hierarchy, inspector and viewport share it). */
   readonly selection = new Selection();
   /** Hierarchy editing (create, cut/copy/paste, duplicate, delete, visibility) on the selection. */
@@ -140,8 +144,21 @@ export class Editor {
     });
     this.project = new ProjectManager(this);
     // Toolbar only: rebuilding the inspector here would steal focus from a field being edited.
-    this.project.onChange = () => this.updateToolbar();
+    this.project.onChange = () => {
+      this.updateToolbar();
+      if (this.build?.isOpen) this.build.refresh();
+    };
+    this.build = new BuildDialog(this);
+    document.body.append(this.build.root);
     this.initScripts();
+    sceneManager.onWarning = (message) => this.notify(message, 'error');
+    // A script loaded another scene during Play: show that one. (Play and Stop switch scenes while not playing.)
+    engine.sceneChanged.connect(() => {
+      if (!engine.playing) return;
+      this.endActiveGesture();
+      this.history.clear();
+      this.sceneSwitched({ items: [], active: null });
+    });
 
     this.bindViewport();
     this.bindKeyboard();
@@ -714,6 +731,15 @@ export class Editor {
     // switching back. Edits during Play go to the copy and get their own undo history.
     const edit = this.scene;
     const selected = this.selectionPaths();
+    // Scripts can load the project's other scenes, by build order (File → Build) like in a built game.
+    this.project.flush();
+    const pm = this.project;
+    const scenes = pm.project.buildScenes();
+    sceneManager.attach(
+      this.engine,
+      { names: scenes.map((s) => s.name), load: (i) => pm.instantiate(scenes[i]) },
+      scenes.findIndex((s) => s.id === pm.sceneId),
+    );
     this.editScene = edit;
     this.editHistory = this.history;
     this.history = new History();
@@ -734,6 +760,7 @@ export class Editor {
     if (!this.engine.playing) return;
     this.endActiveGesture();
     const selected = this.selectionPaths();
+    sceneManager.detach();
     this.engine.setPlaying(false);
     if (this.editScene) this.engine.setActiveScene(this.editScene);
     if (this.editHistory) this.history = this.editHistory;
@@ -1100,6 +1127,17 @@ export class Editor {
         else void this.project.save(e.shiftKey);
         return;
       }
+      if (mod && e.shiftKey && !e.altKey && e.code === 'KeyB') {
+        e.preventDefault();
+        if (this.build.isOpen) this.build.close();
+        else this.build.open();
+        return;
+      }
+      // The build dialog is modal: no scene shortcuts behind it.
+      if (this.build.isOpen) {
+        if (e.code === 'Escape') this.build.close();
+        return;
+      }
       const target = e.target as HTMLElement;
       if (target.closest('input, select, textarea')) return;
       // Scene shortcuts (W/E/R, Delete…) would act on an invisible scene; undo and Play still work.
@@ -1223,6 +1261,8 @@ export class Editor {
       'save-project': () => void this.project.save(),
       'save-project-as': () => void this.project.save(true),
       'new-scene': () => void this.project.newScene(),
+      'delete-scene': () => void this.project.deleteScene(this.project.sceneId),
+      'build-settings': () => this.build.open(),
       help: () => (this.ui.help.hidden = !this.ui.help.hidden),
       'view-scene': () => this.setView('scene'),
       'view-scripts': () => this.setView('scripts'),
@@ -1258,6 +1298,22 @@ export class Editor {
       void this.project.switchScene(sceneSelect.value);
       sceneSelect.blur();
     });
+    // The open scene's name, in the ☰ menu: Enter (or leaving the field) renames, Esc reverts.
+    const sceneName = this.ui.toolbar.querySelector<HTMLInputElement>('.scene-name');
+    if (sceneName) {
+      const current = () => this.project.currentScene?.name ?? '';
+      sceneName.addEventListener('change', () => {
+        this.project.renameScene(this.project.sceneId, sceneName.value);
+        sceneName.value = current(); // blank names are refused
+      });
+      sceneName.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') sceneName.closest('details')?.removeAttribute('open');
+        else if (e.key === 'Escape') {
+          sceneName.value = current();
+          sceneName.blur();
+        }
+      });
+    }
     // Close open dropdown menus when clicking anywhere else.
     document.addEventListener('pointerdown', (e) => {
       for (const d of document.querySelectorAll('details.menu[open]')) if (!d.contains(e.target as Node)) d.removeAttribute('open');
@@ -1332,6 +1388,15 @@ export class Editor {
       if (!same) select.replaceChildren(...scenes.map((s) => new Option(s.name, s.id)));
       select.value = pm.sceneId;
       select.disabled = this.engine.playing;
+    }
+    const sceneName = tb.querySelector<HTMLInputElement>('.scene-name');
+    if (sceneName && document.activeElement !== sceneName) sceneName.value = pm.currentScene?.name ?? '';
+    const newScene = tb.querySelector<HTMLButtonElement>('[data-action="new-scene"]');
+    const deleteScene = tb.querySelector<HTMLButtonElement>('[data-action="delete-scene"]');
+    if (newScene) newScene.disabled = this.engine.playing;
+    if (deleteScene) {
+      deleteScene.disabled = this.engine.playing || pm.project.scenes.length < 2;
+      deleteScene.title = pm.project.scenes.length < 2 ? 'A project needs at least one scene' : `Delete "${pm.currentScene?.name ?? ''}"`;
     }
   }
 

@@ -15,6 +15,7 @@ import {
   type Scene,
   type Vec3,
 } from './engine';
+import { SHARED_SCRIPTS, addScripts } from './demos/shared';
 
 // "Gem Rush", a small game whose rules are all TypeScript scripts, as a showcase and test bed of the scripting API:
 // input, physics (forces, impulses, kinematic bodies), raycasts, signals between scripts, groups, instantiate and
@@ -583,6 +584,8 @@ export function buildDemoGame(scene: Scene): void {
 
   const game = new GameObject('Game');
   game.attachComponent(script('GameManager'));
+  // Backspace returns to the showcase's menu scene, when the build has it.
+  game.attachComponent(addScripts(scene, SHARED_SCRIPTS)('ArcadeLink'));
   scene.add(game);
 
   // Arena: a floor ringed by low walls the ball can jump over (and fall off).

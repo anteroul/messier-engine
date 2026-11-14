@@ -33,7 +33,8 @@ export default class Spinner extends Script {
 
 The demo project's `Carousel` and `LapFlash` scripts show a signal crossing between two objects. Its **Gem Rush**
 scene is a whole game made of scripts (`GameManager`, `PlayerBall`, `GemSpawner`, `Gem`, `Sentinel`…): a bigger
-example of input, physics, signals, groups and spawning from templates.
+example of input, physics, signals, groups and spawning from templates. The **Neon Run**, **Topple** and **Starfall** scenes each
+run on one larger script that hands out pooled objects, and **Arcade** switches scenes with `sceneManager`.
 
 Scripts can't import each other. To call another script, find it by name and describe the part you use:
 
@@ -152,6 +153,34 @@ this.scene.getGroup('enemies');  // objects in a group
 this.scene.findByName('Player');
 this.scene.activeCamera();
 ```
+
+## Switching scenes
+
+A game's scenes are the ones ticked in **☰ → Build…**, in that order. `sceneManager` loads them by name or build
+index, in a built game and during Play in the editor:
+
+```ts
+import { Script, input, sceneManager } from 'messier';
+
+export default class LevelExit extends Script {
+  update(): void {
+    if (input.pressed('KeyR')) void sceneManager.loadScene(sceneManager.activeSceneIndex); // restart
+    if (this.object.transform.position[1] < -10) void sceneManager.loadScene('Game Over');
+  }
+}
+```
+
+| Member | |
+| --- | --- |
+| `loadScene(nameOrIndex)` | Starts a fresh copy of that scene. Resolves to the new `Scene`, or `null` (with a warning) |
+| `sceneCount` / `sceneName(i)` | The build's scenes |
+| `activeSceneIndex` / `activeSceneName` | The scene loadScene() last loaded (-1 / null when Play started in one that isn't in the build) |
+| `isLoading` | A load is in progress |
+| `sceneLoaded` | Signal `(scene, index)` after a load |
+
+The switch happens after the current frame at the earliest (imported models may have to load first), and the last
+call wins. The old scene stops (`onDisable` → `onDestroy`) and is thrown away, so keep game state that should survive
+in module-level variables of a script or pass it some other way. Loading the scene that's running restarts it.
 
 ## Transform
 

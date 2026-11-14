@@ -1,8 +1,10 @@
 import type { Mesh, ResourceRef } from './mesh';
 import type { Texture } from './material';
+import { Scene } from './scene';
+import type { ScriptLibrary } from './scripting';
 import { buildPrimitive } from './primitives';
 import { bytesResolver, loadModelFromBytes, type MemoryFile } from './loaders';
-import { checkSceneData, collectAssetIds, tagAssetResources, type SceneData, type SceneResources } from './serialize';
+import { applySceneData, checkSceneData, collectAssetIds, tagAssetResources, type SceneData, type SceneResources } from './serialize';
 import { isObject } from './data';
 
 // A project is a set of scenes plus the scripts and imported assets they share.
@@ -10,8 +12,8 @@ import { isObject } from './data';
 //   header:  magic "MSPJ" | container version | total length   (3 x u32 LE)
 //   chunk 0: length | "JSON" | manifest (UTF-8, space padded to 4 bytes)
 //   chunk 1: length | "BIN\0" | asset file bytes, each 4-byte aligned (optional)
-// The manifest holds every scene's SceneData, the script sources, and for each
-// asset file its { offset, length } in the BIN chunk.
+// The manifest holds every scene's SceneData, the script sources, the build
+// settings, and for each asset file its { offset, length } in the BIN chunk.
 
 export const PROJECT_FORMAT = 'messier-project';
 export const PROJECT_VERSION = 1;
@@ -39,6 +41,14 @@ export interface ScriptSource {
   source: string;
 }
 
+/** What File → Build puts in a game: the scenes in build order (the first one starts) and the page title. */
+export interface BuildSettings {
+  /** Defaults to the project name. */
+  title: string;
+  /** Scenes not listed are appended, included. Ids of deleted scenes are ignored. */
+  scenes: { id: string; enabled: boolean }[];
+}
+
 interface AssetEntry {
   id: string;
   name: string;
@@ -53,6 +63,7 @@ export interface ProjectManifest {
   startScene: string;
   scenes: ProjectScene[];
   scripts: ScriptSource[];
+  build: BuildSettings;
   assets: AssetEntry[];
 }
 
@@ -61,6 +72,7 @@ export class Project {
   scenes: ProjectScene[] = [];
   startScene = '';
   scripts: ScriptSource[] = [];
+  build: BuildSettings = { title: '', scenes: [] };
   /**
    * Imported files. Kept in memory even when no scene uses them anymore (undo
    * can bring the objects back); only referenced assets are written out.
@@ -73,6 +85,39 @@ export class Project {
 
   getAsset(id: string): Asset | null {
     return this.assets.find((a) => a.id === id) ?? null;
+  }
+
+  /** Every scene in build order, with whether the build includes it. */
+  buildList(): { scene: ProjectScene; enabled: boolean }[] {
+    const list: { scene: ProjectScene; enabled: boolean }[] = [];
+    for (const { id, enabled } of this.build.scenes) {
+      const scene = this.getScene(id);
+      if (scene && !list.some((e) => e.scene === scene)) list.push({ scene, enabled });
+    }
+    for (const scene of this.scenes) if (!list.some((e) => e.scene === scene)) list.push({ scene, enabled: true });
+    return list;
+  }
+
+  /** The scenes a build includes, in order. Their indices are the ones `sceneManager.loadScene()` takes. */
+  buildScenes(): ProjectScene[] {
+    return this.buildList().filter((e) => e.enabled).map((e) => e.scene);
+  }
+
+  /**
+   * A copy holding only `scenes` (in that order, the first one starting) and the assets they use: what a built
+   * game ships. Scene data and asset files are shared, not copied.
+   */
+  subset(scenes: ProjectScene[]): Project {
+    const p = new Project();
+    p.name = this.name;
+    p.scenes = scenes.map((s) => ({ ...s }));
+    p.startScene = p.scenes[0]?.id ?? '';
+    p.scripts = this.scripts.map((s) => ({ ...s }));
+    p.build = { title: this.build.title, scenes: p.scenes.map((s) => ({ id: s.id, enabled: true })) };
+    const ids = new Set<string>();
+    for (const s of p.scenes) collectAssetIds(s.data.objects, ids);
+    p.assets = this.assets.filter((a) => ids.has(a.id));
+    return p;
   }
 
   /** Assets used by at least one scene, in project order. */
@@ -91,6 +136,7 @@ export class Project {
       startScene: this.startScene,
       scenes: this.scenes,
       scripts: this.scripts,
+      build: this.build,
       assets: this.referencedAssets().map((a) => ({ id: a.id, name: a.name, files: a.files.map((f) => ({ name: f.name, length: f.bytes.byteLength })) })),
     };
   }
@@ -172,6 +218,12 @@ export class Project {
     for (const s of Array.isArray(json.scripts) ? json.scripts : []) {
       if (isObject(s) && typeof s.name === 'string' && typeof s.source === 'string') p.scripts.push({ name: s.name, source: s.source });
     }
+    if (isObject(json.build)) {
+      if (typeof json.build.title === 'string') p.build.title = json.build.title;
+      for (const e of Array.isArray(json.build.scenes) ? json.build.scenes : []) {
+        if (isObject(e) && typeof e.id === 'string') p.build.scenes.push({ id: e.id, enabled: e.enabled !== false });
+      }
+    }
     for (const a of Array.isArray(json.assets) ? json.assets : []) {
       if (!isObject(a) || typeof a.id !== 'string' || !Array.isArray(a.files)) continue;
       const entry: AssetEntry = { id: a.id, name: typeof a.name === 'string' ? a.name : a.id, files: [] };
@@ -225,6 +277,14 @@ export class ProjectResources implements SceneResources {
         }
       }),
     );
+  }
+
+  /** A new Scene holding `entry`'s objects, with `scripts` as its library (load the project's scripts into it first). */
+  async instantiate(entry: ProjectScene, scripts: ScriptLibrary, warnings: string[] = []): Promise<Scene> {
+    await this.prepare(entry.data, warnings);
+    const scene = new Scene(scripts);
+    applySceneData(scene, entry.data, this, warnings);
+    return scene;
   }
 
   /** Makes meshes and textures of an asset imported in this session resolvable without reloading it. */

@@ -32,6 +32,9 @@ real-time scene editor.
   inspector, move/rotate/scale gizmos with snapping, undo/redo, duplicate and
   delete, and a Play mode that runs behaviours (scripts) and restores the scene
   when you stop.
+- **Game builds**: the **Build** button next to Play (or **☰ → Build…**) picks and orders the scenes (Unity-style
+  build settings) and downloads the game as a `.zip` holding one self-contained
+  `index.html` that runs anywhere WebGPU does, even straight from disk.
 - **No runtime dependencies**: the math, loaders, renderer and UI are all in2
   this repo. The only npm packages are build tools (Vite, TypeScript, WebGPU types).
 
@@ -114,6 +117,7 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
 | `Ctrl+E` | Switch between the **Scene** and **Scripts** tabs |
 | `Ctrl+S` / `Ctrl+Shift+S` | Save project / save as (in the code editor, `Ctrl+S` also compiles now) |
 | `Ctrl+O` | Open a `.messier` project |
+| `Ctrl+Shift+B` | Build settings: choose the game's scenes and download it as a `.zip` |
 | `Ctrl+/` / `Tab` | In the code editor: toggle comment / indent (`Shift+Tab` outdents) |
 | `G` / `H` | Toggle grid / light and camera helpers |
 | `C` | Look through the scene camera (Play turns this on) |
@@ -127,15 +131,17 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
   and right to scrub a value. Hold Shift for ×10, Alt for ×0.1. Values update
   live while objects move or animate.
 - **Projects and scenes:** a project holds several scenes plus the scripts and
-  imported models they share. The **☰** menu creates, opens and saves projects
-  and adds scenes; the picker next to it switches scenes (not during Play).
+  imported models they share. The **☰** menu creates, opens and saves projects,
+  renames the open scene (type in its name field and press Enter), adds and
+  deletes scenes, and builds the game; the picker next to it switches scenes
+  (not during Play).
   With nothing selected, the inspector renames the project and scene or deletes
   the scene. Switching scenes clears undo.
   - Everything **autosaves** in the browser (IndexedDB) about a second after a
     change, so a reload continues where you left off. The first load (or a
-    browser without an autosave) starts with the demo project. Its second
-    scene, **Gem Rush**, is a small game written entirely as scripts (see
-    [Demo game](#demo-game)).
+    browser without an autosave) starts with the demo project. Its other
+    scenes are small games written entirely as scripts (see
+    [Demo games](#demo-games)).
   - **Save** (`Ctrl+S`) writes one `.messier` file: the scenes as JSON plus the
     original files of every imported model. Chromium writes back to the file you
     opened or saved; other browsers download it. **Open** a project with
@@ -145,6 +151,16 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
   - Meshes are saved by reference (primitive parameters, or which imported
     file they came from), never as vertex data. Meshes created by scripts at
     runtime can't be saved; Save tells you which objects lost theirs.
+- **Building a game:** the toolbar's **Build** button (also **☰ → Build…**, `Ctrl+Shift+B`) opens the build
+  settings. Tick the scenes to include and drag them (or use ▲/▼) into order:
+  the first one starts the game, and the numbers are the build indices that
+  `sceneManager.loadScene()` takes. **Build** downloads `<title>.zip` with one
+  `index.html`: the engine runtime, the scripts (compiled when the page loads)
+  and the scenes and imported models they use, all inline. Open it in a
+  WebGPU browser or upload it to any static host (itch.io, GitHub Pages…). The
+  game plays through each scene's camera, full window, with the keyboard
+  going to scripts. Script errors go to the browser console. The settings
+  and the game title are saved with the project.
 - **Environment:** with nothing selected, the inspector edits ambient light,
   background, exposure, shadow extent and the grid.
 - **Importing:** click **Import** or drop files onto the viewport. For
@@ -246,7 +262,33 @@ give it a `static readonly typeName` and register it in `BEHAVIOURS`. It then
 shows up in the inspector's **Add…** menu, and its public number fields become
 editable parameters automatically.
 
-## Demo game
+## Demo games
+
+The demo project holds a small arcade. Pick a scene in the scene picker and
+press Play, or press **Build**: the demo's build settings already list the
+**Arcade** menu first and the games after it, so the downloaded page is the
+whole arcade. In the menu, `A`/`D` or the arrow keys choose a game and `Enter`
+plays it; `Backspace` in a game returns to the menu.
+
+| Scene | What it shows | Controls |
+| --- | --- | --- |
+| **Arcade** | Spotlights, emissive trims, world-space text, scene loading with `sceneManager` | `A`/`D` choose, `Enter` play |
+| **Neon Run** | A neon city at speed: unlit emissive materials, 2D shapes as a sun and glows, a shadow-casting sunset, pooled obstacles | `A`/`D` steer, `R` restart |
+| **Topple** | Physics in sunlight: stacks of metal, lacquer and marble blocks, a cannon with a charged shot and an aiming arc, soft shadows | `WASD` aim, hold and release `Space` to fire, `R` reset |
+| **Starfall** | Space shooter: metallic hull, point-light explosions, parallax star sheets and nebulae made of 2D shapes | `WASD` fly, `Space` fire, `R` restart |
+| **Gem Rush** | The scripting API tour described below | `WASD` roll, `Space` jump, `R` restart |
+
+The first four are built by [src/demos/](src/demos/): one file per scene with
+its script source and a builder that only lays out objects, so each scene
+saves and edits like a hand-made one. Open them in the Scripts tab to see how
+they work. `tests/unit/demos.test.ts` plays them headlessly.
+
+The whole demo is also saved as [examples/Demo.messier](examples/Demo.messier),
+a project file like the ones **Save** writes (scenes, scripts and the two
+sample models in one file). Open it with **☰ → Open** or drop it on the
+viewport. It is generated from the builders with `npm run generate:demo`.
+
+### Gem Rush
 
 Pick **Gem Rush** in the scene picker and press Play. Roll the ball with
 WASD or the arrow keys, jump with Space, and collect 10 gems while staying
@@ -382,7 +424,9 @@ obj.attachComponent(hover.create({ speed: 0.5 })); // a Script component, with o
 flake.nix               Nix: dev shell, `nix run` dev server, static build, `.#serve`, `.#tests` shell
 index.html              Editor shell (toolbar, panels, canvas)
 src/main.ts             Entry point: creates the engine and editor, restores the autosave or builds the demo project
+src/demoProject.ts      The demo project: Main, the showcase scenes, scripts, sample models, build order
 src/demo.ts             Demo scene content
+src/demos/              Showcase games (Arcade, Neon Run, Topple, Starfall)
 docs/scripting.md       Scripting API: components, lifecycle, transform, signals, Time
 src/engine/             The engine (no DOM dependencies except the canvas)
   engine.ts             Main loop: fixed steps → update → lateUpdate → matrices → render → destroys; active scene
@@ -407,16 +451,22 @@ src/engine/             The engine (no DOM dependencies except the canvas)
   math.ts               vec3 / quat / mat4 (column-major), color helpers
   loaders/              glTF 2.0 / GLB, OBJ + MTL, resource resolvers, model assets
   serialize.ts          Scene <-> JSON (SceneData); meshes and textures as ResourceRefs
-  project.ts            Project (scenes, scripts, assets), .messier container, ProjectResources
+  project.ts            Project (scenes, scripts, assets, build settings), .messier container, ProjectResources
+  sceneManager.ts       sceneManager: loadScene() by name or build index, for built games and editor Play
+src/player.ts           Runtime of built games: boots the project embedded in the exported page
 src/editor/             Editor UI (plain DOM, no framework)
   editor.ts             Input, selection, commands, play mode, import, overlay, Scene/Scripts tabs
   project.ts            ProjectManager: scenes, Save/Open, IndexedDB autosave, change detection
+  build.ts zip.ts       Build Settings dialog, exported page, .zip writer
   scriptsView.ts        Scripts tab: script list, problems, usages, reference
   codeEditor.ts         Textarea-over-highlight code editor (indent, comments, error markers)
   gizmo.ts              Move/rotate/scale manipulator (picking + dragging + drawing)
   hierarchy.ts inspector.ts ui.ts history.ts orbitControls.ts editor.css
 public/models/          Sample assets (lantern.glb, icosahedron.obj/.mtl)
-scripts/                generate-sample-glb.mjs (regenerates lantern.glb), mangle-props.mjs (release build)
+examples/Demo.messier   The demo project as a saved file (npm run generate:demo)
+scripts/                generate-sample-glb.mjs (regenerates lantern.glb), generate-demo-project.mjs
+                        (regenerates examples/Demo.messier), mangle-props.mjs (release build),
+                        player-plugin.mjs (bundles src/player.ts into messier-player.js for builds)
 tests/                  Unit tests and optional GPU smoke tests (separate package.json)
 ```
 

@@ -2,7 +2,8 @@
 // server and checks editor state after each interaction. Screenshots go to
 // tests/.out/. Run via `npm run test:ui` (see tests/ui/run.mjs).
 import puppeteer from 'puppeteer-core';
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { inflateRawSync } from 'node:zlib';
 
 const OUT = process.env.OUT_DIR;
 const URL = process.env.APP_URL;
@@ -12,6 +13,26 @@ const check = (name, ok, info = '') => {
   if (!ok) failures++;
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Files of a .zip (stored or deflated entries), by name. */
+function unzip(buf) {
+  const files = {};
+  let end = buf.length - 22;
+  while (end >= 0 && buf.readUInt32LE(end) !== 0x06054b50) end--;
+  let at = buf.readUInt32LE(end + 16);
+  for (let i = buf.readUInt16LE(end + 10); i > 0; i--) {
+    const method = buf.readUInt16LE(at + 10);
+    const size = buf.readUInt32LE(at + 20);
+    const nameLen = buf.readUInt16LE(at + 28);
+    const local = buf.readUInt32LE(at + 42);
+    const name = buf.subarray(at + 46, at + 46 + nameLen).toString('utf8');
+    const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
+    const data = buf.subarray(start, start + size);
+    files[name] = method === 8 ? inflateRawSync(data) : data;
+    at += 46 + nameLen + buf.readUInt16LE(at + 30) + buf.readUInt16LE(at + 32);
+  }
+  return files;
+}
 
 const browser = await puppeteer.launch({
   executablePath: process.env.CHROMIUM,
@@ -390,8 +411,8 @@ const autosaved = () =>
       }),
   );
 await sleep(1500);
-// The demo's own scripts, then those of its Gem Rush scene.
-const DEMO_SCRIPTS = 'Hover,Carousel,LapFlash,GameManager,PlayerBall,FollowCamera,GemSpawner,Gem,Spark,Sentinel,ScorePips,ScoreHud';
+// The demo's own scripts, then those of its game scenes.
+const DEMO_SCRIPTS = 'Hover,Carousel,LapFlash,Arcade,ArcadeLink,NeonRun,Topple,Starfall,GameManager,PlayerBall,FollowCamera,GemSpawner,Gem,Spark,Sentinel,ScorePips,ScoreHud';
 check('scripts autosave', (await autosaved())?.scripts.map((x) => x.name).join() === `${DEMO_SCRIPTS},EmptyScript`);
 
 // --- Keyboard input: during Play, keys drive scripts instead of editor shortcuts; Esc stops
@@ -598,7 +619,7 @@ const fresh = await state(() => ({
   objects: window.engine.scene.root.children.map((o) => o.name).join(),
   canUndo: window.editor.history.canUndo,
 }));
-check('new scene', fresh.options === 3 && fresh.objects === 'Sun,Main Camera' && !fresh.canUndo, JSON.stringify(fresh));
+check('new scene', fresh.options === 7 && fresh.objects === 'Sun,Main Camera' && !fresh.canUndo, JSON.stringify(fresh));
 
 // --- The Gem Rush demo game plays in the editor: keys roll the ball, gems spawn, no script errors
 const gemRush = await state(() => window.editor.project.project.scenes.find((s) => s.name === 'Gem Rush')?.id);
@@ -620,6 +641,52 @@ await page.screenshot({ path: `${OUT}/ui-gem-rush.png` });
 await page.keyboard.press('Escape');
 await sleep(200);
 check('Gem Rush plays', game.playing && game.gems > 0 && game.z < 4.5 && game.errors.length === 0, JSON.stringify(game));
+
+// --- The showcase games play too. Look at their screenshots after changing them.
+const sceneId = (name) => page.evaluate((n) => window.editor.project.project.scenes.find((s) => s.name === n)?.id, name);
+const scriptErrors = () => page.evaluate((names) => window.engine.scene.scripts.scripts.filter((s) => names.includes(s.name))
+  .flatMap((s) => s.diagnostics.map((d) => `${s.name}:${d.line} ${d.message}`)), gameNames);
+for (const [name, object, key] of [['Neon Run', 'Ship', 'KeyD'], ['Topple', 'Turret', 'Space'], ['Starfall', 'Ship', 'Space']]) {
+  await page.select('.scene-select', await sceneId(name));
+  await sleep(300);
+  await page.evaluate(() => document.getElementById('gpu-canvas').focus());
+  await page.keyboard.press('KeyP');
+  await sleep(600);
+  await page.keyboard.down(key);
+  await sleep(900);
+  await page.keyboard.up(key);
+  await sleep(1200);
+  const played = await page.evaluate((o) => ({ playing: window.engine.playing, found: !!window.engine.scene.findByName(o), camera: window.engine.viewObject?.name }), object);
+  const errors = await scriptErrors();
+  await page.screenshot({ path: `${OUT}/ui-${name.toLowerCase().replace(' ', '-')}.png` });
+  await page.keyboard.press('Escape');
+  await sleep(200);
+  check(`${name} plays`, played.playing && played.found && !!played.camera && errors.length === 0, JSON.stringify({ played, errors }));
+}
+
+// The Arcade menu starts the chosen game through sceneManager, and Backspace in a game comes back.
+await page.select('.scene-select', await sceneId('Arcade'));
+await sleep(300);
+await page.evaluate(() => document.getElementById('gpu-canvas').focus());
+await page.keyboard.press('KeyP');
+await sleep(500);
+await page.keyboard.press('ArrowRight');
+await sleep(1200);
+await page.screenshot({ path: `${OUT}/ui-arcade.png` });
+const menu = await state(() => window.engine.scene.findByName('Status')?.components.find((c) => 'text' in c)?.text);
+await page.keyboard.press('Enter');
+await page.waitForFunction(() => window.engine.scene.findByName('Turret'), { timeout: 5000 }).catch(() => {});
+const launched = await state(() => ({ playing: window.engine.playing, topple: !!window.engine.scene.findByName('Turret') }));
+await page.keyboard.press('Backspace');
+await page.waitForFunction(() => window.engine.scene.findByName('Stands'), { timeout: 5000 }).catch(() => {});
+await sleep(300);
+const back = await state(() => ({ playing: window.engine.playing, arcade: !!window.engine.scene.findByName('Stands') }));
+const arcadeErrors = await scriptErrors();
+await page.keyboard.press('Escape');
+await sleep(200);
+check('Arcade starts the chosen game', menu === 'Enter: play Topple' && launched.playing && launched.topple, JSON.stringify({ menu, launched }));
+check('Backspace returns to the Arcade', back.playing && back.arcade && arcadeErrors.length === 0, JSON.stringify({ back, arcadeErrors }));
+check('Stop returns to the edited scene', (await state(() => !window.engine.playing && window.editor.project.currentScene.name)) === 'Arcade');
 await page.select('.scene-select', firstScene);
 await sleep(300);
 check('switch back to first scene', (await state(() => window.engine.scene.findByName('Torus')?.transform.position[0])) === 7.25);
@@ -656,7 +723,7 @@ const saved = await state(async () => {
     bytes: Array.from(bytes),
   };
 });
-check('Ctrl+S during Play stops and saves', saved && saved.name === 'Demo.messier' && !saved.playing && !saved.dirty && saved.scenes === 3 &&
+check('Ctrl+S during Play stops and saves', saved && saved.name === 'Demo.messier' && !saved.playing && !saved.dirty && saved.scenes === 7 &&
   saved.rot.every((v, i) => Math.abs(v - rotBefore[i]) < 1e-6), JSON.stringify(saved && { ...saved, bytes: saved.bytes.length }));
 
 if (saved) {
@@ -676,10 +743,129 @@ if (saved) {
     x: window.engine.scene.findByName('Torus')?.transform.position[0],
     dirty: window.editor.project.dirty,
   }));
-  check('open project file', opened.name === 'Demo' && opened.scenes === 3 && opened.x === 7.25 && !opened.dirty, JSON.stringify(opened));
+  check('open project file', opened.name === 'Demo' && opened.scenes === 7 && opened.x === 7.25 && !opened.dirty, JSON.stringify(opened));
 }
 
+// --- Build: the Build Settings dialog picks and orders scenes; the .zip holds a page that plays them
+await page.evaluate(() => document.getElementById('gpu-canvas').focus());
+await page.keyboard.down('Control');
+await page.keyboard.down('Shift');
+await page.keyboard.press('KeyB');
+await page.keyboard.up('Shift');
+await page.keyboard.up('Control');
+await sleep(100);
+const rows = () => page.$$eval('.build-scene', (els) => els.map((e) => `${e.querySelector('.build-name').textContent}:${e.querySelector('.build-index').textContent}`).join());
+check('Ctrl+Shift+B opens build settings', (await page.$eval('#build-dialog', (e) => !e.hidden)) && (await rows()) === 'Arcade:0,Neon Run:1,Topple:2,Starfall:3,Gem Rush:4,Main:,Scene 1:5', await rows());
+await page.click('.build-scene:nth-child(6) input[type=checkbox]');
+await page.click('.build-scene:nth-child(7) input[type=checkbox]');
+await page.click('.build-scene:nth-child(6) .build-move-up');
+await sleep(50);
+check('reorder, include and exclude scenes', (await rows()) === 'Arcade:0,Neon Run:1,Topple:2,Starfall:3,Main:4,Gem Rush:5,Scene 1:', await rows());
+await page.screenshot({ path: `${OUT}/ui-build-dialog.png` });
+await state(() => (window.__downloads = []));
+await page.click('.build-run');
+await page.waitForFunction(() => window.__downloads.length > 0, { timeout: 15000 }).catch(() => {});
+const built = await state(async () => {
+  const dl = window.__downloads[0];
+  if (!dl) return null;
+  return { name: dl.name, bytes: Array.from(new Uint8Array(await (await fetch(dl.href)).arrayBuffer())) };
+});
+check('Build downloads a zip', built?.name === 'Demo.zip', built?.name);
+const entries = built ? unzip(Buffer.from(built.bytes)) : {};
+check('zip holds index.html', Object.keys(entries).join() === 'index.html', Object.keys(entries).join());
+await page.keyboard.press('Escape');
+check('Esc closes build settings', await page.$eval('#build-dialog', (e) => e.hidden));
+await page.click('.btn[data-action="build-settings"]');
+check('the toolbar Build button opens build settings', await page.$eval('#build-dialog', (e) => !e.hidden));
+await page.keyboard.press('Escape');
+check('build settings are saved with the project', (await state(() => window.editor.project.project.manifest().build.scenes.map((s) => s.enabled).join())) === 'true,true,true,true,true,true,false');
+
+if (entries['index.html']) {
+  mkdirSync(`${OUT}/game`, { recursive: true });
+  writeFileSync(`${OUT}/game/index.html`, entries['index.html']);
+  const gamePage = await browser.newPage();
+  const gameErrors = [];
+  gamePage.on('console', (m) => {
+    if (m.type() === 'error' || m.type() === 'warning') gameErrors.push(`${m.type()}: ${m.text()}`);
+  });
+  gamePage.on('pageerror', (e) => gameErrors.push(`pageerror: ${e.message}`));
+  await gamePage.goto(`file://${OUT}/game/index.html`);
+  await gamePage.waitForFunction(() => window.engine?.playing && window.engine.scene.findByName('Stands'), { timeout: 15000 }).catch(() => {});
+  // The build starts in the Arcade. Left from the first stand wraps to the last one, Gem Rush.
+  await sleep(500);
+  await gamePage.keyboard.press('ArrowLeft');
+  await sleep(1200);
+  await gamePage.screenshot({ path: `${OUT}/ui-game-arcade.png` });
+  await gamePage.keyboard.press('Enter');
+  await gamePage.waitForFunction(() => window.engine.scene.findByName('Player'), { timeout: 5000 }).catch(() => {});
+  await gamePage.keyboard.down('KeyW');
+  await sleep(1500);
+  await gamePage.keyboard.up('KeyW');
+  const run = await gamePage.evaluate(() => ({
+    title: document.title,
+    playing: window.engine?.playing,
+    scenes: window.sceneManager ? [...Array(window.sceneManager.sceneCount)].map((_, i) => window.sceneManager.sceneName(i)).join() : null,
+    gems: window.engine?.scene.getGroup('gems').length,
+    z: window.engine?.scene.findByName('Player')?.transform.position[2],
+    rendered: window.engine?.renderer.stats.drawCalls ?? window.engine?.renderer.stats,
+  }));
+  await gamePage.screenshot({ path: `${OUT}/ui-game.png` });
+  check('built game starts a game from its menu scene', run.title === 'Demo' && run.playing && run.scenes === 'Arcade,Neon Run,Topple,Starfall,Main,Gem Rush' && run.gems > 0 && run.z < 4.5, JSON.stringify(run));
+  await gamePage.keyboard.press('Backspace');
+  await gamePage.waitForFunction(() => window.engine.scene.findByName('Stands'), { timeout: 5000 }).catch(() => {});
+  check('built game: Backspace returns to the menu', await gamePage.evaluate(() => window.sceneManager.activeSceneName === 'Arcade'));
+  for (const name of ['Neon Run', 'Topple', 'Starfall']) {
+    const ok = await gamePage.evaluate(async (n) => {
+      await window.sceneManager.loadScene(n);
+      await new Promise((r) => setTimeout(r, 1500));
+      return window.sceneManager.activeSceneName === n && window.engine.playing && !!window.engine.viewObject;
+    }, name);
+    await gamePage.screenshot({ path: `${OUT}/ui-game-${name.toLowerCase().replace(' ', '-')}.png` });
+    check(`built game plays ${name}`, ok);
+  }
+  const loaded = await gamePage.evaluate(async () => {
+    const scene = await window.sceneManager.loadScene('Main');
+    await new Promise((r) => setTimeout(r, 300));
+    return { same: scene === window.engine.scene, index: window.sceneManager.activeSceneIndex, lantern: !!window.engine.scene.findByName('Lantern') };
+  });
+  await gamePage.screenshot({ path: `${OUT}/ui-game-main.png` });
+  check('built game loads its other scene (with an imported model)', loaded.same && loaded.index === 4 && loaded.lantern, JSON.stringify(loaded));
+  // Main has the EmptyScript that the scripting checks above made throw: games report script errors on the console.
+  const unexpected = gameErrors.filter((e) => !/^error: EmptyScript\.ts:\d+: Error: kaboom \(on Empty\)$/.test(e));
+  check('built game reports script errors on the console', gameErrors.length > unexpected.length);
+  check('built game: no other console errors/warnings', unexpected.length === 0, unexpected.join(' | '));
+  await gamePage.close();
+}
+
+// --- ☰ menu: rename the open scene in place, delete it
+await page.click('.file-menu summary');
+await sleep(100);
+await page.screenshot({ path: `${OUT}/ui-file-menu.png` });
+check('menu shows the open scene name', (await page.$eval('.scene-name', (e) => e.value)) === (await state(() => window.editor.project.currentScene.name)));
+await page.click('.scene-name', { clickCount: 3 });
+await page.keyboard.type('Arena');
+await page.keyboard.press('Enter');
+await sleep(100);
+const renamed = await state(() => ({
+  name: window.editor.project.currentScene.name,
+  option: document.querySelector('.scene-select').selectedOptions[0]?.text,
+  menuOpen: document.querySelector('.file-menu').open,
+}));
+check('Enter in the menu renames the scene', renamed.name === 'Arena' && renamed.option === 'Arena' && !renamed.menuOpen, JSON.stringify(renamed));
+const scenesBefore = await state(() => window.editor.project.project.scenes.length);
+await page.click('.file-menu summary');
+await page.click('[data-action="delete-scene"]');
+await sleep(300);
+const sceneDeleted = await state(() => ({
+  scenes: window.editor.project.project.scenes.map((s) => s.name).join(),
+  field: document.querySelector('.scene-name').value,
+  current: window.editor.project.currentScene.name,
+}));
+check('Delete Scene removes the open scene', sceneDeleted.scenes.split(',').length === scenesBefore - 1 && !sceneDeleted.scenes.includes('Arena') &&
+  sceneDeleted.field === sceneDeleted.current, JSON.stringify(sceneDeleted));
+
 check('no console errors/warnings', errors.length === 0, errors.join(' | '));
+
 await browser.close();
 console.log(failures ? `${failures} FAILURE(S)` : 'ALL PASSED');
 process.exit(failures ? 1 : 0);
