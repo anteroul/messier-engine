@@ -68,5 +68,5 @@ try {
 console.log(`${hashNote}Version ${current} → ${next}. Check CHANGELOG.md, then:
 
   git commit -am "Release ${next}"
-  git tag v${next}
+  git tag -a v${next} -m "Release ${next}"
   git push --follow-tags`);
