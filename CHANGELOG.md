@@ -10,6 +10,8 @@ Add a line under **Unreleased** with every user-visible change.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-16
+
 ### Added
 
 - Skies: a gradient sky with a sun disc that follows the scene's directional light, or an equirectangular (2:1)
@@ -66,6 +68,7 @@ First version.
 
 - The script editor's caret drifted from the highlighted text.
 
-[Unreleased]: https://github.com/anteroul/Vertek-Engine/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/anteroul/Vertek-Engine/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/anteroul/Vertek-Engine/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/anteroul/Vertek-Engine/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/anteroul/Vertek-Engine/releases/tag/v0.1.0
