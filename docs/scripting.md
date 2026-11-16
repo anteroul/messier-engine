@@ -152,6 +152,8 @@ this.scene.query(Health);        // live components: enabled, on active objects;
 this.scene.getGroup('enemies');  // objects in a group
 this.scene.findByName('Player');
 this.scene.activeCamera();
+this.scene.sky.mode = 'gradient';   // or 'color' (scene.background) or 'image' (sky.texture, a 2:1 panorama)
+this.scene.sky.top = [0.3, 0.05, 0.2]; // sky colors are linear; ambient light and reflections follow the sky
 ```
 
 ## Sound

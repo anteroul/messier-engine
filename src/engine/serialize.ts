@@ -8,6 +8,7 @@ import { Script } from './scripting';
 import { ANCHORS_2D, SHAPE2D_FIELDS, SHAPE_KINDS_2D, Shape2D, SPACES_2D, Text2D, TEXT2D_FIELDS } from './shapes2d';
 import { TEXT_ALIGNS, TEXT_BASELINES } from './font';
 import { AUDIO_SOURCE_FIELDS, AudioSource } from './audioSource';
+import { Sky, SKY_FIELDS, SKY_MODES } from './sky';
 import type { AudioClip, ClipRef } from './audioClip';
 import type { Mesh, ResourceRef } from './mesh';
 import { quat, type Quat, type Vec3 } from './math';
@@ -54,7 +55,7 @@ export interface ObjectData {
 export interface SceneData {
   format: typeof SCENE_FORMAT;
   version: number;
-  /** Environment (ambient, background, exposure, shadow extent) and `physics` ({ gravity, iterations }). */
+  /** Environment (ambient, background, exposure, shadow extent), `sky` (Sky fields plus `texture`, a ref) and `physics` ({ gravity, iterations }). */
   settings: Json;
   objects: ObjectData[];
 }
@@ -110,7 +111,11 @@ export function serializeScene(scene: Scene, warnings: string[] = []): SceneData
   return {
     format: SCENE_FORMAT,
     version: SCENE_VERSION,
-    settings: { ...pickData(scene, SCENE_SETTINGS), physics: { gravity: [...scene.physics.gravity], iterations: scene.physics.iterations } },
+    settings: {
+      ...pickData(scene, SCENE_SETTINGS),
+      sky: skyToData(scene.sky, warnings),
+      physics: { gravity: [...scene.physics.gravity], iterations: scene.physics.iterations },
+    },
     objects: scene.root.children.map((c) => objectToData(c, warnings)),
   };
 }
@@ -162,6 +167,13 @@ function behaviourToData(b: Behaviour): BehaviourData {
   return { type: b.typeName, enabled: b.enabled, params: { ...b.params } };
 }
 
+function skyToData(sky: Sky, warnings: string[]): Json {
+  const d = pickData(sky, SKY_FIELDS);
+  if (sky.texture?.ref) d.texture = copyRef(sky.texture.ref);
+  else if (sky.texture) warnings.push(`Sky: image "${sky.texture.name}" was created at runtime and can't be saved`);
+  return d;
+}
+
 // --- Load ---------------------------------------------------------------------
 
 /** Throws unless `data` looks like a scene this version can read. */
@@ -182,6 +194,14 @@ export function applySceneData(scene: Scene, data: unknown, resources: SceneReso
   for (const c of [...scene.root.children]) scene.root.remove(c);
   const settings = isObject(data.settings) ? data.settings : {};
   assignKnown(scene, settings, SCENE_SETTINGS);
+  // Scenes saved before skies existed get the default (the flat background), not the previous scene's sky.
+  const sky = assignKnown(scene.sky.copyFrom(new Sky()), settings.sky, SKY_FIELDS);
+  if (!SKY_MODES.includes(sky.mode)) sky.mode = 'color';
+  const skyTexture = isObject(settings.sky) ? settings.sky.texture : undefined;
+  if (skyTexture !== undefined) {
+    sky.texture = isResourceRef(skyTexture) ? resources.texture(skyTexture) : null;
+    if (!sky.texture) warnings.push('Sky: image not found');
+  }
   assignKnown(scene.physics, settings.physics, ['gravity', 'iterations']);
   scene.physics.iterations = Math.max(1, Math.round(scene.physics.iterations));
   const objects = Array.isArray(data.objects) ? data.objects : [];
@@ -290,6 +310,14 @@ function dataToBehaviour(d: Json, scene: Scene, owner: string, warnings: string[
   }
   if (typeof d.enabled === 'boolean') b.enabled = d.enabled;
   return b;
+}
+
+/** Asset ids a scene uses: its objects' (see collectAssetIds) and its sky image's. */
+export function sceneAssetIds(data: SceneData, out = new Set<string>()): Set<string> {
+  collectAssetIds(data.objects, out);
+  const tex = isObject(data.settings) && isObject(data.settings.sky) ? data.settings.sky.texture : undefined;
+  if (isResourceRef(tex) && 'asset' in tex) out.add(tex.asset);
+  return out;
 }
 
 /** Asset ids referenced by meshes, textures and sound clips in `objects` (recursively). */

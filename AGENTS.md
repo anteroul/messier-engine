@@ -114,6 +114,16 @@ Engine.step(dt)                         src/engine/engine.ts
   `ScriptLibrary.locateSyntaxError` hook, which the editor implements.
   `scripting.ts` imports `./index` for the script API. That import is
   circular and only read lazily, so keep it that way.
+- **Sky** (`sky.ts`, `shaders/sky.wgsl`, `skyRadiance()` in `common.wgsl`): `scene.sky` is a `Sky` (mode `color`,
+  `gradient` or `image`). `color` is the old flat clear color, and the mesh shader's old hemispheric ambient and fake
+  reflection gradient. Otherwise the sky pass draws a fullscreen triangle at depth 0 after the opaque meshes
+  (`greater-equal`, so it only fills cleared pixels) and before the grid, reconstructing view rays from
+  `frame.invViewProj`; and the mesh shader takes ambient diffuse from `skyRadiance(N, 0.85)` and reflections from
+  `skyRadiance(R, roughness)`, times `sky.lighting`. Image skies are equirectangular `rgba8unorm-srgb` textures whose
+  ordinary mip chain stands in for prefiltering (`textureSampleLevel`, so it's fine in non-uniform control flow). The
+  gradient's sun follows the shadow-casting (or first) directional light; its disc is drawn only unblurred, since
+  lit surfaces already get the light's specular highlight. Saved in `settings.sky`, with `texture` as an image
+  asset ref; `sceneAssetIds()` (not `collectAssetIds()`) counts it.
 - **2D** (`shapes2d.ts`, `draw2d.ts`, `font.ts`): `Shape2D` and `Text2D` extend the abstract `Renderer2D`
   component. Each frame the renderer queries them, tessellates them on the CPU into a `Batch2D` through
   `targetMatrix()` (world matrix, or for `space: 'screen'` a map to CSS pixels from the anchor with Y flipped),
@@ -150,7 +160,8 @@ Engine.step(dt)                         src/engine/engine.ts
   by name, so load them first). Meshes and textures are saved as a `ref`
   (`ResourceRef`): `{ primitive, args }` stamped by the `create*` generators, or
   `{ asset, index }` for the n-th mesh/texture of an imported model, stamped by
-  `tagAssetResources()` in hierarchy order. A `Project` keeps every imported
+  `tagAssetResources()` in hierarchy order. Images (sky panoramas, textures loaded into a material) and sounds are
+  single-file assets (index 0); the first file's extension tells `ProjectResources` the kind. A `Project` keeps every imported
   model's original files as an `Asset` and reloads them through the normal
   loaders (`ProjectResources`), so loaders must stay deterministic. A
   `.messier` file is a GLB-style container (JSON manifest chunk + BIN chunk of
@@ -197,7 +208,8 @@ Engine.step(dt)                         src/engine/engine.ts
 - **Lights shine along local −Z.** Use `quat.lookRotation(dir)` to aim one.
 - **Uniform layouts are mirrored by hand** between TS and WGSL. When you
   change one side, change the other:
-  - `Frame` (176 B): `shaders/common.wgsl` ↔ `Renderer.render()` (the `fv`/`fu`/`fi` offsets).
+  - `Frame` (336 B, with the inverse view-projection and the sky): `shaders/common.wgsl` ↔ `Renderer.render()` (the
+    `fv`/`fu`/`fi` offsets). Sky mode codes come from `SKY_MODE_INDEX`.
   - `Light` (64 B, 16 floats): `common.wgsl` ↔ the light packing loop in
     `Renderer.render()`. Type codes come from `LIGHT_TYPE_INDEX`.
   - `Material` (48 B): `mesh.wgsl` ↔ `Renderer.prepareMaterial()`.
@@ -205,18 +217,20 @@ Engine.step(dt)                         src/engine/engine.ts
     `VERTEX2D_FLOATS` / `Batch2D.vertex()` and the 2D pipeline's attributes.
   - `Object` (model + normal matrix, 128 B) lives in 256 B dynamic-offset
     slots (`OBJECT_STRIDE`) and is shared by the mesh and shadow pipelines.
-- **Shaders:** `common.wgsl` is *prepended* to `mesh`, `grid` and `overlay`.
-  It declares `@group(0) @binding(0) frame`, so don't redeclare it.
+- **Shaders:** `common.wgsl` is *prepended* to `mesh`, `grid`, `overlay` and `sky`.
+  It declares `@group(0) @binding(0) frame`, the sky texture and sampler, `PI`, `toDisplay()` and `skyRadiance()`,
+  so don't redeclare them.
   `shadow.wgsl`, `mipmap.wgsl` and `shape2d.wgsl` are standalone. Shaders load with Vite
   `?raw` imports, and `tests/render/run.mjs` emulates that with an esbuild plugin.
 - **Bind groups:** group 0 = frame (uniform, lights storage, shadow map,
-  comparison sampler), group 1 = material, group 2 = object (dynamic offset).
+  comparison sampler, sky texture, sky sampler), group 1 = material, group 2 = object (dynamic offset). The frame
+  group is rebuilt when the sky image changes (a 1×1 white placeholder otherwise).
   The shadow pass uses its own group-0 layout, because binding the frame
   group would put the shadow map in a usage conflict. The 2D pipelines have their own group 0 too (view matrix,
   font atlas, sampler), so rebind the frame group before drawing anything that uses it after them.
 - **Color spaces:** material and light colors are **linear**. Textures are
   `rgba8unorm-srgb`. The canvas is non-sRGB and the shader applies ACES +
-  gamma 2.2 itself. `scene.background` and 2D colors (`Shape2D`, `Text2D`, `draw2d`) are display-space
+  gamma 2.2 itself. Sky gradient colors are linear too (tone-mapped like lights). `scene.background` and 2D colors (`Shape2D`, `Text2D`, `draw2d`) are display-space
   (written as is, no tone mapping). UI pickers convert with `hexToLinear`/`linearToHex` or,
   for display-space values, `hexToRgb`/`rgbToHex`.
 - **Mesh vertex format:** interleaved `position(3) normal(3) uv(2)` floats,
@@ -299,7 +313,8 @@ in `src/demos/` (listed in `DEMO_GAMES`; `shared.ts` has the helpers) and Gem Ru
 rules are script source strings, which `tsc` never checks, so play it in `tests/unit/demos.test.ts` (that's what
 catches typos) and avoid backticks and `${}` inside them. Builders only lay out objects (pools are inactive
 children the script hands out), so scenes round-trip through `serialize.ts`. The engine has no bloom: halos are
-stacked translucent `Shape2D` discs (`glow()`). Keep `ambientIntensity` low (0.1 to 0.3) or metals wash out, and
+stacked translucent `Shape2D` discs (`glow()`). Keep `ambientIntensity` low (0.1 to 0.3) or metals wash out (with a gradient or image sky,
+`sky.lighting` takes its place: a daylight sky is much dimmer than the sun, see the `Sky` defaults), and
 unlit emissive strengths near 1. The menu scene must be named `ARCADE_SCENE`, and its stands are named after the
 scenes they load. `test:ui` writes `ui-<game>.png` and `ui-game-<game>.png`: **look at them**.
 

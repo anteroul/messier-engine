@@ -748,6 +748,54 @@ check('switch back to first scene', (await state(() => window.engine.scene.findB
   await sleep(50);
 }
 
+// --- Sky: a gradient from the inspector, then a dropped 2:1 image becomes the sky (and saves with the project)
+{
+  await state(() => window.editor.select(null));
+  await sleep(100);
+  await page.select('.sky-mode', 'gradient');
+  await sleep(300);
+  const gradient = await state(() => ({ mode: window.engine.scene.sky.mode, rows: document.querySelectorAll('#inspector .section').length }));
+  await page.screenshot({ path: `${OUT}/ui-sky-gradient.png` });
+  check('inspector switches the sky to a gradient', gradient.mode === 'gradient', JSON.stringify(gradient));
+  // A panorama made in the page: blue above the horizon, warm below, a bright band at the horizon.
+  await state(async () => {
+    const c = new OffscreenCanvas(256, 128);
+    const g = c.getContext('2d');
+    const grad = g.createLinearGradient(0, 0, 0, 128);
+    grad.addColorStop(0, '#1d4fb8');
+    grad.addColorStop(0.48, '#f2c48a');
+    grad.addColorStop(0.52, '#7a5a3a');
+    grad.addColorStop(1, '#2a2018');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 256, 128);
+    const blob = await c.convertToBlob({ type: 'image/png' });
+    await window.editor.importFiles([new File([blob], 'sunset.png', { type: 'image/png' })]);
+  });
+  await sleep(400);
+  const imageSky = await state(() => ({
+    mode: window.engine.scene.sky.mode,
+    name: window.engine.scene.sky.texture?.name,
+    asset: window.engine.scene.sky.texture?.ref?.asset,
+    shown: document.querySelector('.sky-image-name')?.textContent,
+  }));
+  await page.screenshot({ path: `${OUT}/ui-sky-image.png` });
+  check('a dropped panorama becomes the sky', imageSky.mode === 'image' && imageSky.name === 'sunset' && !!imageSky.asset && imageSky.shown === 'sunset',
+    JSON.stringify(imageSky));
+  // Shortcuts are off while a select has focus.
+  await page.evaluate(() => document.getElementById('gpu-canvas').focus());
+  await page.keyboard.down('Control');
+  await page.keyboard.press('KeyZ');
+  await page.keyboard.up('Control');
+  await sleep(100);
+  check('undo restores the previous sky', (await state(() => window.engine.scene.sky.mode)) === 'gradient');
+  await page.keyboard.down('Control');
+  await page.keyboard.down('Shift');
+  await page.keyboard.press('KeyZ');
+  await page.keyboard.up('Shift');
+  await page.keyboard.up('Control');
+  await sleep(100);
+}
+
 // Save during Play: stops Play first and saves the edit-time scene. Headless has no file picker here, so Save downloads.
 await state(() => {
   Object.defineProperty(window, 'showSaveFilePicker', { value: undefined, configurable: true });
@@ -800,9 +848,10 @@ if (saved) {
     x: window.engine.scene.findByName('Torus')?.transform.position[0],
     dirty: window.editor.project.dirty,
     beep: window.engine.scene.findByName('beep')?.components.find((c) => 'playOnStart' in c)?.clip?.duration,
+    sky: `${window.engine.scene.sky.mode}:${window.engine.scene.sky.texture?.name}`,
   }));
-  check('open project file', opened.name === 'Demo' && opened.scenes === 7 && opened.x === 7.25 && !opened.dirty && Math.abs(opened.beep - 0.1) < 0.01,
-    JSON.stringify(opened));
+  check('open project file', opened.name === 'Demo' && opened.scenes === 7 && opened.x === 7.25 && !opened.dirty && Math.abs(opened.beep - 0.1) < 0.01 &&
+    opened.sky === 'image:sunset', JSON.stringify(opened));
 }
 
 // --- Build: the Build Settings dialog picks and orders scenes; the .zip holds a page that plays them
@@ -865,11 +914,13 @@ if (entries['index.html']) {
     playing: window.engine?.playing,
     scenes: window.sceneManager ? [...Array(window.sceneManager.sceneCount)].map((_, i) => window.sceneManager.sceneName(i)).join() : null,
     gems: window.engine?.scene.getGroup('gems').length,
+    // The ball can pick up the only gem on the field just as this runs: a collected one counts too.
+    points: window.engine?.scene.findByName('Game')?.components.find((c) => 'points' in c)?.points,
     z: window.engine?.scene.findByName('Player')?.transform.position[2],
     rendered: window.engine?.renderer.stats.drawCalls ?? window.engine?.renderer.stats,
   }));
   await gamePage.screenshot({ path: `${OUT}/ui-game.png` });
-  check('built game starts a game from its menu scene', run.title === 'Demo' && run.playing && run.scenes === 'Arcade,Neon Run,Topple,Starfall,Main,Gem Rush' && run.gems > 0 && run.z < 4.5, JSON.stringify(run));
+  check('built game starts a game from its menu scene', run.title === 'Demo' && run.playing && run.scenes === 'Arcade,Neon Run,Topple,Starfall,Main,Gem Rush' && (run.gems > 0 || run.points > 0) && run.z < 4.5, JSON.stringify(run));
   await gamePage.keyboard.press('Backspace');
   await gamePage.waitForFunction(() => window.engine.scene.findByName('Stands'), { timeout: 5000 }).catch(() => {});
   check('built game: Backspace returns to the menu', await gamePage.evaluate(() => window.sceneManager.activeSceneName === 'Arcade'));

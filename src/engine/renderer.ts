@@ -5,6 +5,7 @@ import gridWGSL from './shaders/grid.wgsl?raw';
 import overlayWGSL from './shaders/overlay.wgsl?raw';
 import mipmapWGSL from './shaders/mipmap.wgsl?raw';
 import shape2dWGSL from './shaders/shape2d.wgsl?raw';
+import skyWGSL from './shaders/sky.wgsl?raw';
 import { mat4, vec3, type Mat4, type Vec3 } from './math';
 import { VERTEX_STRIDE_BYTES, type Mesh } from './mesh';
 import type { Material, Texture } from './material';
@@ -16,13 +17,14 @@ import { OVERLAY_STRIDE_FLOATS, type OverlayBuilder } from './overlay';
 import { Batch2D, VERTEX2D_FLOATS, type Draw2D } from './draw2d';
 import { ATLAS_SIZE, fontAtlas } from './font';
 import { Renderer2D } from './shapes2d';
+import type { SkyMode } from './sky';
 
 export const MAX_LIGHTS = 128;
 const SHADOW_MAP_SIZE = 2048;
 /** Per-object uniform slot; must be a multiple of minUniformBufferOffsetAlignment (256). */
 const OBJECT_STRIDE = 256;
 const OBJECT_UNIFORM_SIZE = 128;
-const FRAME_UNIFORM_SIZE = 176;
+const FRAME_UNIFORM_SIZE = 336;
 const MATERIAL_UNIFORM_SIZE = 48;
 const LIGHT_FLOATS = 16;
 /** Main pass uses reversed-Z: clear to 0, 'greater' passes nearer fragments. */
@@ -53,6 +55,8 @@ export interface RenderStats {
   /** Shape2D/Text2D components drawn. */
   elements2D: number;
 }
+
+const SKY_MODE_INDEX: Record<SkyMode, number> = { color: 0, gradient: 1, image: 2 };
 
 const ALPHA_BLEND: GPUBlendState = {
   color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
@@ -88,6 +92,7 @@ export class Renderer {
   private readonly overlayDepthPipeline: GPURenderPipeline;
   private readonly overlayTopPipeline: GPURenderPipeline;
   private readonly mipPipeline: GPURenderPipeline;
+  private readonly skyPipeline: GPURenderPipeline;
   private readonly world2DPipeline: GPURenderPipeline;
   private readonly screen2DPipeline: GPURenderPipeline;
 
@@ -96,7 +101,11 @@ export class Renderer {
   private readonly shadowFrameBuffer: GPUBuffer;
   private readonly shadowMap: GPUTexture;
   private readonly shadowMapView: GPUTextureView;
-  private readonly frameBindGroup: GPUBindGroup;
+  private frameBindGroup: GPUBindGroup;
+  /** The sky texture `frameBindGroup` was made with (null: the white placeholder). */
+  private frameSky: Texture | null = null;
+  private readonly shadowSampler: GPUSampler;
+  private readonly skySampler: GPUSampler;
   private readonly shadowFrameBindGroup: GPUBindGroup;
   private readonly textureSampler: GPUSampler;
   private readonly mipSampler: GPUSampler;
@@ -159,6 +168,8 @@ export class Renderer {
         { binding: 1, visibility: FS, buffer: { type: 'read-only-storage' } },
         { binding: 2, visibility: FS, texture: { sampleType: 'depth' } },
         { binding: 3, visibility: FS, sampler: { type: 'comparison' } },
+        { binding: 4, visibility: FS, texture: { sampleType: 'float' } },
+        { binding: 5, visibility: FS, sampler: { type: 'filtering' } },
       ],
     });
     this.materialLayout = device.createBindGroupLayout({
@@ -254,6 +265,18 @@ export class Renderer {
     this.overlayDepthPipeline = makeOverlayPipeline('greater-equal');
     this.overlayTopPipeline = makeOverlayPipeline('always');
 
+    const skyModule = device.createShaderModule({ label: 'sky', code: commonWGSL + skyWGSL });
+    this.skyPipeline = device.createRenderPipeline({
+      label: 'sky',
+      layout: frameOnlyLayout,
+      vertex: { module: skyModule, entryPoint: 'vs_main' },
+      fragment: { module: skyModule, entryPoint: 'fs_main', targets: [{ format: this.format }] },
+      primitive: { topology: 'triangle-list' },
+      // At depth 0 (the far plane): passes only where the depth buffer still holds its clear value.
+      depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: false, depthCompare: 'greater-equal' },
+      multisample,
+    });
+
     const mipModule = device.createShaderModule({ label: 'mipmap', code: mipmapWGSL });
     this.mipPipeline = device.createRenderPipeline({
       label: 'mipmap',
@@ -311,7 +334,15 @@ export class Renderer {
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
     this.shadowMapView = this.shadowMap.createView();
-    const shadowSampler = device.createSampler({ compare: 'less', magFilter: 'linear', minFilter: 'linear' });
+    this.shadowSampler = device.createSampler({ compare: 'less', magFilter: 'linear', minFilter: 'linear' });
+    // Equirectangular: wraps around horizontally, not over the poles.
+    this.skySampler = device.createSampler({
+      addressModeU: 'repeat',
+      addressModeV: 'clamp-to-edge',
+      magFilter: 'linear',
+      minFilter: 'linear',
+      mipmapFilter: 'linear',
+    });
     this.textureSampler = device.createSampler({
       addressModeU: 'repeat',
       addressModeV: 'repeat',
@@ -352,16 +383,7 @@ export class Renderer {
     this.view2DBuffers = [worldBuf, screenBuf];
     this.view2DGroups = [worldGroup, screenGroup];
 
-    this.frameBindGroup = device.createBindGroup({
-      label: 'frame',
-      layout: this.frameLayout,
-      entries: [
-        { binding: 0, resource: { buffer: this.frameBuffer } },
-        { binding: 1, resource: { buffer: this.lightBuffer } },
-        { binding: 2, resource: this.shadowMapView },
-        { binding: 3, resource: shadowSampler },
-      ],
-    });
+    this.frameBindGroup = this.makeFrameBindGroup(null);
     this.shadowFrameBindGroup = device.createBindGroup({
       label: 'shadow-frame',
       layout: this.shadowFrameLayout,
@@ -370,6 +392,22 @@ export class Renderer {
   }
 
   // -------------------------------------------------------------------------
+
+  private makeFrameBindGroup(sky: Texture | null): GPUBindGroup {
+    this.frameSky = sky;
+    return this.device.createBindGroup({
+      label: 'frame',
+      layout: this.frameLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.frameBuffer } },
+        { binding: 1, resource: { buffer: this.lightBuffer } },
+        { binding: 2, resource: this.shadowMapView },
+        { binding: 3, resource: this.shadowSampler },
+        { binding: 4, resource: sky ? this.ensureTexture(sky).createView() : this.whiteTextureView },
+        { binding: 5, resource: this.skySampler },
+      ],
+    });
+  }
 
   private resizeIfNeeded(): void {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -621,6 +659,9 @@ export class Renderer {
     // Lights.
     let shadowIndex = -1;
     let shadowDir: Vec3 = [0, -1, 0];
+    // The gradient sky's sun: the shadow-casting directional light, or else the first directional one.
+    let sun: Light | null = null;
+    let sunDir: Vec3 = [0, -1, 0];
     const ld = this.lightData;
     lightObjects.forEach((light, i) => {
       const world = light.transform.worldMatrix;
@@ -636,6 +677,11 @@ export class Renderer {
       if (shadowIndex < 0 && light.type === 'directional' && light.castShadows) {
         shadowIndex = i;
         shadowDir = dir;
+        sun = light;
+        sunDir = dir;
+      } else if (!sun && light.type === 'directional') {
+        sun = light;
+        sunDir = dir;
       }
     });
     if (lightObjects.length > 0) device.queue.writeBuffer(this.lightBuffer, 0, ld, 0, lightObjects.length * LIGHT_FLOATS);
@@ -658,6 +704,22 @@ export class Renderer {
     fi[41] = shadowIndex;
     fv[42] = options.time ?? 0;
     fv[43] = 1 / SHADOW_MAP_SIZE;
+    const sky = scene.sky;
+    const skyMode = sky.effectiveMode;
+    const skyTexture = skyMode === 'image' ? sky.texture : null;
+    if (skyTexture !== this.frameSky) this.frameBindGroup = this.makeFrameBindGroup(skyTexture);
+    fv.set(mat4.invert(viewProj) ?? mat4.create(), 44);
+    fv.set([sky.top[0], sky.top[1], sky.top[2], sky.intensity], 60);
+    fv.set([sky.horizon[0], sky.horizon[1], sky.horizon[2], 0], 64);
+    fv.set([sky.ground[0], sky.ground[1], sky.ground[2], 0], 68);
+    // Assigned in the forEach above, which TypeScript's narrowing doesn't follow.
+    const sunLight = sun as Light | null;
+    const sunRadius = (Math.max(0, sky.sunSize) * Math.PI) / 360;
+    fv.set([-sunDir[0], -sunDir[1], -sunDir[2], sunLight && sky.sunSize > 0 ? Math.cos(sunRadius) : 2], 72);
+    const sunColor = sunLight ? vec3.scale(sunLight.color, sunLight.intensity) : [0, 0, 0];
+    fv.set([sunColor[0], sunColor[1], sunColor[2], sunLight ? sky.sunGlow : 0], 76);
+    const mips = skyTexture?.gpu?.mipLevelCount ?? 1;
+    fv.set([SKY_MODE_INDEX[skyMode], sky.lighting, (sky.rotation * Math.PI) / 180, mips], 80);
     device.queue.writeBuffer(this.frameBuffer, 0, this.frameData);
 
     // Per-object uniforms in one dynamic-offset buffer.
@@ -700,8 +762,8 @@ export class Renderer {
       pass.end();
     }
 
-    // Main pass.
-    const bg = scene.background;
+    // Main pass. With a sky, the clear color only shows where the sky pass doesn't draw (nowhere).
+    const bg = skyMode === 'color' ? scene.background : [0, 0, 0];
     const pass = encoder.beginRenderPass({
       label: 'main',
       colorAttachments: [
@@ -733,6 +795,12 @@ export class Renderer {
       stats.drawCalls++;
       stats.triangles += o.mesh!.triangleCount;
     });
+
+    if (skyMode !== 'color') {
+      pass.setPipeline(this.skyPipeline);
+      pass.draw(3);
+      stats.drawCalls++;
+    }
 
     if (options.grid) {
       pass.setPipeline(this.gridPipeline);

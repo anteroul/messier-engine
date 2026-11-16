@@ -9,6 +9,7 @@ import {
   applySceneData,
   isAudioFile,
   type AudioClip,
+  type Texture,
   quat,
   serializeScene,
   tagAssetResources,
@@ -151,6 +152,12 @@ export class ProjectManager {
   addAudioAsset(asset: Asset, clip: AudioClip): void {
     this.project.assets.push(asset);
     this.resources.registerClip(asset.id, clip);
+  }
+
+  /** Adds an imported image (a sky panorama or a material texture) to the project. */
+  addImageAsset(asset: Asset, texture: Texture): void {
+    this.project.assets.push(asset);
+    this.resources.register(asset.id, { meshes: [], textures: [texture] });
   }
 
   /** Imported sounds in the project, for the inspector's clip picker. */

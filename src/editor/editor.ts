@@ -4,7 +4,10 @@ import {
   SFX_PRESETS,
   audio,
   isAudioFile,
+  isImageFile,
   loadAudioAsset,
+  loadImageAsset,
+  type Texture,
   CameraComponent,
   DEG2RAD,
   draw2d,
@@ -28,6 +31,7 @@ import {
   isFlatMesh,
   worldCollider,
   loadModelAssetsFromFiles,
+  MODEL_EXTENSIONS,
   PROJECT_EXTENSION,
   raySphere,
   raycastScene,
@@ -360,6 +364,31 @@ export class Editor {
     };
     apply(rb);
     this.history.push({ label, undo: () => apply(before), redo: () => apply(rb) });
+  }
+
+  /** Imports an image file as a project asset (so scenes using it save). Null, with an error shown, if it fails. */
+  async importImage(file: File): Promise<Texture | null> {
+    try {
+      const { texture, asset } = await loadImageAsset(file.name, await file.arrayBuffer());
+      this.project.addImageAsset(asset, texture);
+      return texture;
+    } catch (err) {
+      this.notify(`Could not load ${file.name}: ${(err as Error).message}`, 'error');
+      return null;
+    }
+  }
+
+  /** Shows `texture` as the scene's sky. Undoable. */
+  setSkyImage(texture: Texture): void {
+    const sky = this.scene.sky;
+    const before = { mode: sky.mode, texture: sky.texture };
+    const apply = (mode: typeof sky.mode, tex: Texture | null) => {
+      sky.mode = mode;
+      sky.texture = tex;
+      if (!this.selected) this.inspector.refresh();
+    };
+    apply('image', texture);
+    this.history.push({ label: `Set the sky to ${texture.name}`, undo: () => apply(before.mode, before.texture), redo: () => apply('image', texture) });
   }
 
   /** An object with an AudioSource playing a synthesized blip, in front of the view. */
@@ -720,6 +749,21 @@ export class Editor {
         this.notify(`Imported sound ${f.name}`, 'success');
       } catch (err) {
         this.notify(`Could not import ${f.name}: ${(err as Error).message}`, 'error');
+      }
+    }
+    // Images on their own (no model they could belong to) become the sky: a 2:1 panorama is what skies take.
+    if (!files.some((f) => MODEL_EXTENSIONS.includes(f.name.split('.').pop()?.toLowerCase() ?? ''))) {
+      const images = files.filter((f) => isImageFile(f.name));
+      files = files.filter((f) => !images.includes(f));
+      const image = images.at(-1);
+      if (image) {
+        const texture = await this.importImage(image);
+        if (texture) {
+          this.setSkyImage(texture);
+          const { width, height } = texture.source;
+          const shape = Math.abs(width / height - 2) < 0.1 ? '' : ` It's ${width}×${height}; a sky image should be a 2:1 panorama.`;
+          this.notify(`${image.name} is now the sky.${shape}`, shape ? 'error' : 'success');
+        }
       }
     }
     const scripts = files.filter((f) => /\.ts$/i.test(f.name));

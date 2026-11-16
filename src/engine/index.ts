@@ -3,6 +3,7 @@ export * from './math';
 export * from './mesh';
 export * from './material';
 export * from './light';
+export * from './sky';
 export * from './transform';
 export * from './component';
 export * from './meshRenderer';

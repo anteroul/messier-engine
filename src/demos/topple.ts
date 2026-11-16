@@ -13,7 +13,7 @@ import {
   type Scene,
   type Vec3,
 } from '../engine';
-import { SHARED_SCRIPTS, addScripts, glow, group, hudText, lightObject, meshObject, neon, seeded, shapeObject, soundObject, withBody, type ScriptList } from './shared';
+import { SHARED_SCRIPTS, addScripts, group, hudText, lightObject, meshObject, neon, seeded, shapeObject, soundObject, withBody, type ScriptList } from './shared';
 
 // "Topple": a cannon, a terrace over the sea and stacks of polished blocks with a golden idol on each. It's the
 // physics engine's showcase (stacking, friction, impacts), dressed in the materials that look best in sunlight:
@@ -252,9 +252,10 @@ export function buildTopple(scene: Scene): void {
   const script = addScripts(scene, [...SHARED_SCRIPTS, ...TOPPLE_SCRIPTS]);
   const random = seeded(11);
 
+  // A daytime sky that also lights the terrace: the sea and the metals reflect it. The sea hides the sky's lower
+  // half, so its warm, sunlit color only shows in reflections, where it keeps the gold golden.
+  Object.assign(scene.sky, { mode: 'gradient', top: [0.04, 0.14, 0.52], horizon: [0.24, 0.43, 0.78], ground: [0.32, 0.25, 0.15], sunGlow: 0.5 });
   scene.background = SKY;
-  scene.ambientColor = [0.75, 0.85, 1];
-  scene.ambientIntensity = 0.3;
   scene.shadowExtent = 17;
 
   const game = new GameObject('Game');
@@ -277,7 +278,7 @@ export function buildTopple(scene: Scene): void {
   // The sea: a mirror for the sky. No collider, so what falls in is gone.
   scene.add(meshObject('Sea', createPlane(1200, 1), new Material('Sea', { baseColor: [0.02, 0.2, 0.35, 1], metallic: 0.9, roughness: 0.12 }), [0, -7, -200]));
 
-  // Sky dressing, far behind the terrace: clouds and the glare of the sun.
+  // Clouds, far behind the terrace.
   const sky = group('Sky', [], [0, 0, -420]);
   for (let i = 0; i < 9; i++) {
     const cloud = group(`Cloud ${i + 1}`, [], [(i - 4) * 120 + (random() - 0.5) * 60, 50 + random() * 110, 0]);
@@ -288,9 +289,6 @@ export function buildTopple(scene: Scene): void {
     }
     sky.add(cloud);
   }
-  const glare = glow('Sun Glare', [1, 0.95, 0.75], 260, 0.2, -25);
-  glare.transform.position = [-190, 250, -5];
-  sky.add(glare);
   scene.add(sky);
 
   // Rock stacks standing in the sea, for a sense of distance.

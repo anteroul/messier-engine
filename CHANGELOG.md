@@ -10,6 +10,17 @@ Add a line under **Unreleased** with every user-visible change.
 
 ## [Unreleased]
 
+### Added
+
+- Skies: a gradient sky with a sun disc that follows the scene's directional light, or an equirectangular (2:1)
+  panorama image. Gradient and image skies also light the scene: metals reflect them, blurrier with roughness.
+  Set them in the inspector's new *Sky* section (with nothing selected), or drop an image onto the viewport.
+- Topple has a daytime sky that its sea and metals reflect.
+
+### Fixed
+
+- Textures loaded into a material with **Load…** are now saved with the project (they were lost on reload).
+
 ## [0.2.0] - 2026-11-16
 
 ### Added

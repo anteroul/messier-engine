@@ -25,7 +25,8 @@ import {
   PROJECTIONS,
   RAD2DEG,
   Script,
-  Texture,
+  SKY_MODES,
+  type SkyMode,
   createBehaviour,
   fitCollider,
   hexToLinear,
@@ -106,14 +107,12 @@ export class InspectorPanel {
     );
     this.add(projectName.binding, sceneName.binding);
     const env = section('Environment');
-    const ambientColor = colorRow('Ambient', () => linearToHex(scene.ambientColor), (hex) => (scene.ambientColor = hexToLinear(hex)));
-    const ambientI = sliderRow('Ambient ×', () => scene.ambientIntensity, (v) => (scene.ambientIntensity = v), 0, 2, 0.01);
-    const bg = colorRow('Background', () => rgbToHex(scene.background), (hex) => (scene.background = hexToRgb(hex)));
     const exposure = sliderRow('Exposure', () => scene.exposure, (v) => (scene.exposure = v), 0.1, 4, 0.05);
     const shadow = numberRow('Shadow extent', () => scene.shadowExtent, (v) => (scene.shadowExtent = v), { step: 1, min: 2, max: 200 });
     const grid = checkboxRow('Show grid', () => engine.showGrid, (v) => (engine.showGrid = v));
-    env.body.append(ambientColor.row, ambientI.row, bg.row, exposure.row, shadow.row, grid.row);
-    this.add(ambientColor.binding, ambientI.binding, bg.binding, exposure.binding, shadow.binding, grid.binding);
+    env.body.append(exposure.row, shadow.row, grid.row);
+    this.add(exposure.binding, shadow.binding, grid.binding);
+    const skySection = this.buildSky();
 
     const physics = section('Physics');
     const gravity = vec3Row('Gravity', () => scene.physics.gravity, (v) => (scene.physics.gravity = v), { step: 0.1 });
@@ -132,7 +131,72 @@ export class InspectorPanel {
       el('p', { class: 'hint', text: `${objects} objects, ${lights} lights, ${cameras} camera${cameras === 1 ? '' : 's'}.` }),
       el('p', { class: 'hint', text: 'Select an object in the viewport or hierarchy to edit it. Drop .glb / .gltf / .obj files onto the viewport to import.' }),
     );
-    return [project.root, env.root, physics.root, info.root];
+    return [project.root, skySection, env.root, physics.root, info.root];
+  }
+
+  /** Sky and ambient light: the rows depend on the sky mode. */
+  private buildSky(): HTMLElement {
+    const ed = this.editor;
+    const sky = ed.scene.sky;
+    const scene = ed.scene;
+    const s = section('Sky');
+    const mode = selectRow('Sky', [...SKY_MODES], () => sky.mode, (v) => {
+      sky.mode = v as SkyMode;
+      this.refresh();
+    });
+    mode.row.querySelector('select')?.classList.add('sky-mode');
+    s.body.append(mode.row);
+    this.add(mode.binding);
+    const rows = (...items: { row: HTMLElement; binding?: Binding; bindings?: Binding[] }[]) => {
+      for (const r of items) {
+        s.body.append(r.row);
+        this.add(r.binding ?? [], r.bindings ?? []);
+      }
+    };
+    const lighting = sliderRow('Sky light ×', () => sky.lighting, (v) => (sky.lighting = v), 0, 3, 0.01);
+    if (sky.mode === 'color') {
+      rows(
+        colorRow('Background', () => rgbToHex(scene.background), (hex) => (scene.background = hexToRgb(hex))),
+        colorRow('Ambient', () => linearToHex(scene.ambientColor), (hex) => (scene.ambientColor = hexToLinear(hex))),
+        sliderRow('Ambient ×', () => scene.ambientIntensity, (v) => (scene.ambientIntensity = v), 0, 2, 0.01),
+      );
+      s.body.append(el('p', { class: 'hint', text: 'A flat background. A gradient or image sky also lights the scene: metals reflect it.' }));
+    } else if (sky.mode === 'gradient') {
+      rows(
+        colorRow('Top', () => linearToHex(sky.top), (hex) => (sky.top = hexToLinear(hex))),
+        colorRow('Horizon', () => linearToHex(sky.horizon), (hex) => (sky.horizon = hexToLinear(hex))),
+        colorRow('Ground', () => linearToHex(sky.ground), (hex) => (sky.ground = hexToLinear(hex))),
+        sliderRow('Sun size', () => sky.sunSize, (v) => (sky.sunSize = v), 0, 10, 0.1),
+        sliderRow('Sun glow', () => sky.sunGlow, (v) => (sky.sunGlow = v), 0, 2, 0.01),
+        lighting,
+      );
+      s.body.append(el('p', { class: 'hint', text: 'The sun sits opposite the shadow-casting (or first) directional light, in its color. Rotate the light to move it.' }));
+    } else {
+      const name = el('span', { class: 'tex-name sky-image-name', text: sky.texture?.name ?? 'none' });
+      const input = el('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp', hidden: true });
+      input.addEventListener('change', async () => {
+        const file = input.files?.[0];
+        input.value = '';
+        const texture = file ? await ed.importImage(file) : null;
+        if (texture) ed.setSkyImage(texture);
+      });
+      s.body.append(el('div', { class: 'row' }, [
+        el('label', { class: 'row-label', text: 'Image' }),
+        el('div', { class: 'row-controls' }, [name, button('Load…', () => input.click(), 'btn btn-small sky-load'), input]),
+      ]));
+      rows(
+        sliderRow('Rotation', () => sky.rotation, (v) => (sky.rotation = v), 0, 360, 1),
+        numberRow('Brightness', () => sky.intensity, (v) => (sky.intensity = v), { step: 0.05, min: 0, max: 100 }),
+        lighting,
+      );
+      s.body.append(el('p', {
+        class: 'hint',
+        text: sky.texture
+          ? 'An equirectangular (2:1) panorama. Drop one on the viewport to replace it.'
+          : 'No image yet: Load… an equirectangular (2:1) panorama or drop one on the viewport. Until then the gradient shows.',
+      }));
+    }
+    return s.root;
   }
 
   private buildObject(obj: GameObject): HTMLElement[] {
@@ -199,15 +263,16 @@ export class InspectorPanel {
       const doubleSided = checkboxRow('Double sided', () => mat.doubleSided, (v) => (mat.doubleSided = v));
 
       const texLabel = el('span', { class: 'tex-name', text: mat.baseColorTexture?.name ?? 'none' });
-      const texInput = el('input', { type: 'file', accept: 'image/*', hidden: true });
+      const texInput = el('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp', hidden: true });
       texInput.addEventListener('change', async () => {
         const file = texInput.files?.[0];
         if (!file) return;
-        try {
-          mat.baseColorTexture = await Texture.fromBlob(file, file.name);
-          texLabel.textContent = file.name;
-        } catch (err) {
-          ed.notify(`Could not load texture: ${(err as Error).message}`, 'error');
+        texInput.value = '';
+        // As a project asset, so the scene saves with it.
+        const texture = await ed.importImage(file);
+        if (texture) {
+          mat.baseColorTexture = texture;
+          texLabel.textContent = texture.name;
         }
       });
       const texRow = el('div', { class: 'row' }, [

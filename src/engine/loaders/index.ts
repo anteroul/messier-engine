@@ -1,11 +1,12 @@
 import type { GameObject } from '../scene';
 import type { Asset } from '../project';
 import type { AudioClip } from '../audioClip';
+import { Texture } from '../material';
 import { tagAssetResources } from '../serialize';
 import { loadAudioClip } from './audio';
 import { loadGLTF } from './gltf';
 import { loadOBJ } from './obj';
-import { fileResolver, recordingResolver, urlResolver, type MemoryFile, type ResourceResolver } from './resources';
+import { fileResolver, mimeFromName, recordingResolver, urlResolver, type MemoryFile, type ResourceResolver } from './resources';
 
 export { loadGLTF } from './gltf';
 export { loadOBJ } from './obj';
@@ -13,9 +14,26 @@ export * from './resources';
 export * from './audio';
 
 export const MODEL_EXTENSIONS = ['glb', 'gltf', 'obj'];
-
 const extOf = (name: string) => name.split('?')[0].split('.').pop()?.toLowerCase() ?? '';
 const baseName = (name: string) => decodeURIComponent(name.split('?')[0].split('/').pop() ?? name).replace(/\.[^.]+$/, '');
+
+/** Image files that can be a project asset of their own (a sky panorama). */
+export const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp'];
+
+export const isImageFile = (name: string) => IMAGE_EXTENSIONS.includes(extOf(name));
+
+/** Decodes an image file into a texture named after the file. */
+export async function loadImageTexture(fileName: string, data: ArrayBuffer): Promise<Texture> {
+  return Texture.fromBlob(new Blob([data], { type: mimeFromName(fileName) }), baseName(fileName));
+}
+
+/** Loads an image file and captures it as a project asset (one file; scenes refer to its texture as index 0). */
+export async function loadImageAsset(fileName: string, data: ArrayBuffer, id = newAssetId()): Promise<{ texture: Texture; asset: Asset }> {
+  const bytes = new Uint8Array(data.slice(0));
+  const texture = await loadImageTexture(fileName, data);
+  texture.ref = { asset: id, index: 0 };
+  return { texture, asset: { id, name: baseName(fileName), files: [{ name: fileName, bytes }] } };
+}
 
 /** Loads a model file that is already in memory. The extension of `fileName` picks the loader. */
 export async function loadModelFromBytes(fileName: string, data: ArrayBuffer, resolve: ResourceResolver): Promise<GameObject> {

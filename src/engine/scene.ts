@@ -11,6 +11,7 @@ import { Clock } from './time';
 import { PhysicsWorld, RigidBody } from './physics';
 import { ScriptLibrary } from './scripting';
 import { Signal } from './signal';
+import { Sky } from './sky';
 
 let nextId = 1;
 const EMPTY: readonly never[] = Object.freeze([]);
@@ -482,11 +483,13 @@ const EMPTY_SET: ReadonlySet<string> = new Set();
 export class Scene {
   /** Invisible container; top-level objects are its children. */
   readonly root = new GameObject('Scene');
-  /** Linear RGB ambient light color, multiplied by ambientIntensity. */
+  /** Linear RGB ambient light color, multiplied by ambientIntensity. Unused while the sky lights the scene. */
   ambientColor: Vec3 = [0.55, 0.62, 0.75];
   ambientIntensity = 0.25;
-  /** Clear color (display space). */
+  /** Clear color (display space), shown when `sky.mode` is 'color'. */
   background: Vec3 = [0.06, 0.062, 0.065];
+  /** Backdrop and, unless it's a flat color, environment lighting. */
+  readonly sky = new Sky();
   exposure = 1;
   /** Half extent (world units) of the directional shadow frustum. */
   shadowExtent = 16;
@@ -528,6 +531,7 @@ export class Scene {
     s.ambientColor = [...this.ambientColor];
     s.ambientIntensity = this.ambientIntensity;
     s.background = [...this.background];
+    s.sky.copyFrom(this.sky);
     s.exposure = this.exposure;
     s.shadowExtent = this.shadowExtent;
     s.physics.gravity = [...this.physics.gravity];

@@ -3,9 +3,9 @@ import type { Texture } from './material';
 import { Scene } from './scene';
 import type { ScriptLibrary } from './scripting';
 import { buildPrimitive } from './primitives';
-import { bytesResolver, isAudioFile, loadAudioClip, loadModelFromBytes, type MemoryFile } from './loaders';
+import { bytesResolver, isAudioFile, isImageFile, loadAudioClip, loadImageTexture, loadModelFromBytes, type MemoryFile } from './loaders';
 import { AudioClip, type ClipRef } from './audioClip';
-import { applySceneData, checkSceneData, collectAssetIds, tagAssetResources, type SceneData, type SceneResources } from './serialize';
+import { applySceneData, checkSceneData, sceneAssetIds, tagAssetResources, type SceneData, type SceneResources } from './serialize';
 import { isObject } from './data';
 
 // A project is a set of scenes plus the scripts and imported assets they share.
@@ -25,8 +25,8 @@ const CHUNK_JSON = 0x4e4f534a;
 const CHUNK_BIN = 0x004e4942;
 
 /**
- * An imported file: a model (the model file first, then the companion files (.bin, .mtl, textures) it read), or a
- * sound (one file). The first file's extension tells which.
+ * An imported file: a model (the model file first, then the companion files (.bin, .mtl, textures) it read), a
+ * sound or an image (one file). The first file's extension tells which.
  */
 export interface Asset {
   id: string;
@@ -119,7 +119,7 @@ export class Project {
     p.scripts = this.scripts.map((s) => ({ ...s }));
     p.build = { title: this.build.title, scenes: p.scenes.map((s) => ({ id: s.id, enabled: true })) };
     const ids = new Set<string>();
-    for (const s of p.scenes) collectAssetIds(s.data.objects, ids);
+    for (const s of p.scenes) sceneAssetIds(s.data, ids);
     p.assets = this.assets.filter((a) => ids.has(a.id));
     return p;
   }
@@ -127,7 +127,7 @@ export class Project {
   /** Assets used by at least one scene, in project order. */
   referencedAssets(): Asset[] {
     const ids = new Set<string>();
-    for (const s of this.scenes) collectAssetIds(s.data.objects, ids);
+    for (const s of this.scenes) sceneAssetIds(s.data, ids);
     return this.assets.filter((a) => ids.has(a.id));
   }
 
@@ -264,7 +264,7 @@ export class ProjectResources implements SceneResources {
 
   /** Loads the assets `data` references that aren't loaded yet. Failures become warnings. */
   async prepare(data: SceneData, warnings: string[] = []): Promise<void> {
-    const pending = [...collectAssetIds(data.objects)].filter((id) => !this.assets.has(id) && !this.clips.has(id));
+    const pending = [...sceneAssetIds(data)].filter((id) => !this.assets.has(id) && !this.clips.has(id));
     await Promise.all(
       pending.map(async (id) => {
         const asset = this.project.getAsset(id);
@@ -281,6 +281,17 @@ export class ProjectResources implements SceneResources {
             this.clips.set(id, clip);
           } catch (err) {
             this.clips.set(id, null);
+            warnings.push(`Could not load ${asset.name}: ${(err as Error).message}`);
+          }
+          return;
+        }
+        if (isImageFile(main.name)) {
+          try {
+            const texture = await loadImageTexture(main.name, main.bytes.slice().buffer);
+            texture.ref = { asset: id, index: 0 };
+            this.assets.set(id, { meshes: [], textures: [texture] });
+          } catch (err) {
+            this.assets.set(id, null);
             warnings.push(`Could not load ${asset.name}: ${(err as Error).message}`);
           }
           return;

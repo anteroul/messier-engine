@@ -23,6 +23,9 @@ real-time scene editor. What changed in each version: [CHANGELOG.md](CHANGELOG.m
 - **Rigid body physics**: a `RigidBody` component with box and sphere
   colliders, dynamic / static / kinematic bodies, friction, restitution,
   damping and sleeping, solved with fixed-step sequential impulses.
+- **Skies**: a gradient sky with a sun that follows the scene's directional
+  light, or an equirectangular panorama image. The sky also lights the scene:
+  metals reflect it, blurrier the rougher they are.
 - **Audio**: an `AudioSource` component plays imported sound files (`.wav`,
   `.mp3`, `.ogg`…, saved inside the project) or sound effects from a built-in
   synthesizer (lasers, coins, explosions, from a few parameters, no files), in
@@ -165,13 +168,21 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
   game plays through each scene's camera, full window, with the keyboard
   going to scripts. Script errors go to the browser console. The settings
   and the game title are saved with the project.
-- **Environment:** with nothing selected, the inspector edits ambient light,
-  background, exposure, shadow extent and the grid.
+- **Environment:** with nothing selected, the inspector edits the sky,
+  exposure, shadow extent and the grid.
+- **Sky:** the *Sky* section picks a flat *color* (with the ambient light
+  color), a *gradient* (top, horizon and ground colors and a sun that sits
+  opposite the shadow-casting directional light), or an *image*: an
+  equirectangular (2:1) panorama. Load one with **Load…** or drop a `.png`,
+  `.jpg` or `.webp` on its own onto the viewport. Gradient and image skies light
+  the scene too; *Sky light ×* sets how strongly. Topple uses a gradient sky.
 - **Importing:** click **Import** or drop files onto the viewport. For
   multi-file assets, select or drop the `.gltf`/`.obj` *together with* its
   `.bin`, `.mtl` and texture files. Very large or very small models are rescaled
   to about 3 m and placed on the ground. Sound files (`.wav`, `.mp3`, `.ogg`,
-  `.flac`, `.m4a`) become an object with an *Audio Source* playing them.
+  `.flac`, `.m4a`) become an object with an *Audio Source* playing them. An
+  image dropped without a model becomes the sky. Images and sounds are saved in
+  the project like models, and so are textures loaded into a material.
 - **Play mode:** behaviours (Rotator, Bobber, Orbiter, LightPulse, ColorCycle)
   and physics only run while playing. When you press Stop, every transform,
   light color/intensity, camera setting and rigid body velocity goes back to
@@ -447,10 +458,12 @@ src/engine/             The engine (no DOM dependencies except the canvas)
   audio.ts              Web Audio output (voices, listener, mute); the host calls audio.resume() on a gesture
   audioSource.ts        AudioSource component and its per-frame lifecycle; audioClip.ts: AudioClip (+ ClipRef)
   sfx.ts                Sound-effect synthesizer (SfxParams, SFX_PRESETS, renderSfx)
+  sky.ts                Sky settings (color / gradient / image) of a scene
   scripting.ts          Script component, ScriptAsset (compile, diagnostics, in-place hot reload)
   typescript.ts         Tokenizer + position-preserving TypeScript type stripper
   renderer.ts           WebGPU device, pipelines, shadow + main passes, uploads
-  shaders/*.wgsl        common (shared structs), mesh (PBR), shadow, grid, overlay, mipmap, shape2d (2D + SDF text)
+  shaders/*.wgsl        common (shared structs, tone mapping, sky lookup), mesh (PBR), sky, shadow, grid, overlay,
+                        mipmap, shape2d (2D + SDF text)
   scene.ts              GameObject (components, groups, destroy/instantiate), Scene (registry, lifecycle)
   transform.ts          Transform: hierarchy, cached local/world matrices, world-space helpers
   component.ts          Component base class; meshRenderer.ts: MeshRenderer
@@ -547,6 +560,10 @@ The tests need a working Vulkan driver. On NixOS that means
   bodies can tunnel through thin colliders. Joints, triggers and collision
   layers aren't implemented. The broadphase is brute force, which is fine for
   a few hundred bodies.
+- **Skies:** panoramas are 8-bit images (no `.hdr`/`.exr`), so *Brightness*
+  stands in for real sky radiance. Sky reflections and ambient light use the
+  image's mipmaps instead of prefiltered maps: plausible, not exact. Nothing
+  occludes the sky light, so it reaches inside closed rooms too.
 - **Audio:** no music streaming (sound files are decoded whole into memory),
   effects (reverb, filters) or doppler. Up to 32 sounds play at once; another
   one-shot replaces the oldest. Sound is silent until the first click or key

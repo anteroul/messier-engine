@@ -48,8 +48,6 @@ fn vs_main(in: VSIn) -> VSOut {
   return out;
 }
 
-const PI = 3.14159265359;
-
 fn distributionGGX(NdotH: f32, alpha: f32) -> f32 {
   let a2 = alpha * alpha;
   let d = NdotH * NdotH * (a2 - 1.0) + 1.0;
@@ -66,19 +64,6 @@ fn geometrySmith(NdotV: f32, NdotL: f32, roughness: f32) -> f32 {
 
 fn fresnelSchlick(cosTheta: f32, F0: vec3f) -> vec3f {
   return F0 + (vec3f(1.0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
-}
-
-fn acesTonemap(x: vec3f) -> vec3f {
-  let a = 2.51;
-  let b = 0.03;
-  let c = 2.43;
-  let d = 0.59;
-  let e = 0.14;
-  return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3f(0.0), vec3f(1.0));
-}
-
-fn toDisplay(color: vec3f) -> vec3f {
-  return pow(acesTonemap(color * frame.ambient.w), vec3f(1.0 / 2.2));
 }
 
 fn shadowFactor(worldPos: vec3f, N: vec3f, L: vec3f) -> f32 {
@@ -162,17 +147,27 @@ fn fs_main(in: VSOut, @builtin(front_facing) frontFacing: bool) -> @location(0) 
     Lo += (kd * base.rgb / PI + specular) * radiance * NdotL;
   }
 
-  // Hemispheric ambient diffuse: brighter from above.
-  let hemi = mix(0.55, 1.0, N.y * 0.5 + 0.5);
   let Fa = F0 + (max(vec3f(1.0 - roughness), F0) - F0) * pow(1.0 - NdotV, 5.0);
-  let ambientDiffuse = frame.ambient.rgb * hemi * base.rgb * (vec3f(1.0) - Fa) * (1.0 - metallic);
-  // Cheap environment specular: reflect into a sky/ground gradient so metals
-  // aren't black without image-based lighting. Rough surfaces see a blurrier,
-  // dimmer environment.
   let R = reflect(-V, N);
-  let sky = mix(vec3f(0.18, 0.17, 0.16), vec3f(1.6, 1.7, 1.9), smoothstep(-0.3, 0.7, R.y));
-  let env = mix(sky, vec3f(0.8), roughness * roughness);
-  let ambientSpecular = frame.ambient.rgb * env * Fa * (1.0 - 0.6 * roughness) * 2.5;
+  var ambientDiffuse: vec3f;
+  var ambientSpecular: vec3f;
+  if (frame.sky.x > 0.5) {
+    // The sky lights the scene: diffuse from a very blurred sky around the normal, specular from the sky in the
+    // reflected direction, blurred by roughness.
+    let strength = frame.sky.y;
+    ambientDiffuse = skyRadiance(N, 0.85) * strength * base.rgb * (vec3f(1.0) - Fa) * (1.0 - metallic);
+    ambientSpecular = skyRadiance(R, roughness) * strength * Fa;
+  } else {
+    // Hemispheric ambient diffuse: brighter from above.
+    let hemi = mix(0.55, 1.0, N.y * 0.5 + 0.5);
+    ambientDiffuse = frame.ambient.rgb * hemi * base.rgb * (vec3f(1.0) - Fa) * (1.0 - metallic);
+    // Cheap environment specular: reflect into a sky/ground gradient so metals
+    // aren't black without image-based lighting. Rough surfaces see a blurrier,
+    // dimmer environment.
+    let sky = mix(vec3f(0.18, 0.17, 0.16), vec3f(1.6, 1.7, 1.9), smoothstep(-0.3, 0.7, R.y));
+    let env = mix(sky, vec3f(0.8), roughness * roughness);
+    ambientSpecular = frame.ambient.rgb * env * Fa * (1.0 - 0.6 * roughness) * 2.5;
+  }
   let color = Lo + ambientDiffuse + ambientSpecular + material.emissive.rgb;
   return vec4f(toDisplay(color), 1.0);
 }

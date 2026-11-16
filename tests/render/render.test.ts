@@ -575,6 +575,27 @@ scene.traverse((o: any) => {
   check('render through scene camera', !err, err?.message ?? '');
 }
 
+// ---- skies: an image sky (its GPU texture made here, as Node can't decode images), then the gradient for frame.png
+{
+  const { Texture } = engine;
+  const device = renderer.device;
+  const pano = device.createTexture({
+    size: [64, 32], format: 'rgba8unorm-srgb', mipLevelCount: 7,
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+  });
+  const px = new Uint8Array(64 * 32 * 4).map((_, i) => (i % 4 === 3 ? 255 : (i * 37) % 256));
+  device.queue.writeTexture({ texture: pano }, px, { bytesPerRow: 64 * 4 }, [64, 32]);
+  const texture = new Texture({ width: 64, height: 32 } as ImageBitmap, 'pano');
+  texture.gpu = pano;
+  device.pushErrorScope('validation');
+  Object.assign(scene.sky, { mode: 'image', texture, rotation: 90 });
+  renderer.render(scene, camera, { time: 0.5 });
+  scene.sky.mode = 'gradient';
+  const err = await device.popErrorScope();
+  check('image sky renders', !err, err?.message ?? '');
+  check('the scene\'s sky is drawn', renderer.stats.drawCalls > 0);
+}
+
 // ---- 2D: Node has no OffscreenCanvas, so glyphs come from a stand-in rasterizer (a box per letter, a ring for 'O')
 // that still goes through the distance field, atlas upload and SDF shader. The demo's world-space sign shows them.
 {
@@ -642,6 +663,12 @@ for (let y = 0; y < H; y++) {
   }
 }
 check('frame has content', lit > W * H * 0.05, `${((lit / (W * H)) * 100).toFixed(1)}% bright pixels`);
+{
+  // The top middle of the frame is sky near the horizon: a bright blue-gray, not the dark flat background.
+  const s = 3 * bytesPerRow + (W >> 1) * 4;
+  const [r, b] = bgra ? [src[s + 2], src[s]] : [src[s], src[s + 2]];
+  check('gradient sky fills the background', b > 100 && b > r, `r=${r} b=${b}`);
+}
 
 const crcTable = Array.from({ length: 256 }, (_, n) => {
   let c = n;
