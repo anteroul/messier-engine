@@ -1,6 +1,6 @@
 {
   "name": "messier-engine",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Browser-based WebGPU 3D engine with dynamic lights, glTF/OBJ loading and a real-time scene editor",
   "license": "MIT",
   "private": true,
@@ -11,7 +11,8 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "generate:sample": "node scripts/generate-sample-glb.mjs",
-    "generate:demo": "node scripts/generate-demo-project.mjs"
+    "generate:demo": "node scripts/generate-demo-project.mjs",
+    "release": "node scripts/release.mjs"
   },
   "devDependencies": {
     "@webgpu/types": "^0.1.54",

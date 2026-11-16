@@ -319,6 +319,15 @@ commands. Call `hierarchy.markDirty()` after structural changes.
 `npm run generate:sample`. `tests/render` asserts the lantern's mesh and light
 counts, so update it too. Then run `npm run generate:demo`, because the demo project embeds the file.
 
+**Record a change, cut a release.** Every user-visible change adds a line under `## [Unreleased]` in
+`CHANGELOG.md` (Added / Changed / Fixed / Removed), in the same commit. Never edit the version by hand: it lives in
+`package.json` (the editor shows it through `__APP_VERSION__`, and `flake.nix` reads it), and
+`npm run release -- <patch|minor|major|x.y.z>` bumps it in `package.json` and `package-lock.json`, dates the
+Unreleased section, and refreshes `npmDepsHash` in `flake.nix` (the lockfile's version field is part of that hash). It refuses with uncommitted changes or an empty Unreleased section, and prints the commit and
+tag commands without running them. While 0.x, bump minor for features and breaking changes to saved files or the
+script API, patch for fixes. `SCENE_VERSION`/`PROJECT_VERSION` are separate file-format numbers; call out a bump in
+the change log. `tests/unit/version.test.ts` checks that it all agrees.
+
 ## Gotchas learned the hard way
 
 - Coplanar editor geometry (the grid at y = 0.002 over a floor at y = 0)

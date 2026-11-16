@@ -1,7 +1,7 @@
 # Messier Engine
 
 A browser-based 3D engine written in TypeScript on **WebGPU**, with a built-in
-real-time scene editor.
+real-time scene editor. What changed in each version: [CHANGELOG.md](CHANGELOG.md).
 
 - **Forward PBR renderer**: metallic-roughness GGX shading, ACES tone mapping,
   4× MSAA, reversed-Z depth, base-color textures with GPU-generated mipmaps.
@@ -480,7 +480,8 @@ src/editor/             Editor UI (plain DOM, no framework)
   hierarchy.ts inspector.ts ui.ts history.ts orbitControls.ts editor.css
 public/models/          Sample assets (lantern.glb, icosahedron.obj/.mtl)
 examples/Demo.messier   The demo project as a saved file (npm run generate:demo)
-scripts/                generate-sample-glb.mjs (regenerates lantern.glb), generate-demo-project.mjs
+CHANGELOG.md            Changes per version; npm run release -- <patch|minor|major> cuts a version
+scripts/                generate-sample-glb.mjs (regenerates lantern.glb), release.mjs, generate-demo-project.mjs
                         (regenerates examples/Demo.messier), mangle-props.mjs (release build),
                         player-plugin.mjs (bundles src/player.ts into messier-player.js for builds)
 tests/                  Unit tests and optional GPU smoke tests (separate package.json)

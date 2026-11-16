@@ -39,7 +39,7 @@
         # Reproducible production build (static files in $out/share/messier-engine).
         messier-engine = pkgs.buildNpmPackage {
           pname = "messier-engine";
-          version = "0.1.0";
+          version = (builtins.fromJSON (builtins.readFile ./package.json)).version;
           inherit nodejs;
           src = lib.fileset.toSource {
             root = ./.;
@@ -59,7 +59,7 @@
           };
           # Update after changing dependencies:
           #   nix run nixpkgs#prefetch-npm-deps -- package-lock.json
-          npmDepsHash = "sha256-t8Y8DVftGg2ScVg7KpGklfjqbBcy2yRDE8BcKezcHZU=";
+          npmDepsHash = "sha256-iqpOMQOMNmR3H3TBcTSzGjF2aisvNB0ef9r/HNB1K0c=";
           npmBuildScript = "build";
           installPhase = ''
             runHook preInstall
