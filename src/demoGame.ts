@@ -1,4 +1,7 @@
 import {
+  AudioClip,
+  AudioSource,
+  SFX_PRESETS,
   CameraComponent,
   GameObject,
   Light,
@@ -15,7 +18,7 @@ import {
   type Scene,
   type Vec3,
 } from './engine';
-import { SHARED_SCRIPTS, addScripts } from './demos/shared';
+import { SHARED_SCRIPTS, addScripts, soundObject } from './demos/shared';
 
 // "Gem Rush", a small game whose rules are all TypeScript scripts, as a showcase and test bed of the scripting API:
 // input, physics (forces, impulses, kinematic bodies), raycasts, signals between scripts, groups, instantiate and
@@ -24,7 +27,7 @@ import { SHARED_SCRIPTS, addScripts } from './demos/shared';
 // Scripts can't import each other, so each one that talks to another finds it with scene.query(Script) by name and
 // describes the part it uses with an interface.
 
-const GAME_MANAGER_SCRIPT = `import { Script, Signal, Time, input, type GameObject } from 'messier';
+const GAME_MANAGER_SCRIPT = `import { AudioSource, Script, Signal, Time, input, type GameObject } from 'messier';
 
 /** Keeps the score, runs the win and restart flow, and tells everyone through signals. */
 export default class GameManager extends Script {
@@ -65,6 +68,7 @@ export default class GameManager extends Script {
     this.slowTimer = this.slowMotionTime;
     Time.timeScale = this.slowMotion;
     console.log('Gem Rush: you win! Press R to play again.');
+    this.object.getComponent(AudioSource)?.play();
     this.won.emit();
   }
 
@@ -98,7 +102,7 @@ interface PlayerApi {
 }
 `;
 
-const PLAYER_BALL_SCRIPT = `import { Script, Signal, input, raycastScene, vec3, type Vec3 } from 'messier';
+const PLAYER_BALL_SCRIPT = `import { AudioSource, Script, Signal, input, raycastScene, vec3, type Vec3 } from 'messier';
 
 /** Rolls the ball with WASD / arrows relative to the camera, jumps with Space and respawns after a fall. */
 export default class PlayerBall extends Script {
@@ -150,7 +154,10 @@ export default class PlayerBall extends Script {
     // Grounded when a physical object is right below the ball (the ray starts inside it, so skip itself).
     const hit = raycastScene(this.scene, { origin: pos, dir: [0, -1, 0] }, (o) => o !== this.object && o.rigidBody !== null);
     this.grounded = hit !== null && hit.distance < body.radius * this.transform.scale[1] + 0.1;
-    if (this.jumpQueued && this.grounded) body.addImpulse([0, (this.jumpSpeed - body.velocity[1]) * body.mass, 0]);
+    if (this.jumpQueued && this.grounded) {
+      body.addImpulse([0, (this.jumpSpeed - body.velocity[1]) * body.mass, 0]);
+      this.object.getComponent(AudioSource)?.playOneShot();
+    }
     this.jumpQueued = false;
   }
 }
@@ -254,7 +261,7 @@ function findScript<T>(scene: Scene, name: string): T | null {
 }
 `;
 
-const GEM_SCRIPT = `import { GameObject, Script, vec3, type Scene, type Vec3 } from 'messier';
+const GEM_SCRIPT = `import { AudioSource, GameObject, Script, audio, vec3, type Scene, type Vec3 } from 'messier';
 
 /** Spins and bobs; the player picks it up by touching it, which scores and bursts into sparks. */
 export default class Gem extends Script {
@@ -290,6 +297,9 @@ export default class Gem extends Script {
 
   collect(): void {
     findScript<GameApi>(this.scene, 'GameManager')?.addPoints(this.points);
+    // Played by the audio system, not a source on this gem: the gem is destroyed, which would cut its sounds off.
+    const chime = this.scene.findByName('Gem Sound')?.getComponent(AudioSource);
+    if (chime?.clip) audio.play(chime.clip, { volume: chime.volume, pitch: 0.9 + Math.random() * 0.25 });
     const template = this.find('Spark Template');
     for (let i = 0; template && i < this.sparks; i++) {
       const spark = GameObject.instantiate(template);
@@ -586,7 +596,10 @@ export function buildDemoGame(scene: Scene): void {
   game.attachComponent(script('GameManager'));
   // Backspace returns to the showcase's menu scene, when the build has it.
   game.attachComponent(addScripts(scene, SHARED_SCRIPTS)('ArcadeLink'));
+  // GameManager plays it on a win; the gem chime is played from here by every gem.
+  game.attachComponent(new AudioSource({ clip: AudioClip.synth(SFX_PRESETS.powerup, 'powerup'), spatial: false }));
   scene.add(game);
+  scene.add(soundObject('Gem Sound', 'coin'));
 
   // Arena: a floor ringed by low walls the ball can jump over (and fall off).
   const floorMat = new Material('Arena Floor', { baseColor: [0.16, 0.18, 0.24, 1], roughness: 0.7 });
@@ -609,6 +622,7 @@ export function buildDemoGame(scene: Scene): void {
   const player = meshObject('Player', createSphere(0.4), new Material('Player', { baseColor: [1, 0.45, 0.1, 1], roughness: 0.3, emissive: [1, 0.3, 0.05], emissiveStrength: 0.4 }), [0, 0.5, 5]);
   withBody(player, 'dynamic', { shape: 'sphere', mass: 1, friction: 0.9, restitution: 0.2, linearDamping: 0.4, angularDamping: 0.6 });
   player.attachComponent(script('PlayerBall'));
+  player.attachComponent(new AudioSource({ clip: AudioClip.synth(SFX_PRESETS.jump, 'jump'), spatial: false }));
   scene.add(player);
 
   const sentinelMat = new Material('Sentinel', { baseColor: [0.6, 0.05, 0.08, 1], roughness: 0.4, emissive: [1, 0.1, 0.1], emissiveStrength: 1 });

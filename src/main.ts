@@ -1,5 +1,5 @@
 import './editor/editor.css';
-import { Engine, urlResolver } from './engine';
+import { Engine, audio, urlResolver } from './engine';
 import { Editor } from './editor/editor';
 import { buildDemoProject } from './demoProject';
 
@@ -38,7 +38,7 @@ async function main(): Promise<void> {
 
   engine.start();
   // Expose for console tinkering.
-  Object.assign(window, { engine, editor });
+  Object.assign(window, { engine, editor, audio });
 
   // Continue where the last session left off, or start with the demo.
   if (!(await editor.project.restoreAutosave())) await loadDemo(editor);

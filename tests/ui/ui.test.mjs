@@ -37,7 +37,9 @@ function unzip(buf) {
 const browser = await puppeteer.launch({
   executablePath: process.env.CHROMIUM,
   headless: 'new',
-  args: ['--no-sandbox', '--enable-unsafe-webgpu', '--enable-features=Vulkan,WebGPU', '--use-angle=vulkan', '--ignore-gpu-blocklist', '--window-size=1400,820'],
+  args: ['--no-sandbox', '--enable-unsafe-webgpu', '--enable-features=Vulkan,WebGPU', '--use-angle=vulkan', '--ignore-gpu-blocklist', '--window-size=1400,820',
+    // Puppeteer's input events count as user gestures, but don't depend on that for sound.
+    '--autoplay-policy=no-user-gesture-required'],
   defaultViewport: { width: 1400, height: 820 },
 });
 const page = await browser.newPage();
@@ -656,13 +658,18 @@ for (const [name, object, key] of [['Neon Run', 'Ship', 'KeyD'], ['Topple', 'Tur
   await sleep(900);
   await page.keyboard.up(key);
   await sleep(1200);
-  const played = await page.evaluate((o) => ({ playing: window.engine.playing, found: !!window.engine.scene.findByName(o), camera: window.engine.viewObject?.name }), object);
+  const played = await page.evaluate((o) => ({
+    playing: window.engine.playing, found: !!window.engine.scene.findByName(o), camera: window.engine.viewObject?.name, sounds: window.audio.activeVoices,
+  }), object);
   const errors = await scriptErrors();
   await page.screenshot({ path: `${OUT}/ui-${name.toLowerCase().replace(' ', '-')}.png` });
   await page.keyboard.press('Escape');
   await sleep(200);
   check(`${name} plays`, played.playing && played.found && !!played.camera && errors.length === 0, JSON.stringify({ played, errors }));
+  // Neon Run's engine drones all the time; the other two make sounds when firing, a moment ago.
+  if (name === 'Neon Run') check('Neon Run is heard', played.sounds > 0, JSON.stringify(played));
 }
+check('Stop silences the game', (await state(() => window.audio.activeVoices)) === 0);
 
 // The Arcade menu starts the chosen game through sceneManager, and Backspace in a game comes back.
 await page.select('.scene-select', await sceneId('Arcade'));
@@ -690,6 +697,56 @@ check('Stop returns to the edited scene', (await state(() => !window.engine.play
 await page.select('.scene-select', firstScene);
 await sleep(300);
 check('switch back to first scene', (await state(() => window.engine.scene.findByName('Torus')?.transform.position[0])) === 7.25);
+
+// --- Sound files import as project assets, with an object playing them
+{
+  const rate = 8000, n = 800;
+  const wav = Buffer.alloc(44 + n * 2);
+  wav.write('RIFF', 0);
+  wav.writeUInt32LE(36 + n * 2, 4);
+  wav.write('WAVEfmt ', 8);
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20); // PCM
+  wav.writeUInt16LE(1, 22); // mono
+  wav.writeUInt32LE(rate, 24);
+  wav.writeUInt32LE(rate * 2, 28);
+  wav.writeUInt16LE(2, 32);
+  wav.writeUInt16LE(16, 34);
+  wav.write('data', 36);
+  wav.writeUInt32LE(n * 2, 40);
+  for (let i = 0; i < n; i++) wav.writeInt16LE(Math.round(Math.sin((i / rate) * 2 * Math.PI * 440) * 12000), 44 + i * 2);
+  const file = `${OUT}/beep.wav`;
+  writeFileSync(file, wav);
+  const input = await page.$('#import-input');
+  await input.uploadFile(file);
+  await page.waitForFunction(() => window.engine.scene.findByName('beep'), { timeout: 5000 }).catch(() => {});
+  await sleep(200);
+  const imported = await state(() => {
+    const obj = window.engine.scene.findByName('beep');
+    const src = obj?.components.find((c) => 'playOnStart' in c);
+    return {
+      duration: src?.clip?.duration,
+      ref: src?.clip?.ref,
+      assets: window.editor.project.audioAssets().map((a) => a.name),
+      selected: window.editor.selected?.name,
+    };
+  });
+  check('import a sound file', Math.abs(imported.duration - 0.1) < 0.01 && imported.ref?.asset && imported.assets.join() === 'beep' && imported.selected === 'beep',
+    JSON.stringify(imported));
+  await page.click('.audio-preview');
+  await sleep(50);
+  check('inspector previews the sound', (await state(() => window.audio.activeVoices)) > 0);
+  await page.select('.audio-clip', 'synth:laser');
+  await sleep(50);
+  check('clip picker switches to a synthesized sound', (await state(() => window.engine.scene.findByName('beep').components.find((c) => 'playOnStart' in c).clip.sfx?.wave)) === 'saw');
+  await page.click('.audio-vary');
+  await sleep(50);
+  check('Vary makes a variation', (await state(() => window.engine.scene.findByName('beep').components.find((c) => 'playOnStart' in c).clip.sfx?.frequency)) !== 1500);
+  await page.screenshot({ path: `${OUT}/ui-audio.png` });
+  // Back to the imported file, so the saved project below carries it.
+  await page.select('.audio-clip', `asset:${imported.ref.asset}`);
+  await sleep(50);
+}
 
 // Save during Play: stops Play first and saves the edit-time scene. Headless has no file picker here, so Save downloads.
 await state(() => {
@@ -742,8 +799,10 @@ if (saved) {
     scenes: window.editor.project.project.scenes.length,
     x: window.engine.scene.findByName('Torus')?.transform.position[0],
     dirty: window.editor.project.dirty,
+    beep: window.engine.scene.findByName('beep')?.components.find((c) => 'playOnStart' in c)?.clip?.duration,
   }));
-  check('open project file', opened.name === 'Demo' && opened.scenes === 7 && opened.x === 7.25 && !opened.dirty, JSON.stringify(opened));
+  check('open project file', opened.name === 'Demo' && opened.scenes === 7 && opened.x === 7.25 && !opened.dirty && Math.abs(opened.beep - 0.1) < 0.01,
+    JSON.stringify(opened));
 }
 
 // --- Build: the Build Settings dialog picks and orders scenes; the .zip holds a page that plays them

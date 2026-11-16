@@ -6,3 +6,7 @@ result-*
 *.log
 .DS_Store
 tests/.out/
+
+# Claude Code: personal settings and temporary worktrees (skills and settings.json are shared)
+.claude/settings.local.json
+.claude/worktrees/

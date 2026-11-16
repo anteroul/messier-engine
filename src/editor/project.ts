@@ -7,6 +7,8 @@ import {
   ProjectResources,
   Scene,
   applySceneData,
+  isAudioFile,
+  type AudioClip,
   quat,
   serializeScene,
   tagAssetResources,
@@ -143,6 +145,22 @@ export class ProjectManager {
   addAsset(asset: Asset, model: GameObject): void {
     this.project.assets.push(asset);
     this.resources.register(asset.id, tagAssetResources(model, asset.id));
+  }
+
+  /** Adds an imported sound file to the project. */
+  addAudioAsset(asset: Asset, clip: AudioClip): void {
+    this.project.assets.push(asset);
+    this.resources.registerClip(asset.id, clip);
+  }
+
+  /** Imported sounds in the project, for the inspector's clip picker. */
+  audioAssets(): Asset[] {
+    return this.project.assets.filter((a) => isAudioFile(a.files[0]?.name ?? ''));
+  }
+
+  /** The clip of an imported sound, once loaded. */
+  audioClip(assetId: string): AudioClip | null {
+    return this.resources.clip({ asset: assetId, index: 0 });
   }
 
   // ---------------------------------------------------------------------------

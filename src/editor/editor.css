@@ -350,6 +350,10 @@ body.view-scripts #inspector-panel {
   color: #f0a8d8;
   font-weight: 600;
 }
+
+.icon-audio {
+  color: #9fd8a8;
+}
 .icon-camera {
   color: #c4b5fd;
 }
@@ -402,6 +406,10 @@ body.view-scripts #inspector-panel {
   display: flex;
   gap: 4px;
   align-items: center;
+  min-width: 0;
+}
+.row-controls .audio-clip {
+  flex: 1;
   min-width: 0;
 }
 .scrub {

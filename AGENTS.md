@@ -123,6 +123,16 @@ Engine.step(dt)                         src/engine/engine.ts
   signed distance field built from glyphs that an `OffscreenCanvas` rasterizes (none under Node:
   `fontAtlas.setRasterizer()` lets tests supply glyphs). Outlines are the same quads drawn first with a lower
   distance threshold. `raycastScene`/`worldBounds` include world-space 2D bounds; `pickScreen2D` picks the HUD.
+- **Audio** (`audio.ts`, `audioSource.ts`, `audioClip.ts`, `sfx.ts`): the `audio` singleton wraps one Web Audio
+  context (master gain → compressor). Browsers only start audio after a user gesture and the engine never listens
+  to the page, so the editor and `src/player.ts` call `audio.resume()` from their pointer/key handlers; before that
+  (and under Node, where there is no `AudioContext`) `audio.play()` returns null. An `AudioClip` holds sample
+  channels, with a lazily created `AudioBuffer`, and a `ClipRef`: `{ sfx }` (packed synthesizer parameters, rebuilt
+  deterministically by `renderSfx`, like primitive args) or `{ asset, index: 0 }` (an imported sound file, a project
+  `Asset` whose first file has an audio extension; decoded with an `OfflineAudioContext`). `AudioSource` is a plain
+  component; `Engine.step` runs `updateAudioSources()` (`playOnStart` each time a source becomes live, live
+  volume/pitch) and `audio.update()` (listener at the rendered camera, voices follow their owner, and voices whose
+  owner isn't live in the running active scene stop). `setPlaying(false)` calls `audio.stopAll()`.
 - **Input** (`input.ts`): the `input` singleton holds keyboard state by
   `KeyboardEvent.code`. The engine never listens to the DOM. The editor
   forwards keydown/keyup in `bindKeyboard()`. `Engine.step` calls
@@ -258,6 +268,14 @@ in the glTF/OBJ loaders if a standard field exists.
 `clone()` copies public fields), add an inspector row in `buildShape2D`/`buildText2D`, and include it in
 `Text2D.layout()`'s cache key if it changes the layout. Validate enum values in `dataToObject`.
 
+**Add or change a sound.** Synthesized sounds are `SfxParams` (`sfx.ts`); append new parameters to the end of
+`SFX_KEYS`, since saved `{ sfx }` refs are positional lists. New presets go in `SFX_PRESETS` (they show up in the
+inspector's clip picker). Rendering must stay deterministic (seeded noise only). Games trigger sounds from scripts
+through `AudioSource`s their builders lay out (`soundObject()` in `src/demos/shared.ts`); a sound that must outlive
+its object (a destroyed pickup, a scene change) goes through `audio.play()`, because a source's voices stop with it.
+Unit tests get Web Audio from `tests/unit/fakeAudio.ts` (import it first, then `audio.resume()`); `played()` in
+`demos.test.ts` counts a sound's plays.
+
 **Add a primitive.** Write the generator in `primitives.ts` (finish with
 `.fixWinding()`, and `tag()` it with its arguments so scenes can rebuild it), add it to
 `PrimitiveKind`, `GENERATORS` and `getPrimitive`, add a
@@ -335,6 +353,9 @@ counts, so update it too. Then run `npm run generate:demo`, because the demo pro
   project checks (reload, scenes, Save/Open) run last because they replace the
   scene. When debugging in a normal browser, use **☰ → New Project** or clear site data
   to get back to a known state.
+- Chrome warns in the console when an `AudioContext` is created before a user gesture, and `test:ui` fails on
+  console warnings. That's why `audio.resume()` (not `play()` or `decode()`) creates the context, and decoding uses
+  an `OfflineAudioContext`. `test:ui` also launches Chromium with `--autoplay-policy=no-user-gesture-required`.
 - Dawn under Node prints `maxDynamic…BuffersPerPipelineLayout artificially
   reduced` warnings. They're harmless.
 

@@ -3,7 +3,8 @@ import type { Texture } from './material';
 import { Scene } from './scene';
 import type { ScriptLibrary } from './scripting';
 import { buildPrimitive } from './primitives';
-import { bytesResolver, loadModelFromBytes, type MemoryFile } from './loaders';
+import { bytesResolver, isAudioFile, loadAudioClip, loadModelFromBytes, type MemoryFile } from './loaders';
+import { AudioClip, type ClipRef } from './audioClip';
 import { applySceneData, checkSceneData, collectAssetIds, tagAssetResources, type SceneData, type SceneResources } from './serialize';
 import { isObject } from './data';
 
@@ -23,7 +24,10 @@ const MAGIC = 0x4a50534d; // "MSPJ"
 const CHUNK_JSON = 0x4e4f534a;
 const CHUNK_BIN = 0x004e4942;
 
-/** An imported model: the model file first, then the companion files (.bin, .mtl, textures) it read. */
+/**
+ * An imported file: a model (the model file first, then the companion files (.bin, .mtl, textures) it read), or a
+ * sound (one file). The first file's extension tells which.
+ */
 export interface Asset {
   id: string;
   name: string;
@@ -247,18 +251,20 @@ export class Project {
 const align4 = (n: number) => (n + 3) & ~3;
 
 /**
- * Resolves scene refs for one project: rebuilds primitives and loads each
- * imported asset once, sharing its meshes and textures across scene loads.
+ * Resolves scene refs for one project: rebuilds primitives and synthesized
+ * sounds, and loads each imported asset once, sharing its meshes, textures and
+ * clips across scene loads.
  */
 export class ProjectResources implements SceneResources {
   private readonly assets = new Map<string, { meshes: Mesh[]; textures: Texture[] } | null>();
+  private readonly clips = new Map<string, AudioClip | null>();
   private readonly primitives = new Map<string, Mesh>();
 
   constructor(readonly project: Project) {}
 
   /** Loads the assets `data` references that aren't loaded yet. Failures become warnings. */
   async prepare(data: SceneData, warnings: string[] = []): Promise<void> {
-    const pending = [...collectAssetIds(data.objects)].filter((id) => !this.assets.has(id));
+    const pending = [...collectAssetIds(data.objects)].filter((id) => !this.assets.has(id) && !this.clips.has(id));
     await Promise.all(
       pending.map(async (id) => {
         const asset = this.project.getAsset(id);
@@ -267,8 +273,19 @@ export class ProjectResources implements SceneResources {
           warnings.push(`Asset ${id} is missing from the project`);
           return;
         }
+        const [main, ...companions] = asset.files;
+        if (isAudioFile(main.name)) {
+          try {
+            const clip = await loadAudioClip(main.name, main.bytes.slice().buffer);
+            clip.ref = { asset: id, index: 0 };
+            this.clips.set(id, clip);
+          } catch (err) {
+            this.clips.set(id, null);
+            warnings.push(`Could not load ${asset.name}: ${(err as Error).message}`);
+          }
+          return;
+        }
         try {
-          const [main, ...companions] = asset.files;
           const model = await loadModelFromBytes(main.name, main.bytes.slice().buffer, bytesResolver(companions));
           this.assets.set(id, tagAssetResources(model, id));
         } catch (err) {
@@ -290,6 +307,15 @@ export class ProjectResources implements SceneResources {
   /** Makes meshes and textures of an asset imported in this session resolvable without reloading it. */
   register(assetId: string, resources: { meshes: Mesh[]; textures: Texture[] }): void {
     this.assets.set(assetId, resources);
+  }
+
+  /** Makes a sound imported in this session resolvable without decoding it again. */
+  registerClip(assetId: string, clip: AudioClip): void {
+    this.clips.set(assetId, clip);
+  }
+
+  clip(ref: ClipRef): AudioClip | null {
+    return 'sfx' in ref ? AudioClip.synth(ref.sfx) : (this.clips.get(ref.asset) ?? null);
   }
 
   mesh(ref: ResourceRef): Mesh | null {

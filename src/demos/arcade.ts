@@ -14,12 +14,12 @@ import {
   type Vec3,
   type Vec4,
 } from '../engine';
-import { addScripts, glow, group, hudText, lightObject, meshObject, neon, type ScriptList } from './shared';
+import { addScripts, glow, group, hudText, lightObject, meshObject, neon, soundObject, type ScriptList } from './shared';
 
 // "Arcade": the menu of the showcase. A dark showroom with one lit stand per game; choosing one loads its scene
 // through sceneManager, and the games' ArcadeLink script comes back here.
 
-const ARCADE_SCRIPT = `import { Light, Script, Text2D, input, sceneManager, type GameObject, type Vec4 } from 'messier';
+const ARCADE_SCRIPT = `import { AudioSource, Light, Script, Text2D, audio, input, sceneManager, type GameObject, type Vec4 } from 'messier';
 
 /** Picks a game with A/D or the arrow keys and loads its scene with Enter or Space. A stand is named after its scene. */
 export default class Arcade extends Script {
@@ -36,6 +36,8 @@ export default class Arcade extends Script {
   private time = 0;
   private camera: GameObject | null = null;
   private status: Text2D | null = null;
+  private selectSound: AudioSource | null = null;
+  private launchSound: AudioSource | null = null;
 
   start(): void {
     const scene = this.scene;
@@ -55,6 +57,8 @@ export default class Arcade extends Script {
     }
     this.camera = scene.findByName('Arcade Camera');
     this.status = scene.findByName('Status')?.getComponent(Text2D) ?? null;
+    this.selectSound = scene.findByName('Select Sound')?.getComponent(AudioSource) ?? null;
+    this.launchSound = scene.findByName('Launch Sound')?.getComponent(AudioSource) ?? null;
     // Coming back from a game, its stand is the chosen one.
     const from = Arcade.last;
     const at = this.stands.findIndex((s) => s.object.name === from);
@@ -80,9 +84,13 @@ export default class Arcade extends Script {
     if (step !== 0) {
       this.index = (this.index + step + count) % count;
       this.showStatus();
+      this.selectSound?.playOneShot();
     }
     if ((input.pressed('Enter') || input.pressed('Space')) && this.available && !sceneManager.isLoading) {
       Arcade.last = this.selectedName;
+      // Not through the source: its sounds stop when this scene unloads, and this one should carry over.
+      const launch = this.launchSound;
+      if (launch?.clip) audio.play(launch.clip, { volume: launch.volume });
       void sceneManager.loadScene(this.selectedName);
     }
 
@@ -287,6 +295,7 @@ export function buildArcade(scene: Scene): void {
   GAMES.forEach((game, i) => stands.add(buildStand(game, (i - (GAMES.length - 1) / 2) * SPACING)));
   scene.add(stands);
 
+  scene.add(group('Sounds', [soundObject('Select Sound', 'select'), soundObject('Launch Sound', 'powerup', { volume: 0.8 })]));
   scene.add(hudText('Status', 'bottom', 0, 44, { text: '', fontSize: 22, bold: true, verticalAlign: 'bottom' }));
   scene.add(hudText('Controls', 'bottom', 0, 14, { text: 'A / D or arrows: choose   Enter: play', fontSize: 14, color: [1, 1, 1, 0.7], verticalAlign: 'bottom' }));
 

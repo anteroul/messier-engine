@@ -1,6 +1,8 @@
 import type { GameObject } from '../scene';
 import type { Asset } from '../project';
+import type { AudioClip } from '../audioClip';
 import { tagAssetResources } from '../serialize';
+import { loadAudioClip } from './audio';
 import { loadGLTF } from './gltf';
 import { loadOBJ } from './obj';
 import { fileResolver, recordingResolver, urlResolver, type MemoryFile, type ResourceResolver } from './resources';
@@ -8,6 +10,7 @@ import { fileResolver, recordingResolver, urlResolver, type MemoryFile, type Res
 export { loadGLTF } from './gltf';
 export { loadOBJ } from './obj';
 export * from './resources';
+export * from './audio';
 
 export const MODEL_EXTENSIONS = ['glb', 'gltf', 'obj'];
 
@@ -56,6 +59,14 @@ export async function loadModelAsset(fileName: string, data: ArrayBuffer, resolv
   const model = await loadModelFromBytes(fileName, data, recordingResolver(resolve, companions));
   tagAssetResources(model, id);
   return { model, asset: { id, name: baseName(fileName), files: [{ name: fileName, bytes }, ...companions] } };
+}
+
+/** Loads a sound file and captures it as a project asset (one file; scenes refer to its clip as index 0). */
+export async function loadAudioAsset(fileName: string, data: ArrayBuffer, id = newAssetId()): Promise<{ clip: AudioClip; asset: Asset }> {
+  const bytes = new Uint8Array(data.slice(0));
+  const clip = await loadAudioClip(fileName, data);
+  clip.ref = { asset: id, index: 0 };
+  return { clip, asset: { id, name: clip.name, files: [{ name: fileName, bytes }] } };
 }
 
 export async function loadModelAssetFromURL(url: string): Promise<LoadedAsset> {

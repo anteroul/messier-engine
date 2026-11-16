@@ -14,13 +14,13 @@ import {
   type Vec3,
   type Vec4,
 } from '../engine';
-import { SHARED_SCRIPTS, addScripts, glow, group, hudText, lightObject, meshObject, neon, seeded, shapeObject, type ScriptList } from './shared';
+import { SHARED_SCRIPTS, addScripts, glow, group, hudText, lightObject, meshObject, neon, seeded, shapeObject, soundObject, type ScriptList } from './shared';
 
 // "Neon Run": an endless runner down a glossy highway at dusk. Everything that looks like it moves is pooled and
 // recycled by one script: the builder lays out a fixed set of grid lines, gates, towers, barriers and rings, and the
 // script scrolls them past a ship that only ever moves sideways.
 
-const NEON_RUN_SCRIPT = `import { CameraComponent, Script, Shape2D, Text2D, clamp, input, type GameObject } from 'messier';
+const NEON_RUN_SCRIPT = `import { AudioSource, CameraComponent, Script, Shape2D, Text2D, clamp, input, type GameObject } from 'messier';
 
 /** Runs the whole game: scrolls the pooled scenery past the ship, places barriers and rings, keeps score. */
 export default class NeonRun extends Script {
@@ -52,6 +52,9 @@ export default class NeonRun extends Script {
   private flash: Shape2D | null = null;
   private scoreText: Text2D | null = null;
   private message: Text2D | null = null;
+  private engine: AudioSource | null = null;
+  private ringSound: AudioSource | null = null;
+  private crashSound: AudioSource | null = null;
   private camX = 0;
   private camY = 0;
   private camZ = 0;
@@ -91,6 +94,9 @@ export default class NeonRun extends Script {
     this.flash = scene.findByName('Flash')?.getComponent(Shape2D) ?? null;
     this.scoreText = scene.findByName('Score')?.getComponent(Text2D) ?? null;
     this.message = scene.findByName('Message')?.getComponent(Text2D) ?? null;
+    this.engine = scene.findByName('Engine Sound')?.getComponent(AudioSource) ?? null;
+    this.ringSound = scene.findByName('Ring Sound')?.getComponent(AudioSource) ?? null;
+    this.crashSound = scene.findByName('Crash Sound')?.getComponent(AudioSource) ?? null;
     if (this.cam) [this.camX, this.camY, this.camZ] = this.cam.transform.position;
     this.restart();
   }
@@ -166,7 +172,13 @@ export default class NeonRun extends Script {
         this.bonus += this.ringBonus;
         this.flashAlpha = 0.18;
         this.setFlashColor(1, 0.85, 0.3);
+        this.ringSound?.playOneShot();
       }
+    }
+    // The engine drone rises with speed and dies down with the ship.
+    if (this.engine) {
+      this.engine.pitch = 0.7 + 0.9 * clamp(this.speed / this.topSpeed, 0, 1);
+      this.engine.volume += ((alive ? 0.5 : 0) - this.engine.volume) * Math.min(1, dt * 3);
     }
     this.moveShip(dt, time, alive);
     this.moveCamera(dt, time);
@@ -181,6 +193,7 @@ export default class NeonRun extends Script {
     this.setFlashColor(1, 0.15, 0.3);
     this.speed = Math.max(this.startSpeed * 0.7, this.speed * 0.6);
     this.showShields();
+    this.crashSound?.playOneShot(null, this.left > 0 ? 0.6 : 1);
     if (this.left <= 0) {
       this.hull?.setActive(false);
       if (this.message) this.message.text = 'WRECKED\\nScore ' + this.score + '\\n\\nR to fly again';
@@ -375,6 +388,7 @@ function buildShip(): GameObject {
   hull.add(flare);
   ship.add(hull);
   // Lights the road under the ship and the barriers it passes.
+  ship.add(soundObject('Engine Sound', 'hum', { loop: true, playOnStart: true, volume: 0.5 }));
   ship.add(lightObject('Underglow', new Light('point', CYAN, 14), [0, -0.3, 0.2], 9));
   return ship;
 }
@@ -489,6 +503,7 @@ export function buildNeonRun(scene: Scene): void {
   scene.add(trail);
 
   scene.add(buildShip());
+  scene.add(group('Sounds', [soundObject('Ring Sound', 'coin'), soundObject('Crash Sound', 'explosion')]));
 
   // HUD
   scene.add(hudText('Score', 'top-left', 22, -16, { text: '000000', fontSize: 30, bold: true, color: [0.5, 0.95, 1, 1], align: 'left', verticalAlign: 'top', lineHeight: 1.15 }));

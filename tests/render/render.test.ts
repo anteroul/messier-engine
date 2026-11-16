@@ -353,7 +353,7 @@ check('OBJ triangles', ico.children.reduce((n: number, c: any) => n + c.mesh.tri
 
 // ---- scene & project persistence
 {
-  const { Project, ProjectResources, ScriptAsset, Mesh, serializeScene, applySceneData, loadModelAsset } = engine;
+  const { Project, ProjectResources, ScriptAsset, Mesh, serializeScene, applySceneData, loadModelAsset, AudioSource, AudioClip, SFX_PRESETS } = engine;
   const src = new Scene();
   buildDemoScene(src);
   for (const s of src.scripts.scripts) s.compile();
@@ -366,6 +366,7 @@ check('OBJ triangles', ico.children.reduce((n: number, c: any) => n + c.mesh.tri
   src.physics.gravity = [0, -5, 0];
   const glow = src.findByName('Glow Orb');
   glow.behaviours[0].params.size = 1.25; // a script override
+  glow.attachComponent(new AudioSource({ clip: AudioClip.synth({ ...SFX_PRESETS.laser, frequency: 900 }), volume: 0.4, maxDistance: 25 }));
   const saveWarnings: string[] = [];
   const data = serializeScene(src, saveWarnings);
 
@@ -397,7 +398,8 @@ check('OBJ triangles', ico.children.reduce((n: number, c: any) => n + c.mesh.tri
     [...saveWarnings, ...loadWarnings].join('; ') || (resaved === JSON.stringify(data) ? `${resaved.length} chars` : 'resaved scene differs'));
   check('scene round-trip values', dst.findByName('Gold Sphere').material.roughness === 0.77 && vec3.equals(dst.findByName('Gold Sphere').transform.scale, [1, 2, 3]) &&
     dst.ambientIntensity === 0.5 && dst.physics.gravity[1] === -5 && dst.findByName('Glow Orb').behaviours[0].params.size === 1.25 &&
-    dst.findByName('Main Camera').camera.fovDeg === 50 && cubes[0].mesh === cubes[1].mesh);
+    dst.findByName('Main Camera').camera.fovDeg === 50 && cubes[0].mesh === cubes[1].mesh &&
+    dst.findByName('Glow Orb').getComponent(AudioSource).clip.sfx.frequency === 900 && dst.findByName('Glow Orb').getComponent(AudioSource).maxDistance === 25);
   check('scene round-trip asset meshes', meshes === 4 && lights === 1, `${meshes} meshes, ${lights} lights`);
 
   // Problems are reported, not thrown.

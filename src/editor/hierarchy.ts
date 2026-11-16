@@ -1,4 +1,4 @@
-import { Renderer2D, Text2D, type GameObject } from '../engine';
+import { AudioSource, Renderer2D, Text2D, type GameObject } from '../engine';
 import { el } from './ui';
 import type { Editor } from './editor';
 
@@ -78,8 +78,9 @@ export class HierarchyPanel {
       this.markDirty();
     });
     const is2D = !obj.mesh && !!obj.getComponent(Renderer2D);
-    const icon = obj.light ? '✦' : obj.camera ? '◉' : obj.mesh ? '◆' : is2D ? (obj.getComponent(Text2D) ? 'T' : '▢') : '○';
-    const iconClass = obj.light ? 'icon-light' : obj.camera ? 'icon-camera' : obj.mesh ? 'icon-mesh' : is2D ? 'icon-2d' : 'icon-empty';
+    const sound = !obj.mesh && !is2D && !!obj.getComponent(AudioSource);
+    const icon = obj.light ? '✦' : obj.camera ? '◉' : obj.mesh ? '◆' : is2D ? (obj.getComponent(Text2D) ? 'T' : '▢') : sound ? '♪' : '○';
+    const iconClass = obj.light ? 'icon-light' : obj.camera ? 'icon-camera' : obj.mesh ? 'icon-mesh' : is2D ? 'icon-2d' : sound ? 'icon-audio' : 'icon-empty';
     const row = el('div', { class: `tree-row${obj.visible ? '' : ' hidden-obj'}`, draggable: 'true', title: obj.name }, [
       toggle,
       el('span', { class: `tree-icon ${iconClass}`, text: icon }),

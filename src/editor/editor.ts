@@ -1,4 +1,10 @@
 import {
+  AudioClip,
+  AudioSource,
+  SFX_PRESETS,
+  audio,
+  isAudioFile,
+  loadAudioAsset,
   CameraComponent,
   DEG2RAD,
   draw2d,
@@ -69,6 +75,7 @@ const LIGHT_ICON_PX = 7;
 /** Depth of the camera helper's frustum icon. */
 const CAMERA_ICON_PX = 34;
 const CLICK_SLOP_PX = 4;
+const MUTED_KEY = 'messier.muted';
 
 export interface EditorElements {
   viewport: HTMLElement;
@@ -353,6 +360,31 @@ export class Editor {
     };
     apply(rb);
     this.history.push({ label, undo: () => apply(before), redo: () => apply(rb) });
+  }
+
+  /** An object with an AudioSource playing a synthesized blip, in front of the view. */
+  createAudioSource(parent?: GameObject): GameObject {
+    const obj = new GameObject('Audio Source');
+    obj.attachComponent(new AudioSource({ clip: AudioClip.synth(SFX_PRESETS.blip, 'blip') }));
+    obj.transform.position = this.spawnPoint(0.5);
+    return this.addCreated(obj, parent);
+  }
+
+  /** Adds or removes an object's AudioSource. Undoable. */
+  setAudioSource(obj: GameObject, on: boolean): void {
+    const existing = obj.getComponent(AudioSource);
+    if (on === !!existing) return;
+    const source = existing ?? new AudioSource({ clip: AudioClip.synth(SFX_PRESETS.blip, 'blip') });
+    const index = existing ? obj.components.indexOf(existing) : obj.components.length;
+    const apply = (attach: boolean) => {
+      if (attach && !source.attached) obj.attachComponent(source, index);
+      else if (!attach && source.attached) obj.detachComponent(source);
+      if (this.selected === obj) this.inspector.refresh();
+      this.hierarchy.markDirty();
+    };
+    apply(on);
+    const label = `${on ? 'Add audio source to' : 'Remove audio source from'} ${obj.name}`;
+    this.history.push({ label, undo: () => apply(!on), redo: () => apply(on) });
   }
 
   /** Attaches a behaviour (built-in or script). Undoable. */
@@ -674,6 +706,22 @@ export class Editor {
       await this.project.openFile(project);
       return;
     }
+    const sounds = files.filter((f) => isAudioFile(f.name));
+    files = files.filter((f) => !sounds.includes(f));
+    for (const f of sounds) {
+      try {
+        const { clip, asset } = await loadAudioAsset(f.name, await f.arrayBuffer());
+        this.project.addAudioAsset(asset, clip);
+        const obj = new GameObject(clip.name);
+        // Not spatial: a dropped sound is usually music or an effect for a script to play.
+        obj.attachComponent(new AudioSource({ clip, spatial: false }));
+        obj.transform.position = this.spawnPoint(0.5);
+        this.addObject(obj, this.scene.root, `Import ${clip.name}`);
+        this.notify(`Imported sound ${f.name}`, 'success');
+      } catch (err) {
+        this.notify(`Could not import ${f.name}: ${(err as Error).message}`, 'error');
+      }
+    }
     const scripts = files.filter((f) => /\.ts$/i.test(f.name));
     files = files.filter((f) => !scripts.includes(f));
     let lastScript: ScriptAsset | null = null;
@@ -717,6 +765,16 @@ export class Editor {
 
   // ---------------------------------------------------------------------------
   // Play mode
+
+  setMuted(muted: boolean): void {
+    audio.muted = muted;
+    try {
+      localStorage.setItem(MUTED_KEY, muted ? '1' : '0');
+    } catch {
+      /* storage unavailable */
+    }
+    this.updateToolbar();
+  }
 
   togglePlay(): void {
     if (this.engine.playing) this.stopPlay();
@@ -1281,6 +1339,8 @@ export class Editor {
       'add-polygon': () => this.createShape2D('polygon'),
       'add-text': () => this.createText2D(false),
       'add-screen-text': () => this.createText2D(true),
+      'add-audio': () => this.createAudioSource(),
+      mute: () => this.setMuted(!audio.muted),
     };
     const root = document.body;
     root.addEventListener('click', (e) => {
@@ -1313,6 +1373,14 @@ export class Editor {
           sceneName.blur();
         }
       });
+    }
+    // Browsers start audio only after the user interacted with the page.
+    document.addEventListener('pointerdown', () => audio.resume(), true);
+    window.addEventListener('keydown', () => audio.resume(), true);
+    try {
+      audio.muted = localStorage.getItem(MUTED_KEY) === '1';
+    } catch {
+      /* storage unavailable */
     }
     // Close open dropdown menus when clicking anywhere else.
     document.addEventListener('pointerdown', (e) => {
@@ -1363,6 +1431,11 @@ export class Editor {
     set('helpers', this.showHelpers);
     set('camera-view', this.cameraView);
     set('play', this.engine.playing);
+    const mute = tb.querySelector<HTMLElement>('[data-action="mute"]');
+    if (mute) {
+      mute.textContent = audio.muted ? '🔇' : '🔊';
+      mute.classList.toggle('active', audio.muted);
+    }
     set('view-scene', this.view === 'scene');
     set('view-scripts', this.view === 'scripts');
     const broken = this.scene.scripts.scripts.filter((s) => s.diagnostics.length > 0).length;
@@ -1442,6 +1515,7 @@ export default class ${className} extends Script {
 }
 `;
 }
+
 
 function loadStoredScripts(): { name: string; source: string }[] {
   try {

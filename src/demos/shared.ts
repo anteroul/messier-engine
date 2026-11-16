@@ -1,4 +1,7 @@
 import {
+  AudioClip,
+  AudioSource,
+  SFX_PRESETS,
   GameObject,
   Material,
   RigidBody,
@@ -10,6 +13,7 @@ import {
   type Light,
   type Mesh,
   type Scene,
+  type SfxParams,
   type Script,
   type Vec3,
   type Vec4,
@@ -101,6 +105,19 @@ export function glow(name: string, color: Vec3, size: number, alpha = 0.16, orde
     const d = size * ((i + 1) / layers) ** 1.5;
     o.add(shapeObject(`${name} ${i + 1}`, new Shape2D({ shape: 'ellipse', width: d, height: d, fillColor: [...color, alpha] as Vec4, order })));
   }
+  return o;
+}
+
+type SoundInit = NonNullable<ConstructorParameters<typeof AudioSource>[0]>;
+
+/**
+ * An object holding a synthesized sound for a script to play (`findByName(name)`, then `playOneShot()`). Not spatial
+ * unless `init` says so. `sfx` is a preset name or parameters.
+ */
+export function soundObject(name: string, sfx: keyof typeof SFX_PRESETS | Readonly<SfxParams>, init: SoundInit = {}): GameObject {
+  const o = new GameObject(name);
+  const params = typeof sfx === 'string' ? SFX_PRESETS[sfx] : sfx;
+  o.attachComponent(new AudioSource({ clip: AudioClip.synth(params, typeof sfx === 'string' ? sfx : name), spatial: false, ...init }));
   return o;
 }
 

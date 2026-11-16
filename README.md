@@ -23,6 +23,10 @@ real-time scene editor.
 - **Rigid body physics**: a `RigidBody` component with box and sphere
   colliders, dynamic / static / kinematic bodies, friction, restitution,
   damping and sleeping, solved with fixed-step sequential impulses.
+- **Audio**: an `AudioSource` component plays imported sound files (`.wav`,
+  `.mp3`, `.ogg`…, saved inside the project) or sound effects from a built-in
+  synthesizer (lasers, coins, explosions, from a few parameters, no files), in
+  2D or positioned in 3D relative to the camera, through the Web Audio API.
 - **TypeScript behaviour scripts**: write behaviours as TypeScript classes in
   the editor's built-in code editor (syntax highlighting, live error markers,
   auto-indent). Scripts compile as you type and hot-reload into a running
@@ -166,7 +170,8 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
 - **Importing:** click **Import** or drop files onto the viewport. For
   multi-file assets, select or drop the `.gltf`/`.obj` *together with* its
   `.bin`, `.mtl` and texture files. Very large or very small models are rescaled
-  to about 3 m and placed on the ground.
+  to about 3 m and placed on the ground. Sound files (`.wav`, `.mp3`, `.ogg`,
+  `.flac`, `.m4a`) become an object with an *Audio Source* playing them.
 - **Play mode:** behaviours (Rotator, Bobber, Orbiter, LightPulse, ColorCycle)
   and physics only run while playing. When you press Stop, every transform,
   light color/intensity, camera setting and rigid body velocity goes back to
@@ -189,6 +194,14 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
   Colors are display colors (like CSS), not affected by lighting. Higher
   *Order* draws on top. The Gem Rush score at the top of the screen is a
   `Text2D` that its `ScoreHud` script rewrites.
+- **Sound:** **＋ Add → Audio Source** creates an object with an *Audio
+  Source*, or pick **Audio Source** in an object's **+ Add…** menu. Its *Clip*
+  is an imported sound or a synthesized effect (**Vary** makes a random
+  variation, **▶** previews it). Sources play in Play mode: *Play on start*
+  starts one with the scene, scripts call `play()` or `playOneShot()`.
+  *Spatial* sources are heard from their object, at full volume up to *Min
+  distance* and silent beyond *Max distance*. The toolbar's 🔊 mutes the editor.
+  Browsers only allow sound after you've clicked or typed on the page.
 - **Physics:** select an object and click **Add** in the inspector's *Rigid
   Body* section. The collider is fitted to the mesh (spheres get a sphere
   collider, flat meshes like planes become static slabs) and drawn in green.
@@ -431,6 +444,9 @@ docs/scripting.md       Scripting API: components, lifecycle, transform, signals
 src/engine/             The engine (no DOM dependencies except the canvas)
   engine.ts             Main loop: fixed steps → update → lateUpdate → matrices → render → destroys; active scene
   input.ts              Keyboard state for scripts (isDown / pressed / axis); the host forwards key events
+  audio.ts              Web Audio output (voices, listener, mute); the host calls audio.resume() on a gesture
+  audioSource.ts        AudioSource component and its per-frame lifecycle; audioClip.ts: AudioClip (+ ClipRef)
+  sfx.ts                Sound-effect synthesizer (SfxParams, SFX_PRESETS, renderSfx)
   scripting.ts          Script component, ScriptAsset (compile, diagnostics, in-place hot reload)
   typescript.ts         Tokenizer + position-preserving TypeScript type stripper
   renderer.ts           WebGPU device, pipelines, shadow + main passes, uploads
@@ -530,6 +546,10 @@ The tests need a working Vulkan driver. On NixOS that means
   bodies can tunnel through thin colliders. Joints, triggers and collision
   layers aren't implemented. The broadphase is brute force, which is fine for
   a few hundred bodies.
+- **Audio:** no music streaming (sound files are decoded whole into memory),
+  effects (reverb, filters) or doppler. Up to 32 sounds play at once; another
+  one-shot replaces the oldest. Sound is silent until the first click or key
+  press on the page, as browsers require.
 - **Scripts:** no type checking or autocompletion. Scripts run on the main
   thread, so an infinite loop freezes the page. Scripts can only import from
   `'messier'` (not from each other). Input is keyboard only (no mouse or

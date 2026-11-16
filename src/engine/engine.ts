@@ -3,6 +3,8 @@ import { Scene, type GameObject } from './scene';
 import { Camera } from './camera';
 import { OverlayBuilder } from './overlay';
 import { input } from './input';
+import { audio } from './audio';
+import { updateAudioSources } from './audioSource';
 import { draw2d } from './draw2d';
 import { Signal } from './signal';
 import { Time } from './time';
@@ -96,6 +98,8 @@ export class Engine {
     Time.reset();
     // Keys held across Play/Stop would otherwise stay down in the next session.
     input.reset();
+    // Stop silences everything, including sounds with no owner.
+    if (!playing) audio.stopAll();
     if (playing) this.scene.physics.reset(this.scene);
     this.scene.setRunning(playing);
   }
@@ -140,6 +144,9 @@ export class Engine {
     input.endFrame();
     scene.updateMatrices();
     this.render(scene, dt);
+    // After render() placed the scene camera: the listener is where the picture is taken from.
+    updateAudioSources(scene);
+    audio.update(scene, this.view);
     // Immediate 2D drawing lasts one frame, rendered or not.
     draw2d.clear();
     scene.processDestroyed();

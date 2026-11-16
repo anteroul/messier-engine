@@ -1,7 +1,7 @@
 // Runtime of a built game (File → Build). The editor bundles this file into the exported page, next to the
 // project data: a .messier file in base64, inside <script id="messier-project" type="application/octet-stream">.
 // It plays the project's scenes in order, starting with the first, through each scene's camera.
-import { Engine, Project, ProjectResources, ScriptAsset, ScriptLibrary, input, sceneManager } from './engine';
+import { Engine, Project, ProjectResources, ScriptAsset, ScriptLibrary, audio, input, sceneManager } from './engine';
 
 // Keys the browser would otherwise act on (scrolling, Space activating focused elements).
 const CAPTURED_KEYS = new Set(['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End', 'Tab']);
@@ -63,7 +63,10 @@ async function main(): Promise<void> {
 }
 
 function bindInput(canvas: HTMLCanvasElement): void {
+  // Browsers start audio only after the player interacted with the page.
+  window.addEventListener('pointerdown', () => audio.resume(), true);
   window.addEventListener('keydown', (e) => {
+    audio.resume();
     if (e.ctrlKey || e.metaKey || e.altKey) return; // leave browser shortcuts alone
     input.keyDown(e.code);
     if (CAPTURED_KEYS.has(e.code)) e.preventDefault();

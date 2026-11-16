@@ -1,4 +1,11 @@
 import {
+  AudioClip,
+  AudioSource,
+  SFX_PRESETS,
+  audio,
+  mutateSfx,
+  packSfx,
+  type SfxPresetName,
   BEHAVIOURS,
   BODY_TYPES,
   ANCHORS_2D,
@@ -27,6 +34,7 @@ import {
   quat,
   rgbToHex,
   vec3,
+  type AudioVoice,
   type BodyType,
   type ColliderShape,
   type GameObject,
@@ -46,6 +54,7 @@ export class InspectorPanel {
   /** Cached euler angles so editing one axis doesn't re-normalise the others. */
   private euler: Vec3 = [0, 0, 0];
   private eulerSourceRot = quat.identity();
+  private previewVoice: AudioVoice | null = null;
 
   constructor(
     private readonly editor: Editor,
@@ -259,6 +268,8 @@ export class InspectorPanel {
     if (shape) out.push(this.buildShape2D(shape));
     const text = obj.getComponent(Text2D);
     if (text) out.push(this.buildText2D(text));
+    const source = obj.getComponent(AudioSource);
+    if (source) out.push(this.buildAudioSource(obj, source));
 
     out.push(this.buildRigidBody(obj));
 
@@ -266,6 +277,7 @@ export class InspectorPanel {
     const scripts = ed.scene.scripts.scripts;
     const addSelect = el('select', { class: 'add-behaviour', 'aria-label': 'Add behaviour' }, [
       el('option', { value: '', text: '+ Add…' }),
+      source ? null : el('optgroup', { label: 'Components' }, [el('option', { value: 'audio-source', text: 'Audio Source' })]),
       el('optgroup', { label: 'Built-in' }, Object.keys(BEHAVIOURS).map((k) => el('option', { value: `builtin:${k}`, text: k }))),
       el('optgroup', { label: 'Scripts' }, [
         ...scripts.map((sc) => el('option', { value: `script:${sc.id}`, text: `${sc.name}.ts` })),
@@ -275,7 +287,8 @@ export class InspectorPanel {
     addSelect.addEventListener('change', () => {
       const v = addSelect.value;
       addSelect.value = '';
-      if (v.startsWith('builtin:')) ed.addBehaviour(obj, createBehaviour(v.slice(8)));
+      if (v === 'audio-source') ed.setAudioSource(obj, true);
+      else if (v.startsWith('builtin:')) ed.addBehaviour(obj, createBehaviour(v.slice(8)));
       else if (v.startsWith('script:')) {
         const asset = scripts.find((sc) => `script:${sc.id}` === v);
         if (asset) ed.addBehaviour(obj, asset.create());
@@ -460,6 +473,82 @@ export class InspectorPanel {
     s.body.append(size.row, font.row, bold.row, color.row, align.row, vAlign.row, lineHeight.row, maxWidth.row, outline.row, outlineColor.row, this.hint2D(t));
     this.add(size.binding, font.binding, bold.binding, color.bindings, align.binding, vAlign.binding, lineHeight.binding, maxWidth.binding, outline.binding, outlineColor.bindings);
     return s.root;
+  }
+
+  private buildAudioSource(obj: GameObject, src: AudioSource): HTMLElement {
+    const ed = this.editor;
+    const s = section('Audio Source', button('✕', () => ed.setAudioSource(obj, false), 'btn btn-small'));
+    const presets = Object.keys(SFX_PRESETS) as SfxPresetName[];
+    const clipValue = (): string => {
+      const ref = src.clip?.ref;
+      if (!ref) return src.clip ? 'runtime' : '';
+      if ('asset' in ref) return `asset:${ref.asset}`;
+      const key = ref.sfx.join(',');
+      return `synth:${presets.find((p) => packSfx(SFX_PRESETS[p]).join(',') === key) ?? 'custom'}`;
+    };
+    const current = clipValue();
+    const options: { value: string; label: string }[] = [
+      { value: '', label: 'None' },
+      ...presets.map((p) => ({ value: `synth:${p}`, label: `Synth: ${p}` })),
+      ...ed.project.audioAssets().map((a) => ({ value: `asset:${a.id}`, label: a.name })),
+    ];
+    if (current === 'synth:custom') options.push({ value: current, label: 'Synth: varied' });
+    if (current === 'runtime') options.push({ value: current, label: `${src.clip!.name} (not saved)` });
+    const clipSelect = el('select', { class: 'audio-clip', 'aria-label': 'Clip' }, options.map((o) => el('option', { value: o.value, text: o.label })));
+    clipSelect.value = current;
+    clipSelect.addEventListener('change', () => {
+      const v = clipSelect.value;
+      if (v === '') src.clip = null;
+      else if (v.startsWith('synth:') && v.slice(6) in SFX_PRESETS) src.clip = AudioClip.synth(SFX_PRESETS[v.slice(6) as SfxPresetName], v.slice(6));
+      else if (v.startsWith('asset:')) src.clip = ed.project.audioClip(v.slice(6));
+      this.refresh();
+      this.preview(src);
+    });
+    const preview = button('▶', () => this.preview(src), 'btn btn-small audio-preview');
+    preview.title = 'Preview';
+    const controls = [clipSelect, preview];
+    const sfx = src.clip?.sfx;
+    if (sfx) {
+      const vary = button('Vary', () => {
+        src.clip = AudioClip.synth(mutateSfx(sfx, Math.floor(Math.random() * 1e6) + 1), src.clip!.name);
+        this.refresh();
+        this.preview(src);
+      }, 'btn btn-small audio-vary');
+      vary.title = 'A random variation of this sound';
+      controls.push(vary);
+    }
+    const clipRow = el('div', { class: 'row' }, [el('label', { class: 'row-label', text: 'Clip' }), el('div', { class: 'row-controls' }, controls)]);
+    const volume = sliderRow('Volume', () => src.volume, (v) => (src.volume = v), 0, 2, 0.01);
+    const pitch = sliderRow('Pitch', () => src.pitch, (v) => (src.pitch = v), 0.25, 4, 0.01);
+    const loop = checkboxRow('Loop', () => src.loop, (v) => (src.loop = v));
+    const onStart = checkboxRow('Play on start', () => src.playOnStart, (v) => (src.playOnStart = v));
+    const spatial = checkboxRow('Spatial', () => src.spatial, (v) => {
+      src.spatial = v;
+      this.refresh();
+    });
+    s.body.append(clipRow, volume.row, pitch.row, loop.row, onStart.row, spatial.row);
+    this.add(volume.binding, pitch.binding, loop.binding, onStart.binding, spatial.binding);
+    if (src.spatial) {
+      const min = numberRow('Min distance', () => src.minDistance, (v) => (src.minDistance = Math.min(v, src.maxDistance)), { step: 0.5, min: 0.01, max: 10000 });
+      const max = numberRow('Max distance', () => src.maxDistance, (v) => (src.maxDistance = Math.max(v, src.minDistance)), { step: 1, min: 0.02, max: 10000 });
+      s.body.append(min.row, max.row);
+      this.add(min.binding, max.binding);
+    }
+    const length = src.clip ? `${src.clip.duration.toFixed(2)} s. ` : '';
+    s.body.append(el('p', {
+      class: 'hint',
+      text: `${length}Sounds play in Play mode; scripts call play() or playOneShot(). ` +
+        (src.spatial ? 'Spatial: heard from the object, fading out at the max distance.' : 'Not spatial: the same volume everywhere.'),
+    }));
+    return s.root;
+  }
+
+  /** Plays the source's clip with its volume and pitch, as a 2D sound (the editor isn't playing the scene). */
+  private preview(src: AudioSource): void {
+    if (!src.clip) return;
+    audio.resume();
+    this.previewVoice?.stop();
+    this.previewVoice = audio.play(src.clip, { volume: src.volume, pitch: src.pitch });
   }
 
   private buildRigidBody(obj: GameObject): HTMLElement {

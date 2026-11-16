@@ -3,6 +3,7 @@ import {
   GameObject,
   Light,
   Material,
+  SFX_PRESETS,
   Shape2D,
   createCube,
   createCylinder,
@@ -12,13 +13,13 @@ import {
   type Scene,
   type Vec3,
 } from '../engine';
-import { SHARED_SCRIPTS, addScripts, glow, group, hudText, lightObject, meshObject, neon, seeded, shapeObject, type ScriptList } from './shared';
+import { SHARED_SCRIPTS, addScripts, glow, group, hudText, lightObject, meshObject, neon, seeded, shapeObject, soundObject, type ScriptList } from './shared';
 
 // "Starfall": a shooter in an asteroid field above a ringed planet. Bolts, rocks, sparks and the lights of the
 // explosions are all pooled objects the script hands out; the starfield and the nebula are world-space 2D laid flat
 // under the action, scrolling in two layers.
 
-const STARFALL_SCRIPT = `import { Light, Script, Shape2D, Text2D, clamp, input, quat, type GameObject, type Vec3 } from 'messier';
+const STARFALL_SCRIPT = `import { AudioSource, Light, Script, Shape2D, Text2D, audio, clamp, input, quat, type GameObject, type Vec3 } from 'messier';
 
 /** Flies the ship, fires bolts, sends asteroids down the field and blows them up. */
 export default class Starfall extends Script {
@@ -55,6 +56,10 @@ export default class Starfall extends Script {
   private untilRock = 0;
   private safe = 0;
   private side = 1;
+  private gunSound: AudioSource | null = null;
+  private hitSound: AudioSource | null = null;
+  private boomSound: AudioSource | null = null;
+  private damageSound: AudioSource | null = null;
 
   start(): void {
     const scene = this.scene;
@@ -80,6 +85,11 @@ export default class Starfall extends Script {
     }
     this.scoreText = scene.findByName('Score')?.getComponent(Text2D) ?? null;
     this.message = scene.findByName('Message')?.getComponent(Text2D) ?? null;
+    const sound = (name: string) => scene.findByName(name)?.getComponent(AudioSource) ?? null;
+    this.gunSound = sound('Gun Sound');
+    this.hitSound = sound('Hit Sound');
+    this.boomSound = sound('Boom Sound');
+    this.damageSound = sound('Damage Sound');
     this.restart();
   }
 
@@ -145,6 +155,7 @@ export default class Starfall extends Script {
         bolt.transform.position = [this.x + this.side * 0.55, 0, this.z - 0.9];
         bolt.setActive(true);
         this.cooldown = this.fireInterval;
+        this.gunSound?.playOneShot();
       }
     }
   }
@@ -166,6 +177,7 @@ export default class Starfall extends Script {
         bolt.setActive(false);
         this.burst([p[0], 0, q[2] + rock.radius], 3, 0.25);
         if (--rock.hp <= 0) this.shatter(rock);
+        else this.playAt(this.hitSound, [p[0], 0, q[2]], 0.5, 1);
         break;
       }
     }
@@ -216,6 +228,8 @@ export default class Starfall extends Script {
     rock.object.setActive(false);
     this.points += Math.round(rock.radius * 10) * 10;
     this.burst([p[0], 0, p[2]], Math.round(6 + rock.radius * 7), rock.radius);
+    // Big rocks boom lower and louder.
+    this.playAt(this.boomSound, [p[0], 0, p[2]], 0.5 + rock.radius * 0.3, 1.5 - rock.radius * 0.35);
     const flash = this.flashes.find((f) => f.life <= 0) ?? this.flashes[0];
     if (flash) {
       flash.life = 1;
@@ -259,7 +273,13 @@ export default class Starfall extends Script {
     }
   }
 
+  /** Plays a source's clip once from a point (the source itself stays put). */
+  private playAt(source: AudioSource | null, at: Vec3, volume: number, pitch: number): void {
+    if (source?.clip) audio.play(source.clip, { position: at, volume: source.volume * volume, pitch, minDistance: source.minDistance, maxDistance: source.maxDistance });
+  }
+
   private hit(): void {
+    this.damageSound?.playOneShot();
     this.left--;
     this.safe = 2;
     this.burst([this.x, 0, this.z], 24, 1.5);
@@ -381,6 +401,8 @@ function buildShip(): GameObject {
   flare.transform.scale = [0.8, 1.6, 1];
   hull.add(flare);
   ship.add(hull);
+  // On the ship, so the guns pan left and right with it.
+  ship.add(soundObject('Gun Sound', 'laser', { spatial: true, minDistance: 14, maxDistance: 90, volume: 0.7 }));
   ship.add(lightObject('Engine Light', new Light('point', [0.4, 0.75, 1], 10), [0, 0.4, 1.8], 7));
   return ship;
 }
@@ -464,6 +486,13 @@ export function buildStarfall(scene: Scene): void {
     pips.add(shapeObject(`Life ${i + 1}`, new Shape2D({ space: 'screen', anchor: 'top-right', shape: 'polygon', sides: 3, width: 28, height: 30, fillColor: [0.6, 1, 0.9, 1], strokeWidth: 2, strokeColor: [0.05, 0.2, 0.25, 1] }), [-34 - i * 38, -36, 0]));
   }
   scene.add(pips);
+  // Heard from the field: the camera hangs about 15 m above it.
+  const field = { spatial: true, minDistance: 14, maxDistance: 90 };
+  scene.add(group('Sounds', [
+    soundObject('Hit Sound', 'hit', field),
+    soundObject('Boom Sound', 'explosion', field),
+    soundObject('Damage Sound', { ...SFX_PRESETS.explosion, frequency: 900, decay: 1.2, volume: 1 }),
+  ]));
   scene.add(hudText('Message', 'center', 0, 40, { text: '', fontSize: 34, bold: true, color: [1, 0.85, 0.55, 1], align: 'center', outlineWidth: 4, outlineColor: [0.25, 0.05, 0, 0.9] }));
   scene.add(hudText('Controls', 'bottom', 0, 12, { text: 'WASD / arrows: fly   Space: fire   R: restart   Backspace: arcade', fontSize: 14, color: [1, 1, 1, 0.7], verticalAlign: 'bottom' }));
 

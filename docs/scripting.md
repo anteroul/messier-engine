@@ -154,6 +154,40 @@ this.scene.findByName('Player');
 this.scene.activeCamera();
 ```
 
+## Sound
+
+An `AudioSource` component plays a clip from its object. Clips are imported sound files (pick one in the inspector)
+or sound effects from the built-in synthesizer, which needs no files. Sounds play only while the scene runs, and stop
+when their source is disabled or destroyed or another scene loads.
+
+```ts
+import { AudioClip, AudioSource, SFX_PRESETS, Script, audio, input } from 'messier';
+
+export default class Blaster extends Script {
+  private source: AudioSource | null = null;
+  private boom = AudioClip.synth({ ...SFX_PRESETS.explosion, frequency: 900 }); // cached: same parameters, same clip
+
+  start(): void {
+    this.source = this.object.getComponent(AudioSource); // the clip set in the inspector
+  }
+
+  update(): void {
+    if (input.pressed('Space')) this.source?.playOneShot(); // overlapping one-shots
+    if (input.pressed('KeyB')) audio.play(this.boom, { position: this.transform.worldPosition, volume: 0.8 });
+  }
+}
+```
+
+- `source.play()` / `stop()` / `isPlaying` for its own sound (music, an engine loop with `loop` on);
+  `source.playOneShot(clip?, volumeScale?)` for overlapping effects. `volume` and `pitch` can change while it plays.
+- `audio.play(clip, { volume, pitch, loop, position, minDistance, maxDistance })` plays without a source and returns
+  an `AudioVoice` (`stop()`, `playing`). Use it for a sound that must outlive its object (a pickup that destroys
+  itself) or to play a source's clip somewhere else. Pass `position` for a positional sound.
+- Presets: `coin`, `laser`, `explosion`, `hit`, `jump`, `powerup`, `blip`, `select`, `thump`, `hum` (a seamless loop).
+  `SfxParams` has the knobs (wave, frequency, slide, envelope, vibrato, arpeggio, low-pass…); `mutateSfx(params, seed)`
+  makes variations.
+- The listener is the camera the picture is rendered from. `audio.muted` and `audio.masterVolume` mix everything.
+
 ## Switching scenes
 
 A game's scenes are the ones ticked in **☰ → Build…**, in that order. `sceneManager` loads them by name or build

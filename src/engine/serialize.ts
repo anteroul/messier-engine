@@ -7,13 +7,16 @@ import { BEHAVIOURS, createBehaviour, type Behaviour } from './behaviours';
 import { Script } from './scripting';
 import { ANCHORS_2D, SHAPE2D_FIELDS, SHAPE_KINDS_2D, Shape2D, SPACES_2D, Text2D, TEXT2D_FIELDS } from './shapes2d';
 import { TEXT_ALIGNS, TEXT_BASELINES } from './font';
+import { AUDIO_SOURCE_FIELDS, AudioSource } from './audioSource';
+import type { AudioClip, ClipRef } from './audioClip';
 import type { Mesh, ResourceRef } from './mesh';
 import { quat, type Quat, type Vec3 } from './math';
 import { assignKnown, isObject, pickData, type Json } from './data';
 
 // Scene <-> plain JSON data. Meshes and textures are saved as ResourceRefs
-// (primitive generator args, or an index into an imported asset), never as
-// vertex or pixel data. Loading ignores unknown keys and keeps defaults for
+// (primitive generator args, or an index into an imported asset), and sound
+// clips as ClipRefs (synthesizer parameters, or an imported sound file), never
+// as vertex, pixel or sample data. Loading ignores unknown keys and keeps defaults for
 // missing or mistyped values, so older and newer files load as far as they can.
 
 export const SCENE_FORMAT = 'messier-scene';
@@ -42,6 +45,8 @@ export interface ObjectData {
   /** Shape2D fields plus `points` (flat x, y list). */
   shape2d?: Json;
   text2d?: Json;
+  /** AudioSource fields plus `clip` (a ClipRef). */
+  audioSource?: Json;
   behaviours?: BehaviourData[];
   children?: ObjectData[];
 }
@@ -58,6 +63,14 @@ export interface SceneData {
 export interface SceneResources {
   mesh(ref: ResourceRef): Mesh | null;
   texture(ref: ResourceRef): Texture | null;
+  /** Sound clips; without it, sources load without their clip (with a warning). */
+  clip?(ref: ClipRef): AudioClip | null;
+}
+
+export function isClipRef(v: unknown): v is ClipRef {
+  if (!isObject(v)) return false;
+  if (Array.isArray(v.sfx)) return v.sfx.every((x) => typeof x === 'number' && Number.isFinite(x));
+  return typeof v.asset === 'string' && Number.isInteger(v.index) && (v.index as number) >= 0;
 }
 
 export function isResourceRef(v: unknown): v is ResourceRef {
@@ -132,6 +145,13 @@ function objectToData(o: GameObject, warnings: string[]): ObjectData {
   }
   const text = o.getComponent(Text2D);
   if (text) d.text2d = pickData(text, TEXT2D_FIELDS);
+  const source = o.getComponent(AudioSource);
+  if (source) {
+    d.audioSource = pickData(source, AUDIO_SOURCE_FIELDS);
+    const ref = source.clip?.ref;
+    if (ref) d.audioSource.clip = 'sfx' in ref ? { sfx: [...ref.sfx] } : { asset: ref.asset, index: ref.index };
+    else if (source.clip) warnings.push(`${o.name}: sound "${source.clip.name}" was created at runtime and can't be saved`);
+  }
   if (o.behaviours.length) d.behaviours = o.behaviours.map(behaviourToData);
   if (o.children.length) d.children = o.children.map((c) => objectToData(c, warnings));
   return d;
@@ -221,6 +241,14 @@ function dataToObject(d: Json, scene: Scene, res: SceneResources, warnings: stri
     fix2D(t);
     o.attachComponent(t);
   }
+  if (isObject(d.audioSource)) {
+    const src = assignKnown(new AudioSource(), d.audioSource, AUDIO_SOURCE_FIELDS);
+    if (d.audioSource.clip !== undefined) {
+      src.clip = isClipRef(d.audioSource.clip) ? (res.clip?.(d.audioSource.clip) ?? null) : null;
+      if (!src.clip) warnings.push(`${o.name}: sound not found`);
+    }
+    o.attachComponent(src);
+  }
   if (Array.isArray(d.behaviours)) {
     for (const bd of d.behaviours) {
       const b = isObject(bd) ? dataToBehaviour(bd, scene, o.name, warnings) : null;
@@ -264,7 +292,7 @@ function dataToBehaviour(d: Json, scene: Scene, owner: string, warnings: string[
   return b;
 }
 
-/** Asset ids referenced by meshes and textures in `objects` (recursively). */
+/** Asset ids referenced by meshes, textures and sound clips in `objects` (recursively). */
 export function collectAssetIds(objects: unknown, out = new Set<string>()): Set<string> {
   if (!Array.isArray(objects)) return out;
   for (const d of objects) {
@@ -272,6 +300,8 @@ export function collectAssetIds(objects: unknown, out = new Set<string>()): Set<
     if (isResourceRef(d.mesh) && 'asset' in d.mesh) out.add(d.mesh.asset);
     const tex = isObject(d.material) ? d.material.texture : undefined;
     if (isResourceRef(tex) && 'asset' in tex) out.add(tex.asset);
+    const clip = isObject(d.audioSource) ? d.audioSource.clip : undefined;
+    if (isClipRef(clip) && 'asset' in clip) out.add(clip.asset);
     collectAssetIds(d.children, out);
   }
   return out;

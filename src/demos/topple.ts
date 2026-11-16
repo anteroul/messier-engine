@@ -13,13 +13,13 @@ import {
   type Scene,
   type Vec3,
 } from '../engine';
-import { SHARED_SCRIPTS, addScripts, glow, group, hudText, lightObject, meshObject, neon, seeded, shapeObject, withBody, type ScriptList } from './shared';
+import { SHARED_SCRIPTS, addScripts, glow, group, hudText, lightObject, meshObject, neon, seeded, shapeObject, soundObject, withBody, type ScriptList } from './shared';
 
 // "Topple": a cannon, a terrace over the sea and stacks of polished blocks with a golden idol on each. It's the
 // physics engine's showcase (stacking, friction, impacts), dressed in the materials that look best in sunlight:
 // gold, copper, chrome, lacquer and marble under a shadow-casting sun.
 
-const TOPPLE_SCRIPT = `import { Script, Shape2D, Text2D, clamp, input, vec3, type GameObject, type Quat, type Vec3 } from 'messier';
+const TOPPLE_SCRIPT = `import { AudioSource, Script, Shape2D, Text2D, audio, clamp, input, vec3, type GameObject, type Quat, type Vec3 } from 'messier';
 
 /** Aims and fires the cannon, counts what has gone over the edge, and puts everything back on R. */
 export default class Topple extends Script {
@@ -56,6 +56,10 @@ export default class Topple extends Script {
   private sinceShot = 0;
   private recoil = 0;
   private over = false;
+  private cannonSound: AudioSource | null = null;
+  private fallSound: AudioSource | null = null;
+  private idolSound: AudioSource | null = null;
+  private winSound: AudioSource | null = null;
 
   start(): void {
     const scene = this.scene;
@@ -72,6 +76,11 @@ export default class Topple extends Script {
     this.powerBar = scene.findByName('Power Fill');
     this.status = scene.findByName('Status')?.getComponent(Text2D) ?? null;
     this.message = scene.findByName('Message')?.getComponent(Text2D) ?? null;
+    const sound = (name: string) => scene.findByName(name)?.getComponent(AudioSource) ?? null;
+    this.cannonSound = sound('Cannon Sound');
+    this.fallSound = sound('Fall Sound');
+    this.idolSound = sound('Idol Sound');
+    this.winSound = sound('Win Sound');
     for (const pip of scene.findByName('Shots')?.children ?? []) {
       const shape = pip.getComponent(Shape2D);
       if (shape) this.pips.push(shape);
@@ -158,6 +167,11 @@ export default class Topple extends Script {
     ball.rigidBody.resetState();
     ball.rigidBody.velocity = aim.velocity;
     ball.rigidBody.angularVelocity = [-6, 0, 0];
+    // A full charge booms deeper.
+    if (this.cannonSound) {
+      this.cannonSound.pitch = 1.3 - 0.5 * this.charge;
+      this.cannonSound.playOneShot();
+    }
     this.charge = 0;
     this.left--;
     this.sinceShot = 0;
@@ -185,6 +199,9 @@ export default class Topple extends Script {
         piece.down = changed = true;
         this.toppled++;
         if (piece.idol) this.idolsDown++;
+        // Heard from where it went over (not through its source: one sound for every block).
+        const clip = piece.idol ? this.idolSound?.clip : this.fallSound?.clip;
+        if (clip) audio.play(clip, { position: piece.object.transform.worldPosition, volume: piece.idol ? 0.9 : 0.6, minDistance: 6, maxDistance: 70 });
       }
       // Far below, out of sight under the water.
       if (piece.object.activeSelf && y < -14) piece.object.setActive(false);
@@ -194,7 +211,10 @@ export default class Topple extends Script {
     }
     if (changed) this.showStatus();
     if (this.over) return;
-    if (this.idols > 0 && this.idolsDown >= this.idols) this.finish('TERRACE CLEARED\\n' + this.left + ' shots to spare');
+    if (this.idols > 0 && this.idolsDown >= this.idols) {
+      this.finish('TERRACE CLEARED\\n' + this.left + ' shots to spare');
+      this.winSound?.playOneShot();
+    }
     else if (this.left === 0 && this.sinceShot > 7) this.finish('OUT OF SHOT\\n' + this.idolsDown + ' of ' + this.idols + ' idols down');
   }
 
@@ -380,6 +400,12 @@ export function buildTopple(scene: Scene): void {
   fill.attachComponent(new Shape2D({ space: 'screen', anchor: 'bottom', shape: 'path', points: [0, -6, 260, -6, 260, 6, 0, 6], fillColor: [1, 0.72, 0.2, 1], order: 1 }));
   power.add(fill);
   scene.add(power);
+  scene.add(group('Sounds', [
+    soundObject('Cannon Sound', 'thump'),
+    soundObject('Fall Sound', 'hit'),
+    soundObject('Idol Sound', 'coin'),
+    soundObject('Win Sound', 'powerup'),
+  ]));
   scene.add(hudText('Message', 'center', 0, 60, { text: '', fontSize: 34, bold: true, color: [1, 0.95, 0.75, 1], align: 'center', outlineWidth: 4, outlineColor: [0.1, 0.15, 0.3, 0.9] }));
   scene.add(hudText('Controls', 'bottom', 0, 12, { text: 'WASD / arrows: aim   hold Space: charge, release: fire   R: reset   Backspace: arcade', fontSize: 14, color: [1, 1, 1, 0.85], verticalAlign: 'bottom' }));
 

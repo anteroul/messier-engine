@@ -66,6 +66,17 @@ function project(): Project {
   check('the original is untouched', p.scenes.length === 3 && p.assets.length === 2);
 }
 
+// ---- a sound file a scene plays ships with the build
+{
+  const p = project();
+  const withSound = sceneData('Speaker');
+  withSound.objects[0].audioSource = { volume: 1, clip: { asset: 'song', index: 0 } };
+  p.scenes[0].data = withSound;
+  p.assets = [{ id: 'song', name: 'song', files: [{ name: 'song.ogg', bytes: new Uint8Array([4, 5]) }] }];
+  eq('audio assets are included', p.subset([p.scenes[0]]).assets.map((a) => a.id), ['song']);
+  eq('...and only when used', p.subset([p.scenes[1]]).assets.map((a) => a.id), []);
+}
+
 // ---- sceneManager: load by name or index, last load wins, replaced scenes are disposed
 await (async () => {
   const p = project();

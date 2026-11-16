@@ -1,4 +1,8 @@
+import { FakeAudioContext } from './fakeAudio';
 import { check, eq } from './harness';
+import { audio } from '@root/src/engine/audio.ts';
+import { AudioSource, updateAudioSources } from '@root/src/engine/audioSource.ts';
+import { Camera } from '@root/src/engine/camera.ts';
 import { Scene } from '@root/src/engine/scene.ts';
 import { Script } from '@root/src/engine/scripting.ts';
 import { Text2D } from '@root/src/engine/shapes2d.ts';
@@ -11,6 +15,16 @@ import { DEMO_GAMES } from '@root/src/demos/index.ts';
 
 // Plays the showcase games headlessly through the same phases as Engine.step. Their rules are script source strings,
 // which tsc never sees, so this is what catches a typo in them.
+
+audio.resume();
+const sounds = FakeAudioContext.last!;
+const listener = new Camera();
+
+/** How many times the clip of the scene's object `name` started playing so far. */
+function played(scene: Scene, name: string): number {
+  const buffer = scene.findByName(name)?.getComponent(AudioSource)?.clip?._buffer;
+  return buffer ? sounds.sources.filter((s) => s.started && s.buffer === buffer).length : 0;
+}
 
 let seed = 1;
 Math.random = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
@@ -33,6 +47,8 @@ function frame(scene: Scene, dt = 1 / 60): void {
   scene.lateUpdate(Time.deltaTime);
   input.endFrame();
   scene.updateMatrices();
+  updateAudioSources(scene);
+  audio.update(scene, listener);
   scene.processDestroyed();
 }
 
@@ -88,6 +104,8 @@ function load(name: string): { scene: Scene; errors: () => string[]; script: <T>
   // Left alone, the ship runs into barriers until its shields are gone.
   run(scene, 90);
   eq('Neon Run: crashing uses up the shields', game.shieldsLeft, 0);
+  check('Neon Run: the engine drones', scene.findByName('Engine Sound')!.getComponent(AudioSource)!.isPlaying);
+  eq('Neon Run: every crash is heard', played(scene, 'Crash Sound'), 3);
   check('Neon Run: the wreck is hidden', !ship.find('Hull')!.activeSelf);
   const final = game.score;
   run(scene, 1);
@@ -127,6 +145,8 @@ function load(name: string): { scene: Scene; errors: () => string[]; script: <T>
   run(scene, 5);
   check('Topple: the ball scatters the blocks', drift() > 1, `moved ${drift().toFixed(2)}`);
   check('Topple: blocks fall off the terrace', game.fallen > 0, `${game.fallen}`);
+  eq('Topple: the cannon booms', played(scene, 'Cannon Sound'), 1);
+  check('Topple: falling blocks are heard', played(scene, 'Fall Sound') + played(scene, 'Idol Sound') > 0);
   // Use up the shots on both sides.
   for (const key of ['KeyA', 'KeyD', 'KeyD', 'KeyA', 'KeyA', 'KeyD']) {
     tap(scene, key, 0.35);
@@ -165,6 +185,9 @@ function load(name: string): { scene: Scene; errors: () => string[]; script: <T>
   for (let t = 0; t < 300 && game.livesLeft > 0; t++) run(scene, 1);
   check('Starfall: shooting asteroids scores', game.score > 0, `${game.score}`);
   eq('Starfall: collisions cost lives', game.livesLeft, 0);
+  check('Starfall: the guns are heard', played(scene, 'Gun Sound') >= 10, `${played(scene, 'Gun Sound')}`);
+  check('Starfall: so are the explosions', played(scene, 'Boom Sound') > 0);
+  eq('Starfall: and every hit taken', played(scene, 'Damage Sound'), 3);
   check('Starfall: the wreck is hidden', !ship.find('Hull')!.activeSelf);
   run(scene, 2);
   check('Starfall: sparks burn out', active('Sparks').length === 0 && active('Flashes').length === 0);
@@ -188,6 +211,7 @@ function load(name: string): { scene: Scene; errors: () => string[]; script: <T>
   tap(scene, 'KeyA');
   tap(scene, 'ArrowLeft');
   eq('Arcade: the choice wraps around', menu.selectedName, 'Gem Rush');
+  eq('Arcade: every move clicks', played(scene, 'Select Sound'), 5);
   run(scene, 1.5);
   const spots = stands.map((s) => s.find('Spot')!.light!.intensity);
   check('Arcade: the chosen stand is lit', spots[3] > spots[0] * 4, spots.join(','));
