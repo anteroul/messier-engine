@@ -4,6 +4,7 @@ import {
   SFX_PRESETS,
   audio,
   type Texture,
+  type TextureSlot,
   CameraComponent,
   DEG2RAD,
   draw2d,
@@ -816,17 +817,20 @@ export class Editor {
     if (this.placeAsset(asset, at)) this.focusSelected();
   }
 
-  /** Gives an object's material a texture. Undoable. */
-  setTexture(obj: GameObject, texture: Texture | null): void {
+  /** Gives an object's material a texture (its base color's, or another slot's). Undoable. */
+  setTexture(obj: GameObject, texture: Texture | null, slot: TextureSlot = 'baseColorTexture'): void {
     const mat = obj.material;
     if (!mat) return;
-    const before = mat.baseColorTexture;
-    const apply = (t: Texture | null) => {
-      mat.baseColorTexture = t;
+    const before = { texture: mat[slot], emissive: [...mat.emissive] as Vec3 };
+    // An emissive map multiplies the emissive color, so a black one would hide it.
+    const emissive: Vec3 = slot === 'emissiveTexture' && texture && before.emissive.every((c) => c === 0) ? [1, 1, 1] : before.emissive;
+    const apply = (t: Texture | null, e: Vec3) => {
+      mat[slot] = t;
+      mat.emissive = [...e];
       if (this.selected === obj) this.inspector.refresh();
     };
-    apply(texture);
-    this.history.push({ label: `Texture ${obj.name}`, undo: () => apply(before), redo: () => apply(texture) });
+    apply(texture, emissive);
+    this.history.push({ label: `Texture ${obj.name}`, undo: () => apply(before.texture, before.emissive), redo: () => apply(texture, emissive) });
     this.notify(`${texture?.name ?? 'No texture'} on ${obj.name}`, 'success');
   }
 

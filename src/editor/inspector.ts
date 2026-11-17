@@ -21,6 +21,7 @@ import {
   type Space2D,
   type TextAlign,
   type TextBaseline,
+  type TextureSlot,
   DEG2RAD,
   PROJECTIONS,
   RAD2DEG,
@@ -266,35 +267,40 @@ export class InspectorPanel {
       const unlit = checkboxRow('Unlit', () => mat.unlit, (v) => (mat.unlit = v));
       const doubleSided = checkboxRow('Double sided', () => mat.doubleSided, (v) => (mat.doubleSided = v));
 
-      const texLabel = el('span', { class: 'tex-name', text: mat.baseColorTexture?.name ?? 'none' });
-      const texInput = el('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp', hidden: true });
-      texInput.addEventListener('change', async () => {
-        const file = texInput.files?.[0];
-        if (!file) return;
-        texInput.value = '';
-        // As a project asset, so the scene saves with it.
-        const texture = await ed.importImage(file);
-        if (texture) {
-          mat.baseColorTexture = texture;
-          texLabel.textContent = texture.name;
-        }
-      });
-      const texRow = el('div', { class: 'row' }, [
-        el('label', { class: 'row-label', text: 'Texture' }),
-        el('div', { class: 'row-controls' }, [
-          texLabel,
-          button('Load…', () => texInput.click(), 'btn btn-small'),
-          button('✕', () => {
-            mat.baseColorTexture = null;
-            texLabel.textContent = 'none';
-          }, 'btn btn-small'),
-          texInput,
-        ]),
-      ]);
-      s.body.append(
-        el('p', { class: 'hint', text: mat.name }),
-        color.row, metallic.row, roughness.row, emissive.row, emissiveStrength.row, texRow, unlit.row, doubleSided.row,
-      );
+      // Each texture slot: Load… imports an image as a project asset (so the scene saves with it); setTexture rebuilds the panel.
+      const texRow = (label: string, slot: TextureSlot) => {
+        const input = el('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp', hidden: true });
+        input.addEventListener('change', async () => {
+          const file = input.files?.[0];
+          if (!file) return;
+          input.value = '';
+          const texture = await ed.importImage(file);
+          if (texture) ed.setTexture(obj, texture, slot);
+        });
+        return el('div', { class: 'row' }, [
+          el('label', { class: 'row-label', text: label }),
+          el('div', { class: 'row-controls' }, [
+            el('span', { class: 'tex-name', text: mat[slot]?.name ?? 'none' }),
+            button('Load…', () => input.click(), 'btn btn-small'),
+            button('✕', () => mat[slot] && ed.setTexture(obj, null, slot), 'btn btn-small'),
+            input,
+          ]),
+        ]);
+      };
+      s.body.append(el('p', { class: 'hint', text: mat.name }), color.row, texRow('Texture', 'baseColorTexture'), metallic.row, roughness.row);
+      s.body.append(texRow('Metal/rough', 'metallicRoughnessTexture'), texRow('Normal map', 'normalTexture'));
+      if (mat.normalTexture) {
+        const normalScale = sliderRow('Normal ×', () => mat.normalScale, (v) => (mat.normalScale = v), 0, 2, 0.01);
+        s.body.append(normalScale.row);
+        this.add(normalScale.binding);
+      }
+      s.body.append(texRow('Occlusion', 'occlusionTexture'));
+      if (mat.occlusionTexture) {
+        const occlusionStrength = sliderRow('Occlusion ×', () => mat.occlusionStrength, (v) => (mat.occlusionStrength = v), 0, 1, 0.01);
+        s.body.append(occlusionStrength.row);
+        this.add(occlusionStrength.binding);
+      }
+      s.body.append(emissive.row, emissiveStrength.row, texRow('Emissive map', 'emissiveTexture'), unlit.row, doubleSided.row);
       this.add(color.binding, metallic.binding, roughness.binding, emissive.binding, emissiveStrength.binding, unlit.binding, doubleSided.binding);
       out.push(s.root);
     }

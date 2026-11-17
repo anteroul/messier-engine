@@ -8,7 +8,8 @@ import { mimeFromName, type ResourceResolver } from './resources';
 
 // glTF 2.0 loader (.gltf + .bin + images, or binary .glb).
 // Supported: node hierarchy, TRS/matrix transforms, triangle primitives,
-// metallic-roughness materials with base color textures, alpha mask,
+// metallic-roughness materials with base color, normal, metallic-roughness,
+// occlusion and emissive textures (TEXCOORD_0 only), alpha mask,
 // double-sided, cameras, KHR_lights_punctual, KHR_materials_emissive_strength.
 // Not supported: skins, morph targets, animations, Draco/meshopt compression.
 
@@ -165,7 +166,15 @@ export async function loadGLTF(data: ArrayBuffer, name: string, resolve: Resourc
       if (pbr.baseColorFactor) mat.baseColor = [...pbr.baseColorFactor] as Material['baseColor'];
       mat.metallic = pbr.metallicFactor ?? 1;
       mat.roughness = pbr.roughnessFactor ?? 1;
-      mat.baseColorTexture = await loadTexture(pbr.baseColorTexture);
+      [mat.baseColorTexture, mat.metallicRoughnessTexture, mat.normalTexture, mat.occlusionTexture, mat.emissiveTexture] = await Promise.all([
+        loadTexture(pbr.baseColorTexture),
+        loadTexture(pbr.metallicRoughnessTexture),
+        loadTexture(m.normalTexture),
+        loadTexture(m.occlusionTexture),
+        loadTexture(m.emissiveTexture),
+      ]);
+      mat.normalScale = m.normalTexture?.scale ?? 1;
+      mat.occlusionStrength = m.occlusionTexture?.strength ?? 1;
       if (m.emissiveFactor) mat.emissive = [...m.emissiveFactor] as Material['emissive'];
       mat.emissiveStrength = m.extensions?.KHR_materials_emissive_strength?.emissiveStrength ?? 1;
       if (m.alphaMode === 'MASK') mat.alphaCutoff = m.alphaCutoff ?? 0.5;

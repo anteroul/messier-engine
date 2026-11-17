@@ -7,6 +7,7 @@ import {
   Project,
   ProjectResources,
   SCENE_EXTENSION,
+  TEXTURE_SLOTS,
   Scene,
   applySceneData,
   assetKind,
@@ -386,7 +387,10 @@ export class ProjectManager {
     this.editor.scene.traverse((o) => {
       const uses =
         (o.mesh?.ref && 'asset' in o.mesh.ref && o.mesh.ref.asset === assetId) ||
-        (o.material?.baseColorTexture?.ref && 'asset' in o.material.baseColorTexture.ref && o.material.baseColorTexture.ref.asset === assetId) ||
+        TEXTURE_SLOTS.some((slot) => {
+          const ref = o.material?.[slot]?.ref;
+          return ref && 'asset' in ref && ref.asset === assetId;
+        }) ||
         o.getComponents(AudioSource).some((s) => s.clip?.ref && 'asset' in s.clip.ref && s.clip.ref.asset === assetId);
       if (uses) n++;
     });
@@ -939,8 +943,10 @@ export class ProjectManager {
     const ours = (ref: ResourceRef | ClipRef | null | undefined): ref is { asset: string; index: number } => !!ref && 'asset' in ref && assetIds.has(ref.asset);
     scene.traverse((o) => {
       if (o.mesh && ours(o.mesh.ref)) o.mesh = res.mesh(o.mesh.ref) ?? o.mesh;
-      const tex = o.material?.baseColorTexture;
-      if (o.material && tex && ours(tex.ref)) o.material.baseColorTexture = res.texture(tex.ref) ?? tex;
+      for (const slot of TEXTURE_SLOTS) {
+        const tex = o.material?.[slot];
+        if (o.material && tex && ours(tex.ref)) o.material[slot] = res.texture(tex.ref) ?? tex;
+      }
       for (const s of o.getComponents(AudioSource)) if (s.clip && ours(s.clip.ref)) s.clip = res.clip(s.clip.ref) ?? s.clip;
     });
     const sky = scene.sky.texture;

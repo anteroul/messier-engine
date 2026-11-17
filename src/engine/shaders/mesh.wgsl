@@ -1,12 +1,17 @@
 // Forward PBR shader (metallic-roughness, GGX) with N dynamic lights and a
-// PCF-filtered shadow map for one directional light.
+// PCF-filtered shadow map for one directional light. Material textures follow
+// glTF: base color and emissive are sRGB; normal, metallic-roughness (G, B) and
+// occlusion (R) are linear. Meshes carry no tangents, so normal maps use a
+// tangent frame built per pixel from screen-space derivatives of position and UV.
 
 struct Material {
   baseColor: vec4f,
   // rgb = emissive (linear, pre-multiplied by strength), w = metallic
   emissive: vec4f,
-  // x = roughness, y = unlit flag, z = alpha cutoff
+  // x = roughness, y = unlit flag, z = alpha cutoff, w = has normal map
   params: vec4f,
+  // x = normal scale, y = occlusion strength
+  maps: vec4f,
 };
 
 struct Object {
@@ -21,6 +26,10 @@ struct Object {
 @group(1) @binding(0) var<uniform> material: Material;
 @group(1) @binding(1) var baseColorTex: texture_2d<f32>;
 @group(1) @binding(2) var baseSampler: sampler;
+@group(1) @binding(3) var normalTex: texture_2d<f32>;
+@group(1) @binding(4) var metallicRoughnessTex: texture_2d<f32>;
+@group(1) @binding(5) var occlusionTex: texture_2d<f32>;
+@group(1) @binding(6) var emissiveTex: texture_2d<f32>;
 
 @group(2) @binding(0) var<uniform> object: Object;
 
@@ -87,24 +96,58 @@ fn shadowFactor(worldPos: vec3f, N: vec3f, L: vec3f) -> f32 {
   return sum / 9.0;
 }
 
+// Applies a tangent-space normal `n` to N. dp* and duv* are the screen-space derivatives of the world position and the
+// UV (Schüler's cotangent frame), so mirrored and rotated UV islands work without stored tangents.
+fn perturbNormal(N: vec3f, dp1: vec3f, dp2: vec3f, duv1: vec2f, duv2: vec2f, n: vec3f) -> vec3f {
+  let dp2perp = cross(dp2, N);
+  let dp1perp = cross(N, dp1);
+  // The surface gradients of u and v, times the determinant below (whose sign is restored).
+  let T = dp2perp * duv1.x + dp1perp * duv2.x;
+  let B = dp2perp * duv1.y + dp1perp * duv2.y;
+  let len2 = max(dot(T, T), dot(B, B));
+  if (len2 < 1e-30) {
+    // The UVs don't vary here: there is no tangent frame.
+    return N;
+  }
+  let s = select(-1.0, 1.0, dot(cross(dp1, dp2), N) >= 0.0) * inverseSqrt(len2);
+  // Image rows run down (v grows downwards), so the map's +Y points along -v.
+  return normalize(T * (s * n.x) - B * (s * n.y) + N * n.z);
+}
+
 @fragment
 fn fs_main(in: VSOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4f {
+  // Samples and derivatives need uniform control flow, so they all come before any branch.
   let tex = textureSample(baseColorTex, baseSampler, in.uv);
+  let normalSample = textureSample(normalTex, baseSampler, in.uv).xyz;
+  let mr = textureSample(metallicRoughnessTex, baseSampler, in.uv);
+  let ao = textureSample(occlusionTex, baseSampler, in.uv).r;
+  let emissiveSample = textureSample(emissiveTex, baseSampler, in.uv).rgb;
+  let dp1 = dpdx(in.worldPos);
+  let dp2 = dpdy(in.worldPos);
+  let duv1 = dpdx(in.uv);
+  let duv2 = dpdy(in.uv);
+
   let base = material.baseColor * tex;
   if (material.params.z > 0.0 && base.a < material.params.z) {
     discard;
   }
+  let emissive = material.emissive.rgb * emissiveSample;
   if (material.params.y > 0.5) {
-    return vec4f(toDisplay(base.rgb + material.emissive.rgb), 1.0);
+    return vec4f(toDisplay(base.rgb + emissive), 1.0);
   }
 
   var N = normalize(in.normal);
   if (!frontFacing) {
     N = -N;
   }
+  if (material.params.w > 0.5) {
+    let n = (normalSample * 2.0 - 1.0) * vec3f(material.maps.x, material.maps.x, 1.0);
+    N = perturbNormal(N, dp1, dp2, duv1, duv2, normalize(n));
+  }
   let V = normalize(frame.cameraPos.xyz - in.worldPos);
-  let metallic = clamp(material.emissive.w, 0.0, 1.0);
-  let roughness = clamp(material.params.x, 0.04, 1.0);
+  let metallic = clamp(material.emissive.w * mr.b, 0.0, 1.0);
+  let roughness = clamp(material.params.x * mr.g, 0.04, 1.0);
+  let occlusion = mix(1.0, ao, material.maps.y);
   let F0 = mix(vec3f(0.04), base.rgb, metallic);
   let NdotV = max(dot(N, V), 1e-4);
 
@@ -168,6 +211,6 @@ fn fs_main(in: VSOut, @builtin(front_facing) frontFacing: bool) -> @location(0) 
     let env = mix(sky, vec3f(0.8), roughness * roughness);
     ambientSpecular = frame.ambient.rgb * env * Fa * (1.0 - 0.6 * roughness) * 2.5;
   }
-  let color = Lo + ambientDiffuse + ambientSpecular + material.emissive.rgb;
+  let color = Lo + (ambientDiffuse + ambientSpecular) * occlusion + emissive;
   return vec4f(toDisplay(color), 1.0);
 }

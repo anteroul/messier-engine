@@ -10,6 +10,16 @@ Add a line under **Unreleased** with every user-visible change.
 
 ## [Unreleased]
 
+### Added
+
+- **Material maps:** normal, metallic-roughness, occlusion and emissive textures, with `normalScale` and
+  `occlusionStrength`. glTF models load all of them; OBJ/MTL loads `map_Ke` and normal maps (`norm`, or `map_Bump`
+  as Blender writes it). Normal maps need no tangents: the shader derives them per pixel from the UVs. The inspector
+  has a row for each map, and scenes save them.
+- **Material Lab example project** (`examples/MaterialLab/`, written by `npm run generate:materials`): a gallery that
+  adds the maps one at a time, a wall of hull plating under a sweeping light, and an orbiting sun. Space toggles the
+  maps in Play.
+
 ## [0.5.0] - 2026-11-17
 
 ### Changed

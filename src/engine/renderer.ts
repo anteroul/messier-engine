@@ -8,7 +8,7 @@ import shape2dWGSL from './shaders/shape2d.wgsl?raw';
 import skyWGSL from './shaders/sky.wgsl?raw';
 import { mat4, vec3, type Mat4, type Vec3 } from './math';
 import { VERTEX_STRIDE_BYTES, type Mesh } from './mesh';
-import type { Material, Texture } from './material';
+import { LINEAR_TEXTURE_SLOTS, TEXTURE_SLOTS, type Material, type Texture } from './material';
 import { Light, LIGHT_TYPE_INDEX } from './light';
 import { MeshRenderer } from './meshRenderer';
 import type { Scene } from './scene';
@@ -25,12 +25,14 @@ const SHADOW_MAP_SIZE = 2048;
 const OBJECT_STRIDE = 256;
 const OBJECT_UNIFORM_SIZE = 128;
 const FRAME_UNIFORM_SIZE = 336;
-const MATERIAL_UNIFORM_SIZE = 48;
+const MATERIAL_UNIFORM_SIZE = 64;
 const LIGHT_FLOATS = 16;
 /** Main pass uses reversed-Z: clear to 0, 'greater' passes nearer fragments. */
 const DEPTH_FORMAT: GPUTextureFormat = 'depth32float';
 const SHADOW_FORMAT: GPUTextureFormat = 'depth32float';
 const TEXTURE_FORMAT: GPUTextureFormat = 'rgba8unorm-srgb';
+/** For textures that hold data (normals, metallic-roughness, occlusion), not colors. */
+const LINEAR_TEXTURE_FORMAT: GPUTextureFormat = 'rgba8unorm';
 
 export interface RenderOptions {
   time?: number;
@@ -91,7 +93,7 @@ export class Renderer {
   private readonly gridPipeline: GPURenderPipeline;
   private readonly overlayDepthPipeline: GPURenderPipeline;
   private readonly overlayTopPipeline: GPURenderPipeline;
-  private readonly mipPipeline: GPURenderPipeline;
+  private readonly mipPipelines: Record<'srgb' | 'linear', GPURenderPipeline>;
   private readonly skyPipeline: GPURenderPipeline;
   private readonly world2DPipeline: GPURenderPipeline;
   private readonly screen2DPipeline: GPURenderPipeline;
@@ -178,6 +180,10 @@ export class Renderer {
         { binding: 0, visibility: FS, buffer: { type: 'uniform' } },
         { binding: 1, visibility: FS, texture: { sampleType: 'float' } },
         { binding: 2, visibility: FS, sampler: { type: 'filtering' } },
+        { binding: 3, visibility: FS, texture: { sampleType: 'float' } },
+        { binding: 4, visibility: FS, texture: { sampleType: 'float' } },
+        { binding: 5, visibility: FS, texture: { sampleType: 'float' } },
+        { binding: 6, visibility: FS, texture: { sampleType: 'float' } },
       ],
     });
     this.objectLayout = device.createBindGroupLayout({
@@ -278,13 +284,15 @@ export class Renderer {
     });
 
     const mipModule = device.createShaderModule({ label: 'mipmap', code: mipmapWGSL });
-    this.mipPipeline = device.createRenderPipeline({
-      label: 'mipmap',
-      layout: 'auto',
-      vertex: { module: mipModule, entryPoint: 'vs_main' },
-      fragment: { module: mipModule, entryPoint: 'fs_main', targets: [{ format: TEXTURE_FORMAT }] },
-      primitive: { topology: 'triangle-list' },
-    });
+    const makeMipPipeline = (format: GPUTextureFormat) =>
+      device.createRenderPipeline({
+        label: `mipmap-${format}`,
+        layout: 'auto',
+        vertex: { module: mipModule, entryPoint: 'vs_main' },
+        fragment: { module: mipModule, entryPoint: 'fs_main', targets: [{ format }] },
+        primitive: { topology: 'triangle-list' },
+      });
+    this.mipPipelines = { srgb: makeMipPipeline(TEXTURE_FORMAT), linear: makeMipPipeline(LINEAR_TEXTURE_FORMAT) };
 
     const layout2D = device.createBindGroupLayout({
       label: '2d',
@@ -449,29 +457,32 @@ export class Renderer {
     mesh.gpu = { vertexBuffer, indexBuffer };
   }
 
-  private ensureTexture(tex: Texture): GPUTexture {
-    if (tex.gpu) return tex.gpu;
+  /** Uploads `tex` as sRGB colors, or with `linear` as raw data (each copy filters its mips in its own space). */
+  private ensureTexture(tex: Texture, linear = false): GPUTexture {
+    const existing = linear ? tex.gpuLinear : tex.gpu;
+    if (existing) return existing;
     const { width, height } = tex.source;
     const mipLevelCount = Math.floor(Math.log2(Math.max(width, height))) + 1;
     const gpu = this.device.createTexture({
-      label: tex.name,
+      label: linear ? `${tex.name} (linear)` : tex.name,
       size: [width, height],
-      format: TEXTURE_FORMAT,
+      format: linear ? LINEAR_TEXTURE_FORMAT : TEXTURE_FORMAT,
       mipLevelCount,
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
     });
     this.device.queue.copyExternalImageToTexture({ source: tex.source }, { texture: gpu }, [width, height]);
-    this.generateMips(gpu, mipLevelCount);
-    tex.gpu = gpu;
+    this.generateMips(gpu, mipLevelCount, this.mipPipelines[linear ? 'linear' : 'srgb']);
+    if (linear) tex.gpuLinear = gpu;
+    else tex.gpu = gpu;
     return gpu;
   }
 
-  private generateMips(texture: GPUTexture, levels: number): void {
+  private generateMips(texture: GPUTexture, levels: number, pipeline: GPURenderPipeline): void {
     if (levels <= 1) return;
     const encoder = this.device.createCommandEncoder({ label: 'mipmaps' });
     for (let level = 1; level < levels; level++) {
       const bindGroup = this.device.createBindGroup({
-        layout: this.mipPipeline.getBindGroupLayout(0),
+        layout: pipeline.getBindGroupLayout(0),
         entries: [
           { binding: 0, resource: texture.createView({ baseMipLevel: level - 1, mipLevelCount: 1 }) },
           { binding: 1, resource: this.mipSampler },
@@ -487,7 +498,7 @@ export class Renderer {
           },
         ],
       });
-      pass.setPipeline(this.mipPipeline);
+      pass.setPipeline(pipeline);
       pass.setBindGroup(0, bindGroup);
       pass.draw(3);
       pass.end();
@@ -496,22 +507,27 @@ export class Renderer {
   }
 
   private prepareMaterial(m: Material): GPUBindGroup {
-    const tex = m.baseColorTexture;
-    if (!m.gpu || m.gpu.boundTexture !== tex) {
+    const textures = TEXTURE_SLOTS.map((slot) => m[slot]);
+    if (!m.gpu || textures.some((t, i) => t !== m.gpu!.boundTextures[i])) {
       const uniformBuffer =
         m.gpu?.uniformBuffer ??
         this.device.createBuffer({ label: `${m.name}-material`, size: MATERIAL_UNIFORM_SIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-      const view = tex ? this.ensureTexture(tex).createView() : this.whiteTextureView;
+      // Missing textures are white: a factor of 1 for every slot (the normal map is skipped by a flag instead).
+      const views = TEXTURE_SLOTS.map((slot, i) => {
+        const t = textures[i];
+        return t ? this.ensureTexture(t, LINEAR_TEXTURE_SLOTS.has(slot)).createView() : this.whiteTextureView;
+      });
       const bindGroup = this.device.createBindGroup({
         label: m.name,
         layout: this.materialLayout,
         entries: [
           { binding: 0, resource: { buffer: uniformBuffer } },
-          { binding: 1, resource: view },
+          { binding: 1, resource: views[0] },
           { binding: 2, resource: this.textureSampler },
+          ...views.slice(1).map((resource, i) => ({ binding: 3 + i, resource })),
         ],
       });
-      m.gpu = { uniformBuffer, bindGroup, boundTexture: tex };
+      m.gpu = { uniformBuffer, bindGroup, boundTextures: textures };
     }
     const d = this.materialData;
     d.set(m.baseColor, 0);
@@ -522,7 +538,11 @@ export class Renderer {
     d[8] = m.roughness;
     d[9] = m.unlit ? 1 : 0;
     d[10] = m.alphaCutoff;
-    d[11] = 0;
+    d[11] = m.normalTexture ? 1 : 0;
+    d[12] = m.normalScale;
+    d[13] = m.occlusionStrength;
+    d[14] = 0;
+    d[15] = 0;
     this.device.queue.writeBuffer(m.gpu.uniformBuffer, 0, d);
     return m.gpu.bindGroup;
   }

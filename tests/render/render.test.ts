@@ -596,6 +596,56 @@ scene.traverse((o: any) => {
   check('the scene\'s sky is drawn', renderer.stats.drawCalls > 0);
 }
 
+// ---- material maps: normal, metallic-roughness, occlusion and emissive textures (GPU textures made here, as above).
+// A cube of studs: metal studs on rough plastic, occluded around them, with glowing seams between the tiles. It stays in frame.png.
+{
+  const { Texture, Material, GameObject, createCube } = engine;
+  const device = renderer.device;
+  const N = 64, CELL = 16;
+  const map = (name: string, linear: boolean, texel: (x: number, y: number) => number[]) => {
+    const gpu = device.createTexture({
+      size: [N, N], format: linear ? 'rgba8unorm' : 'rgba8unorm-srgb', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    const px = new Uint8Array(N * N * 4);
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) px.set(texel(x, y).map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255)), (y * N + x) * 4);
+    device.queue.writeTexture({ texture: gpu }, px, { bytesPerRow: N * 4 }, [N, N]);
+    const t = new Texture({ width: N, height: N } as ImageBitmap, name);
+    if (linear) t.gpuLinear = gpu;
+    else t.gpu = gpu;
+    return t;
+  };
+  // Offset from the stud centre in -1…1 (y up, like the normal map's +Y), and distance.
+  const stud = (x: number, y: number) => {
+    const dx = ((x % CELL) + 0.5) / CELL * 2 - 1, dy = -(((y % CELL) + 0.5) / CELL * 2 - 1);
+    return { dx, dy, r: Math.hypot(dx, dy) };
+  };
+  const normalTexture = map('studs-normal', true, (x, y) => {
+    const { dx, dy, r } = stud(x, y);
+    const n = r < 0.75 ? [dx * 0.8, dy * 0.8, Math.sqrt(Math.max(0, 1 - 0.64 * r * r))] : [0, 0, 1];
+    return [n[0] * 0.5 + 0.5, n[1] * 0.5 + 0.5, n[2] * 0.5 + 0.5, 1];
+  });
+  const orm = map('studs-orm', true, (x, y) => {
+    const { r } = stud(x, y);
+    return r < 0.75 ? [1, 0.25, 1, 1] : [r > 0.9 ? 0.1 : 0.5, 0.8, 0, 1];
+  });
+  const emissiveTexture = map('studs-glow', false, (x, y) => (x % CELL === 0 || y % CELL === 0 ? [1, 1, 1, 1] : [0, 0, 0, 1]));
+  const mat = new Material('Studs', { baseColor: [0.25, 0.3, 0.8, 1], metallic: 1, roughness: 1, emissive: [1, 0.35, 0.1] });
+  Object.assign(mat, { normalTexture, metallicRoughnessTexture: orm, occlusionTexture: orm, emissiveTexture });
+  const studs = new GameObject('Studs');
+  studs.mesh = createCube(1);
+  studs.material = mat;
+  studs.transform.position = [-2.4, 0.5, 4.4];
+  studs.transform.setEulerDeg(0, 30, 0);
+  scene.add(studs);
+  device.pushErrorScope('validation');
+  renderer.render(scene, camera, { time: 0.5 });
+  mat.normalTexture = null; // and without a normal map (the flag path)
+  renderer.render(scene, camera, { time: 0.5 });
+  mat.normalTexture = normalTexture;
+  const err = await device.popErrorScope();
+  check('material maps render', !err, err?.message ?? '');
+}
+
 // ---- 2D: Node has no OffscreenCanvas, so glyphs come from a stand-in rasterizer (a box per letter, a ring for 'O')
 // that still goes through the distance field, atlas upload and SDF shader. The demo's world-space sign shows them.
 {

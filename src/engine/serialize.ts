@@ -1,5 +1,5 @@
 import { GameObject, type Scene } from './scene';
-import { Material, MATERIAL_FIELDS, type Texture } from './material';
+import { Material, MATERIAL_FIELDS, TEXTURE_SLOTS, type Texture, type TextureSlot } from './material';
 import { Light, LIGHT_FIELDS, LIGHT_TYPE_INDEX } from './light';
 import { CameraComponent, CAMERA_FIELDS, PROJECTIONS } from './camera';
 import { BODY_TYPES, COLLIDER_SHAPES, RigidBody, RIGID_BODY_FIELDS } from './physics';
@@ -82,6 +82,15 @@ export function isResourceRef(v: unknown): v is ResourceRef {
 
 const copyRef = (r: ResourceRef): ResourceRef => ('primitive' in r ? { primitive: r.primitive, args: [...r.args] } : { asset: r.asset, index: r.index });
 
+/** The key each texture slot is saved under in `ObjectData.material` (the base color's predates the others). */
+const TEXTURE_KEYS: Record<TextureSlot, string> = {
+  baseColorTexture: 'texture',
+  normalTexture: 'normalTexture',
+  metallicRoughnessTexture: 'metallicRoughnessTexture',
+  occlusionTexture: 'occlusionTexture',
+  emissiveTexture: 'emissiveTexture',
+};
+
 /**
  * Stamps `{ asset, index }` refs on the meshes and textures of a freshly loaded
  * model, numbered in hierarchy order. Loaders are deterministic, so loading the
@@ -95,11 +104,17 @@ export function tagAssetResources(root: GameObject, asset: string): { meshes: Me
       o.mesh.ref = { asset, index: meshes.size };
       meshes.add(o.mesh);
     }
-    const t = o.material?.baseColorTexture;
+  });
+  // Base color textures first, then the other slots, so models saved before those were loaded keep their numbering.
+  const tag = (t: Texture | null) => {
     if (t && !textures.has(t)) {
       t.ref = { asset, index: textures.size };
       textures.add(t);
     }
+  };
+  root.traverse((o) => tag(o.material?.baseColorTexture ?? null));
+  root.traverse((o) => {
+    for (const slot of TEXTURE_SLOTS) if (slot !== 'baseColorTexture') tag(o.material?.[slot] ?? null);
   });
   return { meshes: [...meshes], textures: [...textures] };
 }
@@ -136,9 +151,11 @@ function objectToData(o: GameObject, warnings: string[]): ObjectData {
   }
   if (o.material) {
     d.material = pickData(o.material, MATERIAL_FIELDS);
-    const tex = o.material.baseColorTexture;
-    if (tex?.ref) d.material.texture = copyRef(tex.ref);
-    else if (tex) warnings.push(`${o.name}: texture "${tex.name}" was created at runtime and can't be saved`);
+    for (const slot of TEXTURE_SLOTS) {
+      const tex = o.material[slot];
+      if (tex?.ref) d.material[TEXTURE_KEYS[slot]] = copyRef(tex.ref);
+      else if (tex) warnings.push(`${o.name}: texture "${tex.name}" was created at runtime and can't be saved`);
+    }
   }
   if (o.light) d.light = pickData(o.light, LIGHT_FIELDS);
   if (o.camera) d.camera = pickData(o.camera, CAMERA_FIELDS);
@@ -224,9 +241,11 @@ function dataToObject(d: Json, scene: Scene, res: SceneResources, warnings: stri
   }
   if (isObject(d.material)) {
     const m = assignKnown(new Material(), d.material, MATERIAL_FIELDS);
-    if (d.material.texture !== undefined) {
-      m.baseColorTexture = isResourceRef(d.material.texture) ? res.texture(d.material.texture) : null;
-      if (!m.baseColorTexture) warnings.push(`${o.name}: texture not found`);
+    for (const slot of TEXTURE_SLOTS) {
+      const ref = d.material[TEXTURE_KEYS[slot]];
+      if (ref === undefined) continue;
+      m[slot] = isResourceRef(ref) ? res.texture(ref) : null;
+      if (!m[slot]) warnings.push(`${o.name}: texture not found`);
     }
     o.material = m;
   }
@@ -326,8 +345,10 @@ export function collectAssetIds(objects: unknown, out = new Set<string>()): Set<
   for (const d of objects) {
     if (!isObject(d)) continue;
     if (isResourceRef(d.mesh) && 'asset' in d.mesh) out.add(d.mesh.asset);
-    const tex = isObject(d.material) ? d.material.texture : undefined;
-    if (isResourceRef(tex) && 'asset' in tex) out.add(tex.asset);
+    for (const key of Object.values(TEXTURE_KEYS)) {
+      const tex = isObject(d.material) ? d.material[key] : undefined;
+      if (isResourceRef(tex) && 'asset' in tex) out.add(tex.asset);
+    }
     const clip = isObject(d.audioSource) ? d.audioSource.clip : undefined;
     if (isClipRef(clip) && 'asset' in clip) out.add(clip.asset);
     collectAssetIds(d.children, out);

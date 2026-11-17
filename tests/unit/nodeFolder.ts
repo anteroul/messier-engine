@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync }
 import { dirname, join } from 'node:path';
 import type { FolderIO } from '@root/src/engine/projectFolder.ts';
 
-/** A project folder on disk, for tests (scripts/generate-demo-project.mjs has the same). */
+/** A project folder on disk, for tests (scripts/example-project.mjs has the same). */
 export function nodeFolder(root: string): FolderIO {
   const at = (p: string) => join(root, p);
   return {

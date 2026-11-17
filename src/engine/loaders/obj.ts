@@ -5,7 +5,8 @@ import { mimeFromName, type ResourceResolver } from './resources';
 
 // Wavefront OBJ + MTL loader. Supports v/vt/vn, polygon faces (fan
 // triangulated), negative indices, o/g groups, usemtl, and the MTL keys
-// Kd, Ke, Ns, d/Tr, map_Kd. Each (group, material) pair becomes one child mesh.
+// Kd, Ke, Ns, d/Tr, Pm, Pr, map_Kd, map_Ke and normal maps (norm, or map_Bump/bump as
+// Blender writes them, with -bm as the scale). Each (group, material) pair becomes one child mesh.
 
 interface Group {
   name: string;
@@ -175,17 +176,20 @@ async function parseMTL(text: string, resolve: ResourceResolver): Promise<Map<st
       case 'pr':
         mat.roughness = +parts[1];
         break;
-      case 'map_kd': {
-        // Options like "-s 1 1 1" may precede the file name; the file is the last token.
-        const file = parts[parts.length - 1];
-        pending.push(
-          resolve(file)
-            .then((bytes) => Texture.fromBlob(new Blob([bytes], { type: mimeFromName(file) }), file))
-            .then((t) => {
-              mat.baseColorTexture = t;
-            })
-            .catch((err) => console.warn(`MTL: could not load texture "${file}"`, err)),
-        );
+      case 'map_kd':
+        pending.push(loadMap(parts, resolve, (t) => (mat.baseColorTexture = t)));
+        break;
+      case 'map_ke':
+        // The map multiplies Ke, which exporters often leave black when there's a map.
+        if (mat.emissive.every((c) => c === 0)) mat.emissive = [1, 1, 1];
+        pending.push(loadMap(parts, resolve, (t) => (mat.emissiveTexture = t)));
+        break;
+      case 'norm':
+      case 'map_bump':
+      case 'bump': {
+        const bm = parts.findIndex((p) => p.toLowerCase() === '-bm');
+        if (bm > 0 && Number.isFinite(+parts[bm + 1])) mat.normalScale = +parts[bm + 1];
+        pending.push(loadMap(parts, resolve, (t) => (mat.normalTexture = t)));
         break;
       }
       default:
@@ -194,4 +198,13 @@ async function parseMTL(text: string, resolve: ResourceResolver): Promise<Map<st
   }
   await Promise.all(pending);
   return out;
+}
+
+function loadMap(parts: string[], resolve: ResourceResolver, assign: (t: Texture) => void): Promise<void> {
+  // Options like "-s 1 1 1" may precede the file name; the file is the last token.
+  const file = parts[parts.length - 1];
+  return resolve(file)
+    .then((bytes) => Texture.fromBlob(new Blob([bytes], { type: mimeFromName(file) }), file))
+    .then(assign)
+    .catch((err) => console.warn(`MTL: could not load texture "${file}"`, err));
 }

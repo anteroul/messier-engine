@@ -226,7 +226,9 @@ Engine.step(dt)                         src/engine/engine.ts
     `fv`/`fu`/`fi` offsets). Sky mode codes come from `SKY_MODE_INDEX`.
   - `Light` (64 B, 16 floats): `common.wgsl` ↔ the light packing loop in
     `Renderer.render()`. Type codes come from `LIGHT_TYPE_INDEX`.
-  - `Material` (48 B): `mesh.wgsl` ↔ `Renderer.prepareMaterial()`.
+  - `Material` (64 B): `mesh.wgsl` ↔ `Renderer.prepareMaterial()`. Its textures are bound in `TEXTURE_SLOTS` order
+    (binding 1 base color, 2 the sampler, 3… the rest); `LINEAR_TEXTURE_SLOTS` are uploaded as `rgba8unorm`
+    (`Texture.gpuLinear`), the others as sRGB (`Texture.gpu`).
   - 2D vertex (40 B: position 3, uv 2, color 4, threshold 1; threshold < 0 = solid): `shape2d.wgsl` ↔
     `VERTEX2D_FLOATS` / `Batch2D.vertex()` and the 2D pipeline's attributes.
   - `Object` (model + normal matrix, 128 B) lives in 256 B dynamic-offset
@@ -342,6 +344,14 @@ and, when `examples/Demo/` exists, compares every file and fails while it's stal
 changes `examples/Demo/.messier/messier.d.ts` too, so regenerate after that as well; the same test type-checks the
 demo scripts against it with `tsc`. Keep the builders deterministic (`seeded()`, no
 `Math.random` or dates at build time).
+
+**Change the Material Lab example.** `buildMaterialLabProject()` (`src/materialLab/`, engine-only) builds
+`examples/MaterialLab/`, a second example project (its own git repository, like `examples/Demo/`) that shows the
+material maps. Its textured meshes and materials all come from `public/models/material-lab.glb`, whose textures are
+procedural (`scripts/generate-material-glb.mjs`, `npm run generate:materials-glb`); the builders only lay them out. After
+changing either, or the engine's public API, run `npm run generate:materials` and commit in `examples/MaterialLab/`.
+`tests/unit/material-lab.test.ts` plays both scenes, checks every map resolves after a folder round trip and fails
+while the folder is stale. Both example generators share `scripts/example-project.mjs`.
 
 **Make an edit undoable.** Push a `Command` with `undo`/`redo` closures to
 `editor.history` *after* applying the change. For transform edits, use

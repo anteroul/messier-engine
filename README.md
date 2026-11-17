@@ -4,7 +4,8 @@ A browser-based 3D engine written in TypeScript on **WebGPU**, with a built-in
 real-time scene editor. What changed in each version: [CHANGELOG.md](CHANGELOG.md).
 
 - **Forward PBR renderer**: metallic-roughness GGX shading, ACES tone mapping,
-  4× MSAA, reversed-Z depth, base-color textures with GPU-generated mipmaps.
+  4× MSAA, reversed-Z depth, base color, normal, metallic-roughness, occlusion and
+  emissive textures with GPU-generated mipmaps (normal maps need no stored tangents).
 - **Dynamic lights**: up to 128 directional, point and spot lights, all
   updated every frame from the scene graph. The first shadow-casting
   directional light gets a 2048² PCF shadow map.
@@ -343,6 +344,19 @@ they work. `tests/unit/demos.test.ts` plays them headlessly.
 Project…**. That folder is a git repository of its own, like any game made
 with Messier; the engine's repository ignores `examples/`.
 
+### Material Lab
+
+A second example project, `examples/MaterialLab/`, shows off material maps. Its
+**Gallery** scene has five pedestals that add the maps one at a time (base color,
+then normal, metal/rough, occlusion and emissive), in front of a wall of riveted
+hull plating, with a light sweeping across all of it. **Orbit** puts a plated
+sphere and a ring of tiled cubes under a sun that circles them. In Play, Space
+takes every map but the base color off and puts them back, and N / P switch
+scenes. It's built by [src/materialLab/](src/materialLab/) from
+`public/models/material-lab.glb`, whose textures are generated
+(`npm run generate:materials-glb`). `npm run generate:materials` writes the
+folder; `tests/unit/material-lab.test.ts` checks it's current.
+
 ### Gem Rush
 
 Pick **Gem Rush** in the scene picker and press Play. Roll the ball with
@@ -526,12 +540,16 @@ src/editor/             Editor UI (plain DOM, no framework)
   codeEditor.ts         Textarea-over-highlight code editor (indent, comments, error markers)
   gizmo.ts              Move/rotate/scale manipulator (picking + dragging + drawing)
   hierarchy.ts inspector.ts ui.ts history.ts orbitControls.ts editor.css
-public/models/          Sample assets (lantern.glb, icosahedron.obj/.mtl)
+public/models/          Sample assets (lantern.glb, icosahedron.obj/.mtl, material-lab.glb)
+src/materialLab/        The Material Lab example project's scenes and scripts
 examples/Demo/          The demo project as a project folder, its own git repository (npm run generate:demo; ignored)
+examples/MaterialLab/   The Material Lab project folder, its own git repository (npm run generate:materials; ignored)
 CHANGELOG.md            Changes per version; npm run release -- <patch|minor|major> cuts a version
 scripts/                messier-types.mjs + types-plugin.mjs (messier.d.ts for project folders),
-                        generate-sample-glb.mjs (regenerates lantern.glb), release.mjs, generate-demo-project.mjs
-                        (regenerates examples/Demo/), mangle-props.mjs (release build),
+                        generate-sample-glb.mjs (regenerates lantern.glb), generate-material-glb.mjs
+                        (material-lab.glb), glb.mjs (their PNG/GLB writer), release.mjs, generate-demo-project.mjs
+                        and generate-material-lab.mjs (regenerate examples/Demo/ and examples/MaterialLab/, through
+                        example-project.mjs), mangle-props.mjs (release build),
                         player-plugin.mjs (bundles src/player.ts into messier-player.js for builds)
 tests/                  Unit tests and optional GPU smoke tests (separate package.json)
 ```
@@ -574,15 +592,17 @@ The tests need a working Vulkan driver. On NixOS that means
 
 - **glTF 2.0:** node hierarchy, TRS or matrix transforms, triangle primitives,
   indexed and non-indexed geometry, normalized/sparse accessors,
-  metallic-roughness factors, base color texture, emissive (plus
+  metallic-roughness factors, base color, normal, metallic-roughness, occlusion and
+  emissive textures (first UV set), emissive (plus
   `KHR_materials_emissive_strength`), alpha mask, double-sided,
   `KHR_materials_unlit`, `KHR_lights_punctual` and cameras. **Not supported:** skins,
-  morph targets, animations, normal/occlusion/metal-rough textures,
-  texture transforms, Draco/meshopt/Basis compression (the loader reports a
+  morph targets, animations, stored tangents (normal maps derive them per pixel),
+  a second UV set, texture transforms, Draco/meshopt/Basis compression (the loader reports a
   clear error).
 - **OBJ/MTL:** `v/vt/vn/f` (polygons are fan-triangulated, negative indices
-  allowed), `o`/`g`/`usemtl` groups, `Kd`, `Ke`, `Ns`, `d`/`Tr`, `Pm`/`Pr`
-  and `map_Kd`.
+  allowed), `o`/`g`/`usemtl` groups, `Kd`, `Ke`, `Ns`, `d`/`Tr`, `Pm`/`Pr`,
+  `map_Kd`, `map_Ke` and normal maps (`norm`, or `map_Bump`/`bump` as Blender writes
+  them, with `-bm` as the scale).
 - **Rendering:** opaque only. Alpha *blend* materials render opaque; alpha
   *mask* works. One directional shadow map, no point or spot shadows.
   Environment lighting is a sky/ground gradient approximation, not
