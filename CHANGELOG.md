@@ -10,6 +10,8 @@ Add a line under **Unreleased** with every user-visible change.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-17
+
 ### Changed
 
 - **Projects are folders**, like in Godot and Unity: `project.json`, one `scenes/<Name>.messier` file per scene,
@@ -92,7 +94,8 @@ First version.
 
 - The script editor's caret drifted from the highlighted text.
 
-[Unreleased]: https://github.com/anteroul/messier-engine/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/anteroul/messier-engine/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/anteroul/messier-engine/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/anteroul/messier-engine/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/anteroul/messier-engine/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/anteroul/messier-engine/releases/tag/v0.1.0
