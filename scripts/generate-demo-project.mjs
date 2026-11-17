@@ -1,12 +1,12 @@
-// Writes examples/Demo.messier: the demo project the editor starts with, saved like File → Save would.
+// Writes examples/Demo/: the demo project the editor starts with, as a project folder (Save to Folder writes the same).
 // Run via `npm run generate:demo` after changing a demo scene builder or a sample model (tests/unit checks it's current).
 import * as esbuild from 'esbuild'; // comes with Vite
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const outFile = resolve(root, 'examples/Demo.messier');
+const outDir = resolve(root, 'examples/Demo');
 
 // The engine barrel pulls in the renderer, whose WGSL is imported with Vite's `?raw`.
 const rawPlugin = {
@@ -18,7 +18,11 @@ const rawPlugin = {
 };
 
 const bundle = await esbuild.build({
-  stdin: { contents: `export { buildDemoProject } from './src/demoProject.ts';`, resolveDir: root, loader: 'ts' },
+  stdin: {
+    contents: `export { buildDemoProject } from './src/demoProject.ts';\nexport { writeProjectFolder } from './src/engine/projectFolder.ts';`,
+    resolveDir: root,
+    loader: 'ts',
+  },
   bundle: true,
   platform: 'node',
   format: 'esm',
@@ -27,7 +31,7 @@ const bundle = await esbuild.build({
   plugins: [rawPlugin],
   logLevel: 'warning',
 });
-const { buildDemoProject } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString('base64')}`);
+const { buildDemoProject, writeProjectFolder } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString('base64')}`);
 
 // Node can't decode images. The loaders only need a texture to exist to give it a ref the scene can save.
 globalThis.createImageBitmap = async () => ({ width: 1, height: 1, close() {} });
@@ -42,7 +46,35 @@ if (warnings.length) {
   process.exit(1);
 }
 
-const bytes = project.encode();
-mkdirSync(dirname(outFile), { recursive: true });
-writeFileSync(outFile, bytes);
-console.log(`Wrote ${outFile} (${bytes.byteLength} bytes, ${project.scenes.length} scenes, ${project.scripts.length} scripts, ${project.assets.length} assets)`);
+// Fresh each time, so files of renamed or removed scenes don't linger.
+rmSync(outDir, { recursive: true, force: true });
+const at = (p) => join(outDir, p);
+const folder = {
+  async list(dir) {
+    try {
+      return readdirSync(at(dir), { withFileTypes: true }).map((e) => ({ name: e.name, kind: e.isDirectory() ? 'directory' : 'file' }));
+    } catch {
+      return [];
+    }
+  },
+  async read(path) {
+    return new Uint8Array(readFileSync(at(path)));
+  },
+  async write(path, data) {
+    mkdirSync(dirname(at(path)), { recursive: true });
+    writeFileSync(at(path), data);
+  },
+  async remove(path) {
+    rmSync(at(path), { recursive: true, force: true });
+  },
+  async stat(path) {
+    try {
+      const s = statSync(at(path));
+      return { size: s.size, modified: s.mtimeMs };
+    } catch {
+      return null;
+    }
+  },
+};
+const written = await writeProjectFolder(folder, project);
+console.log(`Wrote ${outDir}/ (${written.scenes.length} scenes, ${written.scripts.length} scripts, ${written.assets.length} assets)`);

@@ -107,6 +107,14 @@ export class ScriptsView {
     this.renderInfo();
   }
 
+  /** Shows a script's source again after it changed outside the code editor (its file was edited on disk). */
+  reloadSource(script: ScriptAsset): void {
+    const ed = this.editors.get(script);
+    if (ed && ed.value !== script.source) ed.value = script.source;
+    if (script === this.current) this.applyDiagnostics();
+    this.refresh();
+  }
+
   /** Re-applies markers after diagnostics changed (runtime errors while playing). */
   diagnosticsChanged(script: ScriptAsset): void {
     if (script === this.current) this.applyDiagnostics();

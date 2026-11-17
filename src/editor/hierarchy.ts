@@ -1,4 +1,5 @@
 import { AudioSource, Renderer2D, Text2D, type GameObject } from '../engine';
+import { ASSET_MIME } from './assets';
 import { el } from './ui';
 import type { Editor } from './editor';
 
@@ -16,9 +17,19 @@ export class HierarchyPanel {
   ) {
     // Dropping on empty space moves the object to the scene root.
     container.addEventListener('dragover', (e) => {
-      if (this.dragged) e.preventDefault();
+      if (this.dragged || e.dataTransfer?.types.includes(ASSET_MIME)) e.preventDefault();
     });
     container.addEventListener('drop', (e) => {
+      const assetId = e.dataTransfer?.getData(ASSET_MIME);
+      if (assetId) {
+        // From the Assets panel: onto a row places it under that object, onto empty space at the top level.
+        e.preventDefault();
+        const row = (e.target as HTMLElement).closest<HTMLElement>('.tree-row');
+        const parent = (row && this.rowObjects.get(row)) || this.editor.scene.root;
+        const asset = this.editor.project.assets.find((a) => a.id === assetId);
+        if (asset) this.editor.placeAsset(asset, undefined, parent);
+        return;
+      }
       if (!this.dragged || e.target !== container) return;
       e.preventDefault();
       this.editor.reparent(this.dragged, this.editor.scene.root);

@@ -3,10 +3,6 @@ import {
   AudioSource,
   SFX_PRESETS,
   audio,
-  isAudioFile,
-  isImageFile,
-  loadAudioAsset,
-  loadImageAsset,
   type Texture,
   CameraComponent,
   DEG2RAD,
@@ -30,9 +26,8 @@ import {
   input,
   isFlatMesh,
   worldCollider,
-  loadModelAssetsFromFiles,
-  MODEL_EXTENSIONS,
-  PROJECT_EXTENSION,
+  SCENE_EXTENSION,
+  type Asset,
   raySphere,
   raycastScene,
   quat,
@@ -61,7 +56,9 @@ import { ContextMenu, type MenuEntry, type MenuItem } from './contextMenu';
 import { HierarchyPanel } from './hierarchy';
 import { InspectorPanel } from './inspector';
 import { OrbitControls } from './orbitControls';
-import { LEGACY_SCRIPTS_KEY, ProjectManager } from './project';
+import { LEGACY_SCRIPTS_KEY, ProjectManager, kindOf } from './project';
+import { canPickFolders } from './folderIO';
+import { ASSET_MIME, AssetsPanel } from './assets';
 import { ScriptsView } from './scriptsView';
 import { BuildDialog } from './build';
 
@@ -103,6 +100,7 @@ export class Editor {
   /** Undo history. Play gets a fresh one (its edits act on the play copy) and Stop brings the editing one back. */
   history = new History();
   readonly hierarchy: HierarchyPanel;
+  readonly assets: AssetsPanel;
   readonly inspector: InspectorPanel;
   readonly scripts: ScriptsView;
   readonly project: ProjectManager;
@@ -138,6 +136,8 @@ export class Editor {
     this.controls = new OrbitControls(this.camera);
     this.gizmo = new Gizmo(this.camera);
     this.hierarchy = new HierarchyPanel(this, ui.hierarchy);
+    this.assets = new AssetsPanel(this);
+    ui.hierarchy.closest('.panel')?.append(this.assets.root);
     this.inspector = new InspectorPanel(this, ui.inspector);
     this.scripts = new ScriptsView(this, ui.scriptsView);
     this.history.onChange = () => this.updateToolbar();
@@ -154,6 +154,7 @@ export class Editor {
       objectsChanged: () => this.hierarchy.markDirty(),
     });
     this.project = new ProjectManager(this);
+    this.project.onAssetsChange = () => this.assets.markDirty();
     // Toolbar only: rebuilding the inspector here would steal focus from a field being edited.
     this.project.onChange = () => {
       this.updateToolbar();
@@ -368,14 +369,8 @@ export class Editor {
 
   /** Imports an image file as a project asset (so scenes using it save). Null, with an error shown, if it fails. */
   async importImage(file: File): Promise<Texture | null> {
-    try {
-      const { texture, asset } = await loadImageAsset(file.name, await file.arrayBuffer());
-      this.project.addImageAsset(asset, texture);
-      return texture;
-    } catch (err) {
-      this.notify(`Could not load ${file.name}: ${(err as Error).message}`, 'error');
-      return null;
-    }
+    const [asset] = await this.project.importFiles([file]);
+    return asset ? this.project.texture(asset.id) : null;
   }
 
   /** Shows `texture` as the scene's sky. Undoable. */
@@ -522,6 +517,32 @@ export class Editor {
     };
     apply(after);
     this.history.push({ label: `Rename script ${before}`, undo: () => apply(before), redo: () => apply(after) });
+  }
+
+  /**
+   * Takes a script's source from outside the editor (its file changed on disk): replaces and compiles it, or adds a
+   * new script. Running objects pick up the new class, as when typing in the Scripts tab.
+   */
+  applyScriptSource(name: string, source: string): void {
+    const lib = this.scene.scripts;
+    const asset = lib.get(name);
+    if (asset?.source === source) return;
+    if (asset) {
+      const unsaved = this.scripts.current === asset && asset.source !== asset.compiledSource;
+      asset.source = source;
+      this.compileScript(asset);
+      this.scripts.reloadSource(asset);
+      if (unsaved) this.notify(`${name}.ts changed on disk; the editor now shows that version`, 'error');
+    } else {
+      this.compileScript(lib.add(new ScriptAsset(name, source)));
+      this.scriptsChanged();
+    }
+  }
+
+  /** Removes a script whose file was deleted on disk, detaching it from objects (undoable, like Delete). */
+  removeScriptNamed(name: string): void {
+    const asset = this.scene.scripts.get(name);
+    if (asset) this.deleteScript(asset);
   }
 
   /** Compiles a script (running objects pick up the new class). */
@@ -729,43 +750,14 @@ export class Editor {
     return [Math.round(t[0] * 2) / 2, height, Math.round(t[2] * 2) / 2];
   }
 
+  /**
+   * Imports dropped or picked files: .messier files open (a scene joins the project; an old single-file project
+   * opens), scripts join the Scripts tab, and models, images and sounds become project assets (in a folder project,
+   * copied into assets/) and are placed: models and sounds in front of the view, an image on its own as the sky.
+   */
   async importFiles(files: File[]): Promise<void> {
-    const project = files.find((f) => f.name.toLowerCase().endsWith(PROJECT_EXTENSION));
-    if (project) {
-      await this.project.openFile(project);
-      return;
-    }
-    const sounds = files.filter((f) => isAudioFile(f.name));
-    files = files.filter((f) => !sounds.includes(f));
-    for (const f of sounds) {
-      try {
-        const { clip, asset } = await loadAudioAsset(f.name, await f.arrayBuffer());
-        this.project.addAudioAsset(asset, clip);
-        const obj = new GameObject(clip.name);
-        // Not spatial: a dropped sound is usually music or an effect for a script to play.
-        obj.attachComponent(new AudioSource({ clip, spatial: false }));
-        obj.transform.position = this.spawnPoint(0.5);
-        this.addObject(obj, this.scene.root, `Import ${clip.name}`);
-        this.notify(`Imported sound ${f.name}`, 'success');
-      } catch (err) {
-        this.notify(`Could not import ${f.name}: ${(err as Error).message}`, 'error');
-      }
-    }
-    // Images on their own (no model they could belong to) become the sky: a 2:1 panorama is what skies take.
-    if (!files.some((f) => MODEL_EXTENSIONS.includes(f.name.split('.').pop()?.toLowerCase() ?? ''))) {
-      const images = files.filter((f) => isImageFile(f.name));
-      files = files.filter((f) => !images.includes(f));
-      const image = images.at(-1);
-      if (image) {
-        const texture = await this.importImage(image);
-        if (texture) {
-          this.setSkyImage(texture);
-          const { width, height } = texture.source;
-          const shape = Math.abs(width / height - 2) < 0.1 ? '' : ` It's ${width}×${height}; a sky image should be a 2:1 panorama.`;
-          this.notify(`${image.name} is now the sky.${shape}`, shape ? 'error' : 'success');
-        }
-      }
-    }
+    for (const f of files.filter((f) => f.name.toLowerCase().endsWith(SCENE_EXTENSION))) await this.project.openFile(f);
+    files = files.filter((f) => !f.name.toLowerCase().endsWith(SCENE_EXTENSION));
     const scripts = files.filter((f) => /\.ts$/i.test(f.name));
     files = files.filter((f) => !scripts.includes(f));
     let lastScript: ScriptAsset | null = null;
@@ -775,21 +767,98 @@ export class Editor {
     }
     if (lastScript) this.setView('scripts', lastScript);
     if (files.length === 0) return;
-    this.notify(`Importing ${files.map((f) => f.name).join(', ')}…`);
-    try {
-      const loaded = await loadModelAssetsFromFiles(files);
-      for (const { model, asset } of loaded) {
-        this.project.addAsset(asset, model);
-        this.normalizeImportedScale(model);
-        model.transform.position = vec3.add(model.transform.position, this.spawnPoint(0));
-        this.addObject(model, this.scene.root, `Import ${model.name}`);
-        this.notify(`Imported ${model.name}`, 'success');
+    const assets = await this.project.importFiles(files);
+    const placed: GameObject[] = [];
+    for (const asset of assets) {
+      if (kindOf(asset) === 'image') {
+        // Images on their own (no model they could belong to) become the sky: a 2:1 panorama is what skies take.
+        const texture = this.project.texture(asset.id);
+        if (!texture) continue;
+        this.setSkyImage(texture);
+        const { width, height } = texture.source;
+        const shape = Math.abs(width / height - 2) < 0.1 ? '' : ` It's ${width}×${height}; a sky image should be a 2:1 panorama.`;
+        this.notify(`${asset.name} is now the sky.${shape}`, shape ? 'error' : 'success');
+        continue;
       }
-      this.focusSelected();
-    } catch (err) {
-      console.error(err);
-      this.notify(`Import failed: ${(err as Error).message}`, 'error');
+      const obj = this.placeAsset(asset);
+      if (obj) {
+        placed.push(obj);
+        this.notify(`Imported ${asset.name}`, 'success');
+      }
     }
+    if (placed.length) this.focusSelected();
+  }
+
+  /**
+   * An asset dragged from the Assets panel onto the viewport: a model or sound is placed where the pointer points
+   * (on the surface under it, else on the ground); an image becomes the texture of the object under the pointer, or
+   * the sky when there's none.
+   */
+  private dropAsset(assetId: string, e: DragEvent): void {
+    const asset = this.project.assets.find((a) => a.id === assetId);
+    if (!asset || this.engine.viewObject) return;
+    const [x, y] = this.localPointer(e);
+    const c = this.ui.canvas;
+    const ray = this.camera.screenRay(x, y, c.clientWidth, c.clientHeight);
+    const hit = raycastScene(this.scene, ray);
+    if (kindOf(asset) === 'image') {
+      const texture = this.project.texture(asset.id);
+      if (!texture) return;
+      if (hit?.object.material) this.setTexture(hit.object, texture);
+      else this.setSkyImage(texture);
+      return;
+    }
+    let at: Vec3 | undefined = hit?.point;
+    if (!at && Math.abs(ray.dir[1]) > 1e-4) {
+      const t = -ray.origin[1] / ray.dir[1];
+      if (t > 0) at = vec3.addScaled(ray.origin, ray.dir, t);
+    }
+    if (this.placeAsset(asset, at)) this.focusSelected();
+  }
+
+  /** Gives an object's material a texture. Undoable. */
+  setTexture(obj: GameObject, texture: Texture | null): void {
+    const mat = obj.material;
+    if (!mat) return;
+    const before = mat.baseColorTexture;
+    const apply = (t: Texture | null) => {
+      mat.baseColorTexture = t;
+      if (this.selected === obj) this.inspector.refresh();
+    };
+    apply(texture);
+    this.history.push({ label: `Texture ${obj.name}`, undo: () => apply(before), redo: () => apply(texture) });
+    this.notify(`${texture?.name ?? 'No texture'} on ${obj.name}`, 'success');
+  }
+
+  /**
+   * Adds an object for a model or sound asset to the scene (at `position`, or in front of the view; under `parent`).
+   * Undoable. Returns null for assets that aren't placed as objects (images, other files).
+   */
+  placeAsset(asset: Asset, position?: Vec3, parent: GameObject = this.scene.root): GameObject | null {
+    const kind = kindOf(asset);
+    let obj: GameObject | null = null;
+    if (kind === 'model') {
+      obj = this.project.instantiateModel(asset.id);
+      if (!obj) {
+        this.notify(`${asset.name} didn't load, so it can't be placed`, 'error');
+        return null;
+      }
+      this.normalizeImportedScale(obj);
+      if (parent !== this.scene.root) obj.transform.position = [0, 0, 0];
+      else obj.transform.position = vec3.add(obj.transform.position, position ?? this.spawnPoint(0));
+    } else if (kind === 'sound') {
+      const clip = this.project.audioClip(asset.id);
+      if (!clip) {
+        this.notify(`${asset.name} didn't load, so it can't be placed`, 'error');
+        return null;
+      }
+      obj = new GameObject(asset.name);
+      // Not spatial: a dropped sound is usually music or an effect for a script to play.
+      obj.attachComponent(new AudioSource({ clip, spatial: false }));
+      obj.transform.position = parent !== this.scene.root ? [0, 0, 0] : (position ?? this.spawnPoint(0.5));
+    }
+    if (!obj) return null;
+    return this.addObject(obj, parent, `Add ${obj.name}`);
   }
 
   /** Scales models authored in very large / small units to a few meters. */
@@ -1362,6 +1431,7 @@ export class Editor {
       'open-project': () => void this.project.open(),
       'save-project': () => void this.project.save(),
       'save-project-as': () => void this.project.save(true),
+      'download-project': () => void this.project.downloadZip(),
       'new-scene': () => void this.project.newScene(),
       'delete-scene': () => void this.project.deleteScene(this.project.sceneId),
       'build-settings': () => this.build.open(),
@@ -1454,13 +1524,15 @@ export class Editor {
       if (depth === 0) this.ui.dropOverlay.hidden = true;
     });
     vp.addEventListener('dragover', (e) => {
-      if (e.dataTransfer?.types.includes('Files')) e.preventDefault();
+      if (e.dataTransfer?.types.includes('Files') || e.dataTransfer?.types.includes(ASSET_MIME)) e.preventDefault();
     });
     vp.addEventListener('drop', (e) => {
       e.preventDefault();
       depth = 0;
       this.ui.dropOverlay.hidden = true;
-      void this.importFiles(Array.from(e.dataTransfer?.files ?? []));
+      const assetId = e.dataTransfer?.getData(ASSET_MIME);
+      if (assetId) this.dropAsset(assetId, e);
+      else void this.importFiles(Array.from(e.dataTransfer?.files ?? []));
     });
   }
 
@@ -1508,6 +1580,10 @@ export class Editor {
     }
     const sceneName = tb.querySelector<HTMLInputElement>('.scene-name');
     if (sceneName && document.activeElement !== sceneName) sceneName.value = pm.currentScene?.name ?? '';
+    const location = tb.querySelector<HTMLElement>('.project-location');
+    if (location) location.textContent = pm.folderName ? `📁 ${pm.folderName}` : 'In this browser';
+    const saveAs = tb.querySelector<HTMLButtonElement>('[data-action="save-project-as"]');
+    if (saveAs) saveAs.hidden = !canPickFolders();
     const newScene = tb.querySelector<HTMLButtonElement>('[data-action="new-scene"]');
     const deleteScene = tb.querySelector<HTMLButtonElement>('[data-action="delete-scene"]');
     if (newScene) newScene.disabled = this.engine.playing;

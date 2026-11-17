@@ -1,0 +1,2063 @@
+{
+  "format": "messier-scene",
+  "version": 1,
+  "settings": {
+    "ambientColor": [
+      0.4,
+      0.5,
+      0.8
+    ],
+    "ambientIntensity": 0.3,
+    "background": [
+      0.02,
+      0.025,
+      0.05
+    ],
+    "exposure": 1,
+    "shadowExtent": 14,
+    "sky": {
+      "mode": "color",
+      "top": [
+        0.045,
+        0.11,
+        0.34
+      ],
+      "horizon": [
+        0.34,
+        0.4,
+        0.52
+      ],
+      "ground": [
+        0.05,
+        0.047,
+        0.043
+      ],
+      "sunSize": 1.2,
+      "sunGlow": 0.35,
+      "intensity": 1,
+      "rotation": 0,
+      "lighting": 1
+    },
+    "physics": {
+      "gravity": [
+        0,
+        -9.81,
+        0
+      ],
+      "iterations": 10
+    }
+  },
+  "objects": [
+    {
+      "name": "Game",
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "visible": true,
+      "castShadows": true,
+      "audioSource": {
+        "volume": 1,
+        "pitch": 1,
+        "loop": false,
+        "playOnStart": false,
+        "spatial": false,
+        "minDistance": 2,
+        "maxDistance": 40,
+        "clip": {
+          "sfx": [
+            0,
+            330,
+            1.6,
+            0,
+            0.18,
+            0.3,
+            0,
+            0.05,
+            14,
+            0.4,
+            0,
+            1,
+            0,
+            0.11,
+            0,
+            0.28,
+            1
+          ]
+        }
+      },
+      "behaviours": [
+        {
+          "script": "GameManager",
+          "enabled": true,
+          "overrides": {}
+        },
+        {
+          "script": "ArcadeLink",
+          "enabled": true,
+          "overrides": {}
+        }
+      ]
+    },
+    {
+      "name": "Gem Sound",
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "visible": true,
+      "castShadows": true,
+      "audioSource": {
+        "volume": 1,
+        "pitch": 1,
+        "loop": false,
+        "playOnStart": false,
+        "spatial": false,
+        "minDistance": 2,
+        "maxDistance": 40,
+        "clip": {
+          "sfx": [
+            0,
+            988,
+            0,
+            0,
+            0.05,
+            0.28,
+            0.5,
+            0,
+            0,
+            0.5,
+            0,
+            1.335,
+            0.07,
+            0,
+            0,
+            0.35,
+            1
+          ]
+        }
+      }
+    },
+    {
+      "name": "Floor",
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "visible": true,
+      "castShadows": true,
+      "mesh": {
+        "primitive": "plane",
+        "args": [
+          18,
+          1
+        ]
+      },
+      "material": {
+        "name": "Arena Floor",
+        "baseColor": [
+          0.16,
+          0.18,
+          0.24,
+          1
+        ],
+        "metallic": 0,
+        "roughness": 0.7,
+        "emissive": [
+          0,
+          0,
+          0
+        ],
+        "emissiveStrength": 1,
+        "alphaCutoff": 0,
+        "doubleSided": false,
+        "unlit": false
+      },
+      "rigidBody": {
+        "type": "static",
+        "shape": "box",
+        "center": [
+          0,
+          -0.1,
+          0
+        ],
+        "halfExtents": [
+          9,
+          0.1,
+          9
+        ],
+        "radius": 9,
+        "mass": 1,
+        "friction": 0.8,
+        "restitution": 0.1,
+        "linearDamping": 0.05,
+        "angularDamping": 0.1,
+        "useGravity": true,
+        "velocity": [
+          0,
+          0,
+          0
+        ],
+        "angularVelocity": [
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "name": "Walls",
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "visible": true,
+      "castShadows": true,
+      "children": [
+        {
+          "name": "North Wall",
+          "position": [
+            0,
+            0.3,
+            -9.2
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            18.4,
+            0.6,
+            0.4
+          ],
+          "visible": true,
+          "castShadows": true,
+          "mesh": {
+            "primitive": "cube",
+            "args": [
+              1
+            ]
+          },
+          "material": {
+            "name": "Wall",
+            "baseColor": [
+              0.3,
+              0.32,
+              0.4,
+              1
+            ],
+            "metallic": 0,
+            "roughness": 0.5,
+            "emissive": [
+              0,
+              0,
+              0
+            ],
+            "emissiveStrength": 1,
+            "alphaCutoff": 0,
+            "doubleSided": false,
+            "unlit": false
+          },
+          "rigidBody": {
+            "type": "static",
+            "shape": "box",
+            "center": [
+              0,
+              0,
+              0
+            ],
+            "halfExtents": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "radius": 0.5,
+            "mass": 1,
+            "friction": 0.5,
+            "restitution": 0.1,
+            "linearDamping": 0.05,
+            "angularDamping": 0.1,
+            "useGravity": true,
+            "velocity": [
+              0,
+              0,
+              0
+            ],
+            "angularVelocity": [
+              0,
+              0,
+              0
+            ]
+          }
+        },
+        {
+          "name": "South Wall",
+          "position": [
+            0,
+            0.3,
+            9.2
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            18.4,
+            0.6,
+            0.4
+          ],
+          "visible": true,
+          "castShadows": true,
+          "mesh": {
+            "primitive": "cube",
+            "args": [
+              1
+            ]
+          },
+          "material": {
+            "name": "Wall",
+            "baseColor": [
+              0.3,
+              0.32,
+              0.4,
+              1
+            ],
+            "metallic": 0,
+            "roughness": 0.5,
+            "emissive": [
+              0,
+              0,
+              0
+            ],
+            "emissiveStrength": 1,
+            "alphaCutoff": 0,
+            "doubleSided": false,
+            "unlit": false
+          },
+          "rigidBody": {
+            "type": "static",
+            "shape": "box",
+            "center": [
+              0,
+              0,
+              0
+            ],
+            "halfExtents": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "radius": 0.5,
+            "mass": 1,
+            "friction": 0.5,
+            "restitution": 0.1,
+            "linearDamping": 0.05,
+            "angularDamping": 0.1,
+            "useGravity": true,
+            "velocity": [
+              0,
+              0,
+              0
+            ],
+            "angularVelocity": [
+              0,
+              0,
+              0
+            ]
+          }
+        },
+        {
+          "name": "West Wall",
+          "position": [
+            -9.2,
+            0.3,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            0.4,
+            0.6,
+            18.4
+          ],
+          "visible": true,
+          "castShadows": true,
+          "mesh": {
+            "primitive": "cube",
+            "args": [
+              1
+            ]
+          },
+          "material": {
+            "name": "Wall",
+            "baseColor": [
+              0.3,
+              0.32,
+              0.4,
+              1
+            ],
+            "metallic": 0,
+            "roughness": 0.5,
+            "emissive": [
+              0,
+              0,
+              0
+            ],
+            "emissiveStrength": 1,
+            "alphaCutoff": 0,
+            "doubleSided": false,
+            "unlit": false
+          },
+          "rigidBody": {
+            "type": "static",
+            "shape": "box",
+            "center": [
+              0,
+              0,
+              0
+            ],
+            "halfExtents": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "radius": 0.5,
+            "mass": 1,
+            "friction": 0.5,
+            "restitution": 0.1,
+            "linearDamping": 0.05,
+            "angularDamping": 0.1,
+            "useGravity": true,
+            "velocity": [
+              0,
+              0,
+              0
+            ],
+            "angularVelocity": [
+              0,
+              0,
+              0
+            ]
+          }
+        },
+        {
+          "name": "East Wall",
+          "position": [
+            9.2,
+            0.3,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            0.4,
+            0.6,
+            18.4
+          ],
+          "visible": true,
+          "castShadows": true,
+          "mesh": {
+            "primitive": "cube",
+            "args": [
+              1
+            ]
+          },
+          "material": {
+            "name": "Wall",
+            "baseColor": [
+              0.3,
+              0.32,
+              0.4,
+              1
+            ],
+            "metallic": 0,
+            "roughness": 0.5,
+            "emissive": [
+              0,
+              0,
+              0
+            ],
+            "emissiveStrength": 1,
+            "alphaCutoff": 0,
+            "doubleSided": false,
+            "unlit": false
+          },
+          "rigidBody": {
+            "type": "static",
+            "shape": "box",
+            "center": [
+              0,
+              0,
+              0
+            ],
+            "halfExtents": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "radius": 0.5,
+            "mass": 1,
+            "friction": 0.5,
+            "restitution": 0.1,
+            "linearDamping": 0.05,
+            "angularDamping": 0.1,
+            "useGravity": true,
+            "velocity": [
+              0,
+              0,
+              0
+            ],
+            "angularVelocity": [
+              0,
+              0,
+              0
+            ]
+          }
+        },
+        {
+          "name": "Block 1",
+          "position": [
+            -4,
+            0.5,
+            3
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            2,
+            1,
+            1
+          ],
+          "visible": true,
+          "castShadows": true,
+          "mesh": {
+            "primitive": "cube",
+            "args": [
+              1
+            ]
+          },
+          "material": {
+            "name": "Block",
+            "baseColor": [
+              0.45,
+              0.4,
+              0.6,
+              1
+            ],
+            "metallic": 0.3,
+            "roughness": 0.4,
+            "emissive": [
+              0,
+              0,
+              0
+            ],
+            "emissiveStrength": 1,
+            "alphaCutoff": 0,
+            "doubleSided": false,
+            "unlit": false
+          },
+          "rigidBody": {
+            "type": "static",
+            "shape": "box",
+            "center": [
+              0,
+              0,
+              0
+            ],
+            "halfExtents": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "radius": 0.5,
+            "mass": 1,
+            "friction": 0.5,
+            "restitution": 0.1,
+            "linearDamping": 0.05,
+            "angularDamping": 0.1,
+            "useGravity": true,
+            "velocity": [
+              0,
+              0,
+              0
+            ],
+            "angularVelocity": [
+              0,
+              0,
+              0
+            ]
+          }
+        },
+        {
+          "name": "Block 2",
+          "position": [
+            4.5,
+            0.5,
+            -4
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            2.5
+          ],
+          "visible": true,
+          "castShadows": true,
+          "mesh": {
+            "primitive": "cube",
+            "args": [
+              1
+            ]
+          },
+          "material": {
+            "name": "Block",
+            "baseColor": [
+              0.45,
+              0.4,
+              0.6,
+              1
+            ],
+            "metallic": 0.3,
+            "roughness": 0.4,
+            "emissive": [
+              0,
+              0,
+              0
+            ],
+            "emissiveStrength": 1,
+            "alphaCutoff": 0,
+            "doubleSided": false,
+            "unlit": false
+          },
+          "rigidBody": {
+            "type": "static",
+            "shape": "box",
+            "center": [
+              0,
+              0,
+              0
+            ],
+            "halfExtents": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "radius": 0.5,
+            "mass": 1,
+            "friction": 0.5,
+            "restitution": 0.1,
+            "linearDamping": 0.05,
+            "angularDamping": 0.1,
+            "useGravity": true,
+            "velocity": [
+              0,
+              0,
+              0
+            ],
+            "angularVelocity": [
+              0,
+              0,
+              0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Player",
+      "position": [
+        0,
+        0.5,
+        5
+      ],
+      "rotation": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "visible": true,
+      "castShadows": true,
+      "mesh": {
+        "primitive": "sphere",
+        "args": [
+          0.4,
+          48,
+          24
+        ]
+      },
+      "material": {
+        "name": "Player",
+        "baseColor": [
+          1,
+          0.45,
+          0.1,
+          1
+        ],
+        "metallic": 0,
+        "roughness": 0.3,
+        "emissive": [
+          1,
+          0.3,
+          0.05
+        ],
+        "emissiveStrength": 0.4,
+        "alphaCutoff": 0,
+        "doubleSided": false,
+        "unlit": false
+      },
+      "rigidBody": {
+        "type": "dynamic",
+        "shape": "sphere",
+        "center": [
+          0,
+          0,
+          0
+        ],
+        "halfExtents": [
+          0.4000000059604645,
+          0.4000000059604645,
+          0.4000000059604645
+        ],
+        "radius": 0.4000000059604645,
+        "mass": 1,
+        "friction": 0.9,
+        "restitution": 0.2,
+        "linearDamping": 0.4,
+        "angularDamping": 0.6,
+        "useGravity": true,
+        "velocity": [
+          0,
+          0,
+          0
+        ],
+        "angularVelocity": [
+          0,
+          0,
+          0
+        ]
+      },
+      "audioSource": {
+        "volume": 1,
+        "pitch": 1,
+        "loop": false,
+        "playOnStart": false,
+        "spatial": false,
+        "minDistance": 2,
+        "maxDistance": 40,
+        "clip": {
+          "sfx": [
+            0,
+            280,
+            2.4,
+            0,
+            0.07,
+            0.16,
+            0,
+            0,
+            0,
+            0.35,
+            0,
+            1,
+            0,
+            0,
+            5000,
+            0.3,
+            1
+          ]
+        }
+      },
+      "behaviours": [
+        {
+          "script": "PlayerBall",
+          "enabled": true,
+          "overrides": {}
+        }
+      ]
+    },
+    {
+      "name": "Sentinels",
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "visible": true,
+      "castShadows": true,
+      "children": [
+        {
+          "name": "Sentinel 1",
+          "position": [
+            0,
+            0.45,
+            -1
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "visible": true,
+          "castShadows": true,
+          "mesh": {
+            "primitive": "cube",
+            "args": [
+              0.9
+            ]
+          },
+          "material": {
+            "name": "Sentinel",
+            "baseColor": [
+              0.6,
+              0.05,
+              0.08,
+              1
+            ],
+            "metallic": 0,
+            "roughness": 0.4,
+            "emissive": [
+              1,
+              0.1,
+              0.1
+            ],
+            "emissiveStrength": 1,
+            "alphaCutoff": 0,
+            "doubleSided": false,
+            "unlit": false
+          },
+          "rigidBody": {
+            "type": "kinematic",
+            "shape": "box",
+            "center": [
+              0,
+              0,
+              0
+            ],
+            "halfExtents": [
+              0.44999998807907104,
+              0.44999998807907104,
+              0.44999998807907104
+            ],
+            "radius": 0.44999998807907104,
+            "mass": 1,
+            "friction": 0.5,
+            "restitution": 0.1,
+            "linearDamping": 0.05,
+            "angularDamping": 0.1,
+            "useGravity": true,
+            "velocity": [
+              0,
+              0,
+              0
+            ],
+            "angularVelocity": [
+              0,
+              0,
+              0
+            ]
+          },
+          "behaviours": [
+            {
+              "script": "Sentinel",
+              "enabled": true,
+              "overrides": {
+                "range": 5,
+                "speed": 0.2
+              }
+            }
+          ]
+        },
+        {
+          "name": "Sentinel 2",
+          "position": [
+            -1,
+            0.45,
+            -5.5
+          ],
+          "rotation": [
+            0,
+            0.7071067811865475,
+            0,
+            0.7071067811865476
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "visible": true,
+          "castShadows": true,
+          "mesh": {
+            "primitive": "cube",
+            "args": [
+              0.9
+            ]
+          },
+          "material": {
+            "name": "Sentinel",
+            "baseColor": [
+              0.6,
+              0.05,
+              0.08,
+              1
+            ],
+            "metallic": 0,
+            "roughness": 0.4,
+            "emissive": [
+              1,
+              0.1,
+              0.1
+            ],
+            "emissiveStrength": 1,
+            "alphaCutoff": 0,
+            "doubleSided": false,
+            "unlit": false
+          },
+          "rigidBody": {
+            "type": "kinematic",
+            "shape": "box",
+            "center": [
+              0,
+              0,
+              0
+            ],
+            "halfExtents": [
+              0.44999998807907104,
+              0.44999998807907104,
+              0.44999998807907104
+            ],
+            "radius": 0.44999998807907104,
+            "mass": 1,
+            "friction": 0.5,
+            "restitution": 0.1,
+            "linearDamping": 0.05,
+            "angularDamping": 0.1,
+            "useGravity": true,
+            "velocity": [
+              0,
+              0,
+              0
+            ],
+            "angularVelocity": [
+              0,
+              0,
+              0
+            ]
+          },
+          "behaviours": [
+            {
+              "script": "Sentinel",
+              "enabled": true,
+              "overrides": {
+                "range": 3,
+                "speed": 0.33
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Gem Spawner",
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "visible": true,
+      "castShadows": true,
+      "behaviours": [
+        {
+          "script": "GemSpawner",
+          "enabled": true,
+          "overrides": {}
+        }
+      ]
+    },
+    {
+      "name": "Prefabs",
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "visible": false,
+      "castShadows": true,
+      "children": [
+        {
+          "name": "Gem Template",
+          "position": [
+            0,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "visible": true,
+          "castShadows": false,
+          "mesh": {
+            "primitive": "sphere",
+            "args": [
+              0.3,
+              6,
+              3
+            ]
+          },
+          "material": {
+            "name": "Gem",
+            "baseColor": [
+              0.2,
+              0.9,
+              1,
+              1
+            ],
+            "metallic": 0.2,
+            "roughness": 0.15,
+            "emissive": [
+              0.1,
+              0.8,
+              1
+            ],
+            "emissiveStrength": 2,
+            "alphaCutoff": 0,
+            "doubleSided": false,
+            "unlit": false
+          },
+          "behaviours": [
+            {
+              "script": "Gem",
+              "enabled": true,
+              "overrides": {}
+            }
+          ]
+        },
+        {
+          "name": "Spark Template",
+          "position": [
+            0,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "visible": true,
+          "castShadows": false,
+          "mesh": {
+            "primitive": "cube",
+            "args": [
+              0.12
+            ]
+          },
+          "material": {
+            "name": "Spark",
+            "baseColor": [
+              0.6,
+              1,
+              1,
+              1
+            ],
+            "metallic": 0,
+            "roughness": 0.5,
+            "emissive": [
+              0.4,
+              1,
+              1
+            ],
+            "emissiveStrength": 6,
+            "alphaCutoff": 0,
+            "doubleSided": false,
+            "unlit": true
+          },
+          "behaviours": [
+            {
+              "script": "Spark",
+              "enabled": true,
+              "overrides": {}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Score Pips",
+      "position": [
+        0,
+        1.1,
+        -9.2
+      ],
+      "rotation": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "visible": true,
+      "castShadows": true,
+      "behaviours": [
+        {
+          "script": "ScorePips",
+          "enabled": true,
+          "overrides": {}
+        }
+      ],
+      "children": [
+        {
+          "name": "Pip 1",
+          "position": [
+            -3.15,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "visible": true,
+          "castShadows": false,
+          "mesh": {
+            "primitive": "sphere",
+            "args": [
+              0.22,
+              16,
+              8
+            ]
+          },
+          "material": {
+            "name": "Pip",
+            "baseColor": [
+              0.1,
+              0.12,
+              0.1,
+              1
+            ],
+            "metallic": 0,
+            "roughness": 0.3,
+            "emissive": [
+              0.3,
+              1,
+              0.4
+            ],
+            "emissiveStrength": 0,
+            "alphaCutoff": 0,
+            "doubleSided": false,
+            "unlit": false
+          }
+        },
+        {
+          "name": "Pip 2",
+          "position": [
+            -2.4499999999999997,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "visible": true,
+          "castShadows": false,
+          "mesh": {
+            "primitive": "sphere",
+            "args": [
+              0.22,
+              16,
+              8
+            ]
+          },
+          "material": {
+            "name": "Pip",
+            "baseColor": [
+              0.1,
+              0.12,
+              0.1,
+              1
+            ],
+            "metallic": 0,
+            "roughness": 0.3,
+            "emissive": [
+              0.3,
+              1,
+              0.4
+            ],
+            "emissiveStrength": 0,
+            "alphaCutoff": 0,
+            "doubleSided": false,
+            "unlit": false
+          }
+        },
+        {
+          "name": "Pip 3",
+          "position": [
+            -1.75,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "visible": true,
+          "castShadows": false,
+          "mesh": {
+            "primitive": "sphere",
+            "args": [
+              0.22,
+              16,
+              8
+            ]
+          },
+          "material": {
+            "name": "Pip",
+            "baseColor": [
+              0.1,
+              0.12,
+              0.1,
+              1
+            ],
+            "metallic": 0,
+            "roughness": 0.3,
+            "emissive": [
+              0.3,
+              1,
+              0.4
+            ],
+            "emissiveStrength": 0,
+            "alphaCutoff": 0,
+            "doubleSided": false,
+            "unlit": false
+          }
+        },
+        {
+          "name": "Pip 4",
+          "position": [
+            -1.0499999999999998,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "visible": true,
+          "castShadows": false,
+          "mesh": {
+            "primitive": "sphere",
+            "args": [
+              0.22,
+              16,
+              8
+            ]
+          },
+          "material": {
+            "name": "Pip",
+            "baseColor": [
+              0.1,
+              0.12,
+              0.1,
+              1
+            ],
+            "metallic": 0,
+            "roughness": 0.3,
+            "emissive": [
+              0.3,
+              1,
+              0.4
+            ],
+            "emissiveStrength": 0,
+            "alphaCutoff": 0,
+            "doubleSided": false,
+            "unlit": false
+          }
+        },
+        {
+          "name": "Pip 5",
+          "position": [
+            -0.35,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "visible": true,
+          "castShadows": false,
+          "mesh": {
+            "primitive": "sphere",
+            "args": [
+              0.22,
+              16,
+              8
+            ]
+          },
+          "material": {
+            "name": "Pip",
+            "baseColor": [
+              0.1,
+              0.12,
+              0.1,
+              1
+            ],
+            "metallic": 0,
+            "roughness": 0.3,
+            "emissive": [
+              0.3,
+              1,
+              0.4
+            ],
+            "emissiveStrength": 0,
+            "alphaCutoff": 0,
+            "doubleSided": false,
+            "unlit": false
+          }
+        },
+        {
+          "name": "Pip 6",
+          "position": [
+            0.35,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "visible": true,
+          "castShadows": false,
+          "mesh": {
+            "primitive": "sphere",
+            "args": [
+              0.22,
+              16,
+              8
+            ]
+          },
+          "material": {
+            "name": "Pip",
+            "baseColor": [
+              0.1,
+              0.12,
+              0.1,
+              1
+            ],
+            "metallic": 0,
+            "roughness": 0.3,
+            "emissive": [
+              0.3,
+              1,
+              0.4
+            ],
+            "emissiveStrength": 0,
+            "alphaCutoff": 0,
+            "doubleSided": false,
+            "unlit": false
+          }
+        },
+        {
+          "name": "Pip 7",
+          "position": [
+            1.0499999999999998,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "visible": true,
+          "castShadows": false,
+          "mesh": {
+            "primitive": "sphere",
+            "args": [
+              0.22,
+              16,
+              8
+            ]
+          },
+          "material": {
+            "name": "Pip",
+            "baseColor": [
+              0.1,
+              0.12,
+              0.1,
+              1
+            ],
+            "metallic": 0,
+            "roughness": 0.3,
+            "emissive": [
+              0.3,
+              1,
+              0.4
+            ],
+            "emissiveStrength": 0,
+            "alphaCutoff": 0,
+            "doubleSided": false,
+            "unlit": false
+          }
+        },
+        {
+          "name": "Pip 8",
+          "position": [
+            1.75,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "visible": true,
+          "castShadows": false,
+          "mesh": {
+            "primitive": "sphere",
+            "args": [
+              0.22,
+              16,
+              8
+            ]
+          },
+          "material": {
+            "name": "Pip",
+            "baseColor": [
+              0.1,
+              0.12,
+              0.1,
+              1
+            ],
+            "metallic": 0,
+            "roughness": 0.3,
+            "emissive": [
+              0.3,
+              1,
+              0.4
+            ],
+            "emissiveStrength": 0,
+            "alphaCutoff": 0,
+            "doubleSided": false,
+            "unlit": false
+          }
+        },
+        {
+          "name": "Pip 9",
+          "position": [
+            2.4499999999999997,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "visible": true,
+          "castShadows": false,
+          "mesh": {
+            "primitive": "sphere",
+            "args": [
+              0.22,
+              16,
+              8
+            ]
+          },
+          "material": {
+            "name": "Pip",
+            "baseColor": [
+              0.1,
+              0.12,
+              0.1,
+              1
+            ],
+            "metallic": 0,
+            "roughness": 0.3,
+            "emissive": [
+              0.3,
+              1,
+              0.4
+            ],
+            "emissiveStrength": 0,
+            "alphaCutoff": 0,
+            "doubleSided": false,
+            "unlit": false
+          }
+        },
+        {
+          "name": "Pip 10",
+          "position": [
+            3.15,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "visible": true,
+          "castShadows": false,
+          "mesh": {
+            "primitive": "sphere",
+            "args": [
+              0.22,
+              16,
+              8
+            ]
+          },
+          "material": {
+            "name": "Pip",
+            "baseColor": [
+              0.1,
+              0.12,
+              0.1,
+              1
+            ],
+            "metallic": 0,
+            "roughness": 0.3,
+            "emissive": [
+              0.3,
+              1,
+              0.4
+            ],
+            "emissiveStrength": 0,
+            "alphaCutoff": 0,
+            "doubleSided": false,
+            "unlit": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "Score HUD",
+      "position": [
+        0,
+        -14,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "visible": true,
+      "castShadows": true,
+      "text2d": {
+        "space": "screen",
+        "anchor": "top",
+        "order": 0,
+        "text": "Gems 0 / 10",
+        "fontSize": 30,
+        "fontFamily": "sans-serif",
+        "bold": true,
+        "color": [
+          1,
+          0.93,
+          0.55,
+          1
+        ],
+        "align": "center",
+        "verticalAlign": "top",
+        "lineHeight": 1.2,
+        "maxWidth": 0,
+        "outlineWidth": 3,
+        "outlineColor": [
+          0.03,
+          0.03,
+          0.08,
+          0.9
+        ]
+      },
+      "behaviours": [
+        {
+          "script": "ScoreHud",
+          "enabled": true,
+          "overrides": {}
+        }
+      ]
+    },
+    {
+      "name": "Controls HUD",
+      "position": [
+        0,
+        12,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "visible": true,
+      "castShadows": true,
+      "text2d": {
+        "space": "screen",
+        "anchor": "bottom",
+        "order": 0,
+        "text": "WASD / arrows: roll   Space: jump   R: restart",
+        "fontSize": 15,
+        "fontFamily": "sans-serif",
+        "bold": false,
+        "color": [
+          1,
+          1,
+          1,
+          0.8
+        ],
+        "align": "center",
+        "verticalAlign": "bottom",
+        "lineHeight": 1.2,
+        "maxWidth": 0,
+        "outlineWidth": 2,
+        "outlineColor": [
+          0,
+          0,
+          0,
+          0.6
+        ]
+      }
+    },
+    {
+      "name": "Main Camera",
+      "position": [
+        0,
+        7,
+        14
+      ],
+      "rotation": [
+        -0.32453641386219606,
+        0,
+        0,
+        0.9458732029598182
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "visible": true,
+      "castShadows": true,
+      "camera": {
+        "projection": "perspective",
+        "fovDeg": 55,
+        "orthoSize": 5,
+        "near": 0.1,
+        "far": 500,
+        "priority": 0
+      },
+      "behaviours": [
+        {
+          "script": "FollowCamera",
+          "enabled": true,
+          "overrides": {}
+        }
+      ]
+    },
+    {
+      "name": "Moon",
+      "position": [
+        3,
+        10,
+        6
+      ],
+      "rotation": [
+        -0.4881480035599666,
+        0.18744220405569356,
+        -0.10821980696905142,
+        0.8454971437791755
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "visible": true,
+      "castShadows": true,
+      "light": {
+        "type": "directional",
+        "color": [
+          0.85,
+          0.9,
+          1
+        ],
+        "intensity": 1.4,
+        "range": 12,
+        "innerAngle": 20,
+        "outerAngle": 30,
+        "castShadows": true
+      }
+    },
+    {
+      "name": "Corner Lights",
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "visible": true,
+      "castShadows": true,
+      "children": [
+        {
+          "name": "Corner Light 1",
+          "position": [
+            -8,
+            2,
+            -8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "visible": true,
+          "castShadows": true,
+          "light": {
+            "type": "point",
+            "color": [
+              1,
+              0.3,
+              0.6
+            ],
+            "intensity": 20,
+            "range": 12,
+            "innerAngle": 20,
+            "outerAngle": 30,
+            "castShadows": false
+          }
+        },
+        {
+          "name": "Corner Light 2",
+          "position": [
+            8,
+            2,
+            -8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "visible": true,
+          "castShadows": true,
+          "light": {
+            "type": "point",
+            "color": [
+              0.3,
+              0.5,
+              1
+            ],
+            "intensity": 20,
+            "range": 12,
+            "innerAngle": 20,
+            "outerAngle": 30,
+            "castShadows": false
+          }
+        },
+        {
+          "name": "Corner Light 3",
+          "position": [
+            -8,
+            2,
+            8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "visible": true,
+          "castShadows": true,
+          "light": {
+            "type": "point",
+            "color": [
+              0.3,
+              1,
+              0.6
+            ],
+            "intensity": 20,
+            "range": 12,
+            "innerAngle": 20,
+            "outerAngle": 30,
+            "castShadows": false
+          }
+        },
+        {
+          "name": "Corner Light 4",
+          "position": [
+            8,
+            2,
+            8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "visible": true,
+          "castShadows": true,
+          "light": {
+            "type": "point",
+            "color": [
+              1,
+              0.8,
+              0.3
+            ],
+            "intensity": 20,
+            "range": 12,
+            "innerAngle": 20,
+            "outerAngle": 30,
+            "castShadows": false
+          }
+        }
+      ]
+    }
+  ]
+}

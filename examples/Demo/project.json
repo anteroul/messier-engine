@@ -1,0 +1,35 @@
+{
+  "format": "messier-project-folder",
+  "version": 1,
+  "name": "Demo",
+  "startScene": "scenes/Main.messier",
+  "build": {
+    "title": "",
+    "scenes": [
+      {
+        "id": "scenes/Arcade.messier",
+        "enabled": true
+      },
+      {
+        "id": "scenes/Neon Run.messier",
+        "enabled": true
+      },
+      {
+        "id": "scenes/Topple.messier",
+        "enabled": true
+      },
+      {
+        "id": "scenes/Starfall.messier",
+        "enabled": true
+      },
+      {
+        "id": "scenes/Gem Rush.messier",
+        "enabled": true
+      },
+      {
+        "id": "scenes/Main.messier",
+        "enabled": false
+      }
+    ]
+  }
+}

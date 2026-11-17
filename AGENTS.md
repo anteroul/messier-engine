@@ -163,13 +163,23 @@ Engine.step(dt)                         src/engine/engine.ts
   `tagAssetResources()` in hierarchy order. Images (sky panoramas, textures loaded into a material) and sounds are
   single-file assets (index 0); the first file's extension tells `ProjectResources` the kind. A `Project` keeps every imported
   model's original files as an `Asset` and reloads them through the normal
-  loaders (`ProjectResources`), so loaders must stay deterministic. A
-  `.messier` file is a GLB-style container (JSON manifest chunk + BIN chunk of
-  asset files). The editor's `ProjectManager` serializes the current scene
-  once a second, compares the manifest JSON with the last saved and autosaved
-  versions (dirty flag, IndexedDB autosave), and never syncs while playing.
-  Loading ignores unknown keys and keeps defaults for missing or mistyped
-  values. Problems become warnings, not exceptions.
+  loaders (`ProjectResources`, which also keeps each model's loaded hierarchy to clone), so loaders must stay
+  deterministic. On disk a project is a **folder** (`projectFolder.ts`): `project.json`, `scenes/<Name>.messier`
+  (one `SceneData` each), `scripts/<Name>.ts` and `assets/**`, where every file has a `<file>.meta` holding its id.
+  In memory it's the same `Project`: a scene's id is its path, an asset's id is its meta id (and `Asset.path` its
+  place under `assets/`), so refs and builds don't know about folders. Engine code reaches the folder only through
+  `FolderIO` (`MemoryFolder` for tests and zips, a Node one in scripts and `tests/unit/nodeFolder.ts`, a
+  `FileSystemDirectoryHandle` one in `src/editor/folderIO.ts`). When two files share a meta id (a copy made with
+  its `.meta`), the one with the older `.meta` keeps it. The packed form (a GLB-style container: JSON manifest chunk
+  + BIN chunk of asset files) is what builds embed; it was also the single-file `.messier` project format before
+  0.4, which still opens. The editor's `ProjectManager` has two modes. A folder project: once a second it serializes
+  the current scene and scripts and writes the scene, script and `project.json` files whose text differs from what
+  it last wrote or read (`written`); `FolderSync` polls the folder (and uses `FileSystemObserver` where it exists),
+  and `applyChanges()` (re)loads assets, swaps new meshes/textures/clips into live objects, and takes scripts, scenes
+  and `project.json` edited outside. Folder work is serialized through `enqueue()`, and the editor's own writes are
+  reported with `noteWrite()` so they don't echo back. A browser project (first visit, other browsers, old files)
+  autosaves its packed manifest to IndexedDB as before. Neither writes while playing. Loading ignores unknown keys and
+  keeps defaults for missing or mistyped values. Problems become warnings, not exceptions.
 - **Builds** (`src/editor/build.ts`, `src/player.ts`, `scripts/player-plugin.mjs`, `sceneManager.ts`):
   `Project.build` holds the scene order/inclusion and title (saved in the manifest). Build fetches
   `messier-player.js` (the plugin bundles `src/player.ts` with a nested Vite build: served by the dev server,
@@ -320,9 +330,9 @@ scenes they load. `test:ui` writes `ui-<game>.png` and `ui-game-<game>.png`: **l
 
 **Change anything in the demo project.** `buildDemoProject()` (`src/demoProject.ts`, engine-only) assembles it:
 `Main` from `src/demo.ts` plus the sample models, then the showcase scenes, with fixed scene and asset ids. The
-editor opens it through the normal project load on a first visit, and `examples/Demo.messier` is the same project
-saved. After changing a builder, a demo script or a sample model, run `npm run generate:demo` and commit the file:
-`tests/unit/demo-project.test.ts` fails while it's stale. Keep the builders deterministic (`seeded()`, no
+editor opens it through the normal project load on a first visit (kept in the browser), and `examples/Demo/` is the
+same project as a folder. After changing a builder, a demo script or a sample model, run `npm run generate:demo` and commit the file:
+`tests/unit/demo-project.test.ts` compares every file and fails while it's stale. Keep the builders deterministic (`seeded()`, no
 `Math.random` or dates at build time).
 
 **Make an edit undoable.** Push a `Command` with `undo`/`redo` closures to
@@ -372,11 +382,13 @@ the change log. `tests/unit/version.test.ts` checks that it all agrees.
 - During Play, `engine.scene` is the play copy, and the objects in it are
   different instances from the ones you edited. UI tests that read state during
   Play must look it up again through `window.engine.scene`.
-- The editor boots from the IndexedDB autosave when there is one. `test:ui`
+- The editor boots from the IndexedDB autosave when there is one (or reopens the last project folder). `test:ui`
   relies on puppeteer's fresh temporary profile to start from the demo, and its
   project checks (reload, scenes, Save/Open) run last because they replace the
-  scene. When debugging in a normal browser, use **☰ → New Project** or clear site data
-  to get back to a known state.
+  scene. Headless Chromium has no folder picker: `test:ui` replaces `showDirectoryPicker` with one that returns a
+  folder in the origin-private file system (`navigator.storage.getDirectory()`), a real
+  `FileSystemDirectoryHandle`, and writes files into it with `window.__fs` to act like a file manager. When
+  debugging in a normal browser, clear site data to get back to the demo.
 - Chrome warns in the console when an `AudioContext` is created before a user gesture, and `test:ui` fails on
   console warnings. That's why `audio.resume()` (not `play()` or `decode()`) creates the context, and decoding uses
   an `OfflineAudioContext`. `test:ui` also launches Chromium with `--autoplay-policy=no-user-gesture-required`.

@@ -1,6 +1,6 @@
 import type { Mesh, ResourceRef } from './mesh';
 import type { Texture } from './material';
-import { Scene } from './scene';
+import { Scene, type GameObject } from './scene';
 import type { ScriptLibrary } from './scripting';
 import { buildPrimitive } from './primitives';
 import { bytesResolver, isAudioFile, isImageFile, loadAudioClip, loadImageTexture, loadModelFromBytes, type MemoryFile } from './loaders';
@@ -8,8 +8,9 @@ import { AudioClip, type ClipRef } from './audioClip';
 import { applySceneData, checkSceneData, sceneAssetIds, tagAssetResources, type SceneData, type SceneResources } from './serialize';
 import { isObject } from './data';
 
-// A project is a set of scenes plus the scripts and imported assets they share.
-// On disk it is one binary file laid out like a GLB:
+// A project is a set of scenes plus the scripts and imported assets they share. On disk it is a folder (see
+// projectFolder.ts). Packed, as a built game carries it (and as single-file projects were saved before project
+// folders), it is one binary file laid out like a GLB:
 //   header:  magic "MSPJ" | container version | total length   (3 x u32 LE)
 //   chunk 0: length | "JSON" | manifest (UTF-8, space padded to 4 bytes)
 //   chunk 1: length | "BIN\0" | asset file bytes, each 4-byte aligned (optional)
@@ -18,7 +19,6 @@ import { isObject } from './data';
 
 export const PROJECT_FORMAT = 'messier-project';
 export const PROJECT_VERSION = 1;
-export const PROJECT_EXTENSION = '.messier';
 
 const MAGIC = 0x4a50534d; // "MSPJ"
 const CHUNK_JSON = 0x4e4f534a;
@@ -32,6 +32,8 @@ export interface Asset {
   id: string;
   name: string;
   files: MemoryFile[];
+  /** Where it lives under assets/ in a project folder (set by the folder format; not part of the packed form). */
+  path?: string;
 }
 
 export interface ProjectScene {
@@ -56,6 +58,8 @@ export interface BuildSettings {
 interface AssetEntry {
   id: string;
   name: string;
+  /** Its place under assets/ in a project folder, so a browser copy saved to a folder keeps the layout. */
+  path?: string;
   files: { name: string; offset?: number; length: number }[];
 }
 
@@ -141,7 +145,12 @@ export class Project {
       scenes: this.scenes,
       scripts: this.scripts,
       build: this.build,
-      assets: this.referencedAssets().map((a) => ({ id: a.id, name: a.name, files: a.files.map((f) => ({ name: f.name, length: f.bytes.byteLength })) })),
+      assets: this.referencedAssets().map((a) => ({
+        id: a.id,
+        name: a.name,
+        ...(a.path ? { path: a.path } : {}),
+        files: a.files.map((f) => ({ name: f.name, length: f.bytes.byteLength })),
+      })),
     };
   }
 
@@ -242,7 +251,7 @@ export class Project {
         }
         files.push({ name: f.name, bytes });
       }
-      if (files.length) p.assets.push({ id: entry.id, name: entry.name, files });
+      if (files.length) p.assets.push({ id: entry.id, name: entry.name, ...(typeof a.path === 'string' && a.path ? { path: a.path } : {}), files });
     }
     return p;
   }
@@ -250,13 +259,20 @@ export class Project {
 
 const align4 = (n: number) => (n + 3) & ~3;
 
+interface LoadedResources {
+  meshes: Mesh[];
+  textures: Texture[];
+  /** A model asset's loaded hierarchy (null for images). */
+  model: GameObject | null;
+}
+
 /**
  * Resolves scene refs for one project: rebuilds primitives and synthesized
  * sounds, and loads each imported asset once, sharing its meshes, textures and
  * clips across scene loads.
  */
 export class ProjectResources implements SceneResources {
-  private readonly assets = new Map<string, { meshes: Mesh[]; textures: Texture[] } | null>();
+  private readonly assets = new Map<string, LoadedResources | null>();
   private readonly clips = new Map<string, AudioClip | null>();
   private readonly primitives = new Map<string, Mesh>();
 
@@ -264,47 +280,59 @@ export class ProjectResources implements SceneResources {
 
   /** Loads the assets `data` references that aren't loaded yet. Failures become warnings. */
   async prepare(data: SceneData, warnings: string[] = []): Promise<void> {
-    const pending = [...sceneAssetIds(data)].filter((id) => !this.assets.has(id) && !this.clips.has(id));
-    await Promise.all(
-      pending.map(async (id) => {
-        const asset = this.project.getAsset(id);
-        if (!asset) {
-          this.assets.set(id, null);
-          warnings.push(`Asset ${id} is missing from the project`);
-          return;
-        }
-        const [main, ...companions] = asset.files;
-        if (isAudioFile(main.name)) {
-          try {
-            const clip = await loadAudioClip(main.name, main.bytes.slice().buffer);
-            clip.ref = { asset: id, index: 0 };
-            this.clips.set(id, clip);
-          } catch (err) {
-            this.clips.set(id, null);
-            warnings.push(`Could not load ${asset.name}: ${(err as Error).message}`);
-          }
-          return;
-        }
-        if (isImageFile(main.name)) {
-          try {
-            const texture = await loadImageTexture(main.name, main.bytes.slice().buffer);
-            texture.ref = { asset: id, index: 0 };
-            this.assets.set(id, { meshes: [], textures: [texture] });
-          } catch (err) {
-            this.assets.set(id, null);
-            warnings.push(`Could not load ${asset.name}: ${(err as Error).message}`);
-          }
-          return;
-        }
-        try {
-          const model = await loadModelFromBytes(main.name, main.bytes.slice().buffer, bytesResolver(companions));
-          this.assets.set(id, tagAssetResources(model, id));
-        } catch (err) {
-          this.assets.set(id, null);
-          warnings.push(`Could not load ${asset.name}: ${(err as Error).message}`);
-        }
-      }),
-    );
+    const pending = [...sceneAssetIds(data)].filter((id) => !this.has(id));
+    await Promise.all(pending.map((id) => this.load(id, warnings)));
+  }
+
+  /** Whether the asset was loaded (or tried and failed). */
+  has(assetId: string): boolean {
+    return this.assets.has(assetId) || this.clips.has(assetId);
+  }
+
+  /**
+   * (Re)loads one asset from its files in the project. Objects that use the old meshes, textures or clips keep
+   * them; look the new ones up by ref. Returns false (with a warning) when it can't be loaded.
+   */
+  async load(assetId: string, warnings: string[] = []): Promise<boolean> {
+    this.forget(assetId);
+    const asset = this.project.getAsset(assetId);
+    if (!asset) {
+      this.assets.set(assetId, null);
+      warnings.push(`Asset ${assetId} is missing from the project`);
+      return false;
+    }
+    const [main, ...companions] = asset.files;
+    try {
+      if (isAudioFile(main.name)) {
+        const clip = await loadAudioClip(main.name, main.bytes.slice().buffer);
+        clip.ref = { asset: assetId, index: 0 };
+        this.clips.set(assetId, clip);
+      } else if (isImageFile(main.name)) {
+        const texture = await loadImageTexture(main.name, main.bytes.slice().buffer);
+        texture.ref = { asset: assetId, index: 0 };
+        this.assets.set(assetId, { meshes: [], textures: [texture], model: null });
+      } else {
+        const model = await loadModelFromBytes(main.name, main.bytes.slice().buffer, bytesResolver(companions));
+        this.assets.set(assetId, { ...tagAssetResources(model, assetId), model });
+      }
+      return true;
+    } catch (err) {
+      if (isAudioFile(main.name)) this.clips.set(assetId, null);
+      else this.assets.set(assetId, null);
+      warnings.push(`Could not load ${asset.name}: ${(err as Error).message}`);
+      return false;
+    }
+  }
+
+  /** Drops what was loaded for an asset, so the next prepare() or load() reads its files again. */
+  forget(assetId: string): void {
+    this.assets.delete(assetId);
+    this.clips.delete(assetId);
+  }
+
+  /** The loaded hierarchy of a model asset, to clone into a scene (clones share its meshes and textures). */
+  model(assetId: string): GameObject | null {
+    return this.assets.get(assetId)?.model ?? null;
   }
 
   /** A new Scene holding `entry`'s objects, with `scripts` as its library (load the project's scripts into it first). */
@@ -316,8 +344,8 @@ export class ProjectResources implements SceneResources {
   }
 
   /** Makes meshes and textures of an asset imported in this session resolvable without reloading it. */
-  register(assetId: string, resources: { meshes: Mesh[]; textures: Texture[] }): void {
-    this.assets.set(assetId, resources);
+  register(assetId: string, resources: { meshes: Mesh[]; textures: Texture[] }, model: GameObject | null = null): void {
+    this.assets.set(assetId, { ...resources, model });
   }
 
   /** Makes a sound imported in this session resolvable without decoding it again. */

@@ -16,10 +16,12 @@
             <summary class="btn" title="File: project and scenes">☰<span class="dirty-dot" title="Unsaved changes">•</span></summary>
             <div class="menu-items">
               <div class="menu-title">Project</div>
-              <button data-action="new-project">New Project</button>
-              <button data-action="open-project">Open… <kbd>Ctrl+O</kbd></button>
+              <div class="project-location" title="Where the project is kept"></div>
+              <button data-action="new-project">New Project…</button>
+              <button data-action="open-project">Open Project… <kbd>Ctrl+O</kbd></button>
               <button data-action="save-project">Save <kbd>Ctrl+S</kbd></button>
-              <button data-action="save-project-as">Save As… <kbd>Ctrl+Shift+S</kbd></button>
+              <button data-action="save-project-as">Save to Folder… <kbd>Ctrl+Shift+S</kbd></button>
+              <button data-action="download-project">Download as .zip</button>
               <div class="menu-title">Scene</div>
               <input class="text scene-name" type="text" spellcheck="false" title="Name of the open scene (Enter renames it)" aria-label="Scene name" />
               <button data-action="new-scene"><span class="icon">＋</span>New Scene</button>
@@ -107,7 +109,7 @@
       <main id="viewport">
         <canvas id="gpu-canvas" tabindex="0"></canvas>
         <div id="stats"></div>
-        <div id="drop-overlay" hidden><div>Drop .glb / .gltf / .obj files<br /><small>(include .bin, .mtl and textures)</small></div></div>
+        <div id="drop-overlay" hidden><div>Drop models, images or sounds<br /><small>(a model with its .bin, .mtl and textures)</small></div></div>
         <div id="toasts"></div>
         <div id="error" hidden></div>
       </main>

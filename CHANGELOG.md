@@ -10,6 +10,25 @@ Add a line under **Unreleased** with every user-visible change.
 
 ## [Unreleased]
 
+### Changed
+
+- **Projects are folders**, like in Godot and Unity: `project.json`, one `scenes/<Name>.messier` file per scene,
+  one `scripts/<Name>.ts` file per script, and `assets/` for imported files. Every asset has a `.meta` file with the
+  id scenes refer to, so files moved or renamed together with it keep working. Folder projects are saved as you
+  work (Chrome and Edge). Other browsers keep the project in the browser and download it as a `.zip` of the same
+  folder.
+- `.messier` now means a scene file. Single-file projects from earlier versions still open; save one to turn it
+  into a project folder.
+- The demo project in the repository is the folder `examples/Demo/`.
+
+### Added
+
+- Live asset sync: files copied into `assets/` from outside the editor appear in the new **Assets** panel within a
+  second, loaded; changed files reload wherever they're used.
+- The **Assets** panel: drag models and sounds into the viewport or hierarchy, images onto objects or the sky;
+  rename and delete assets.
+- Scripts edited outside the editor (VS Code) hot-reload, even during Play.
+
 ## [0.3.0] - 2026-11-16
 
 ### Added

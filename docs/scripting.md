@@ -4,6 +4,9 @@ Messier composes games Unity-style: a scene is a hierarchy of **GameObjects**, e
 number of **components**. Behaviour is added with **Behaviour** components (in the editor, TypeScript **Script**s).
 Typed **signals** and **groups** come from Godot.
 
+In a project folder each script is a file, `scripts/<Name>.ts`. Write it in the editor's Scripts tab or in any other
+editor (VS Code): the Messier editor picks up changes to the file within a second and hot-reloads them.
+
 ## A minimal script
 
 Scripts are written in the editor's Scripts tab and import the engine from `'messier'`:

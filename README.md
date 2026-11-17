@@ -122,8 +122,8 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
 | `Ctrl+A` | Select all objects (while the hierarchy or viewport has focus) |
 | `P` | Play / stop (during Play, plain keys go to scripts; `Esc` stops) |
 | `Ctrl+E` | Switch between the **Scene** and **Scripts** tabs |
-| `Ctrl+S` / `Ctrl+Shift+S` | Save project / save as (in the code editor, `Ctrl+S` also compiles now) |
-| `Ctrl+O` | Open a `.messier` project |
+| `Ctrl+S` / `Ctrl+Shift+S` | Save now / save to a new project folder (in the code editor, `Ctrl+S` also compiles now) |
+| `Ctrl+O` | Open a project folder |
 | `Ctrl+Shift+B` | Build settings: choose the game's scenes and download it as a `.zip` |
 | `Ctrl+/` / `Tab` | In the code editor: toggle comment / indent (`Shift+Tab` outdents) |
 | `G` / `H` | Toggle grid / light and camera helpers |
@@ -137,27 +137,49 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
 - **Inspector:** drag the colored `X`/`Y`/`Z` tags (or any number label) left
   and right to scrub a value. Hold Shift for ×10, Alt for ×0.1. Values update
   live while objects move or animate.
-- **Projects and scenes:** a project holds several scenes plus the scripts and
-  imported models they share. The **☰** menu creates, opens and saves projects,
-  renames the open scene (type in its name field and press Enter), adds and
-  deletes scenes, and builds the game; the picker next to it switches scenes
-  (not during Play).
-  With nothing selected, the inspector renames the project and scene or deletes
-  the scene. Switching scenes clears undo.
-  - Everything **autosaves** in the browser (IndexedDB) about a second after a
-    change, so a reload continues where you left off. The first load (or a
-    browser without an autosave) starts with the demo project. Its other
-    scenes are small games written entirely as scripts (see
-    [Demo games](#demo-games)).
-  - **Save** (`Ctrl+S`) writes one `.messier` file: the scenes as JSON plus the
-    original files of every imported model. Chromium writes back to the file you
-    opened or saved; other browsers download it. **Open** a project with
-    `Ctrl+O`, **Import**, or by dropping the file on the viewport. A `•` on the
-    menu means changes that aren't in a file yet.
-  - Saving during Play stops Play first, so the file has the edit-time scene.
-  - Meshes are saved by reference (primitive parameters, or which imported
-    file they came from), never as vertex data. Meshes created by scripts at
-    runtime can't be saved; Save tells you which objects lost theirs.
+- **Projects and scenes:** a project is a folder, like in Godot or Unity:
+
+  ```
+  MyGame/
+    project.json          name, build settings, start scene
+    scenes/Main.messier   one file per scene (JSON)
+    scripts/Player.ts     one file per script
+    assets/               imported models, images and sounds, in any subfolders
+      models/ship.glb
+      models/ship.glb.meta   the file's id, which scenes refer to
+  ```
+
+  The **☰** menu creates (**New Project…**), opens (`Ctrl+O`) and saves
+  projects, renames the open scene (type in its name field and press Enter),
+  adds and deletes scenes, and builds the game; the picker next to it switches
+  scenes (not during Play). With nothing selected, the inspector renames the
+  project and scene or deletes the scene. Switching scenes clears undo.
+  - A project folder is **saved as you work**: about a second after a change,
+    the scene, script and `project.json` files that changed are written. The
+    ☰ menu shows the folder's name. The next visit offers to reopen it (the
+    browser asks for permission again).
+  - **Assets sync live.** Anything copied into `assets/`, from the file manager
+    or another program, shows up in the **Assets** panel (under the hierarchy)
+    within a second, loaded and ready to drag into the viewport (models and
+    sounds), onto an object (images become its texture) or onto the sky.
+    Changing a file reloads it everywhere it's used. Every asset gets a `.meta`
+    file with its id; move or rename a file together with its `.meta` and
+    scenes keep finding it (renaming in the Assets panel moves both).
+  - **Scripts are files too.** Edit `scripts/*.ts` in VS Code and the editor
+    picks up the change and hot-reloads it, even during Play.
+  - Folders need the File System Access API: Chrome or Edge. The first visit
+    (and any other browser) works on a project **kept in the browser**
+    (IndexedDB, saved about a second after a change); **Save** (`Ctrl+S`) puts
+    it into a folder, or in other browsers downloads the same folder as a
+    `.zip` (also **☰ → Download as .zip**). **Open Project…** reads a project
+    folder there too, keeping changes in the browser.
+  - Single-file `.messier` projects from before version 0.4 still open (drop
+    one on the viewport or import it); save to turn one into a folder. A scene
+    file (`.messier`) dropped on the editor joins the project as a scene.
+  - Saving during Play stops Play first, so the files have the edit-time scene.
+  - Meshes are saved by reference (primitive parameters, or which asset they
+    came from), never as vertex data. Meshes created by scripts at runtime
+    can't be saved; Save tells you which objects lost theirs.
 - **Building a game:** the toolbar's **Build** button (also **☰ → Build…**, `Ctrl+Shift+B`) opens the build
   settings. Tick the scenes to include and drag them (or use ▲/▼) into order:
   the first one starts the game, and the numbers are the build indices that
@@ -307,10 +329,10 @@ its script source and a builder that only lays out objects, so each scene
 saves and edits like a hand-made one. Open them in the Scripts tab to see how
 they work. `tests/unit/demos.test.ts` plays them headlessly.
 
-The whole demo is also saved as [examples/Demo.messier](examples/Demo.messier),
-a project file like the ones **Save** writes (scenes, scripts and the two
-sample models in one file). Open it with **☰ → Open** or drop it on the
-viewport. It is generated from the builders with `npm run generate:demo`.
+The whole demo is also saved as the project folder
+[examples/Demo/](examples/Demo/), the same layout **Save** writes: open it
+with **☰ → Open Project…**. It is generated from the builders with
+`npm run generate:demo`.
 
 ### Gem Rush
 
@@ -371,7 +393,8 @@ export default class Hover extends Script {
   methods.
 - Inspector values are stored as overrides. Changing a field's default in code
   updates every object that hasn't overridden it.
-- Scripts are part of the project (autosaved and written by Save).
+- Scripts are part of the project: `scripts/<Name>.ts` in a project folder,
+  written as you edit and reloaded when changed on disk.
   Download one with **⤓ Download**, or import `.ts` files with **Import** or by
   dropping them on the viewport.
 - Types are erased, not checked: annotations, generics, `as`, `satisfies`, `!`,
@@ -480,22 +503,25 @@ src/engine/             The engine (no DOM dependencies except the canvas)
   math.ts               vec3 / quat / mat4 (column-major), color helpers
   loaders/              glTF 2.0 / GLB, OBJ + MTL, resource resolvers, model assets
   serialize.ts          Scene <-> JSON (SceneData); meshes and textures as ResourceRefs
-  project.ts            Project (scenes, scripts, assets, build settings), .messier container, ProjectResources
+  project.ts            Project (scenes, scripts, assets, build settings), its packed form (builds), ProjectResources
+  projectFolder.ts      The project folder format: FolderIO, .meta ids, load/write, change detection
   sceneManager.ts       sceneManager: loadScene() by name or build index, for built games and editor Play
 src/player.ts           Runtime of built games: boots the project embedded in the exported page
 src/editor/             Editor UI (plain DOM, no framework)
   editor.ts             Input, selection, commands, play mode, import, overlay, Scene/Scripts tabs
-  project.ts            ProjectManager: scenes, Save/Open, IndexedDB autosave, change detection
+  project.ts            ProjectManager: folder and browser projects, scenes, saving, applying folder changes
+  folderIO.ts folderSync.ts  Directory handles as FolderIO; watching a project folder for outside changes
+  assets.ts             The Assets panel
   build.ts zip.ts       Build Settings dialog, exported page, .zip writer
   scriptsView.ts        Scripts tab: script list, problems, usages, reference
   codeEditor.ts         Textarea-over-highlight code editor (indent, comments, error markers)
   gizmo.ts              Move/rotate/scale manipulator (picking + dragging + drawing)
   hierarchy.ts inspector.ts ui.ts history.ts orbitControls.ts editor.css
 public/models/          Sample assets (lantern.glb, icosahedron.obj/.mtl)
-examples/Demo.messier   The demo project as a saved file (npm run generate:demo)
+examples/Demo/          The demo project as a project folder (npm run generate:demo)
 CHANGELOG.md            Changes per version; npm run release -- <patch|minor|major> cuts a version
 scripts/                generate-sample-glb.mjs (regenerates lantern.glb), release.mjs, generate-demo-project.mjs
-                        (regenerates examples/Demo.messier), mangle-props.mjs (release build),
+                        (regenerates examples/Demo/), mangle-props.mjs (release build),
                         player-plugin.mjs (bundles src/player.ts into messier-player.js for builds)
 tests/                  Unit tests and optional GPU smoke tests (separate package.json)
 ```

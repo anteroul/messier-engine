@@ -47,6 +47,7 @@ import {
   button, checkboxRow, colorRow, el, numberRow, rgbaRow, row, section, selectRow, sliderRow, textAreaRow, textRow, vec3Row, type Binding,
 } from './ui';
 import type { Editor } from './editor';
+import { canPickFolders } from './folderIO';
 
 /** Property editor for the selected object (or scene settings when nothing is selected). */
 export class InspectorPanel {
@@ -102,7 +103,10 @@ export class InspectorPanel {
       el('p', {
         class: 'hint',
         text: `${pm.project.scenes.length} scene${pm.project.scenes.length === 1 ? '' : 's'}, ${assets.length} imported asset${assets.length === 1 ? '' : 's'} (${formatBytes(bytes)}). ` +
-          `Changes autosave in this browser; Save (Ctrl+S) writes a ${pm.fileName} file.`,
+          (pm.folderName
+            ? `Saved in the folder ${pm.folderName} as you work. Files added to its assets/ folder show up in Assets.`
+            : 'Kept in this browser as you work. Save (Ctrl+S) to put it in a project folder' +
+              (canPickFolders() ? '.' : ': this browser can\'t write folders, so it downloads a .zip of one.')),
       }),
     );
     this.add(projectName.binding, sceneName.binding);

@@ -32,3 +32,4 @@ export * from './sceneManager';
 export * from './loaders';
 export * from './serialize';
 export * from './project';
+export * from './projectFolder';

@@ -796,14 +796,48 @@ check('switch back to first scene', (await state(() => window.engine.scene.findB
   await sleep(100);
 }
 
-// Save during Play: stops Play first and saves the edit-time scene. Headless has no file picker here, so Save downloads.
-await state(() => {
-  Object.defineProperty(window, 'showSaveFilePicker', { value: undefined, configurable: true });
-  window.__downloads = [];
-  HTMLAnchorElement.prototype.click = function () {
-    window.__downloads.push({ href: this.href, name: this.download });
+// --- Project folders. Headless Chromium has no folder picker, so the picker hands out a folder in the origin-private
+// file system: a real FileSystemDirectoryHandle. window.__fs reads and writes it the way a file manager or VS Code would.
+await state(async () => {
+  const root = await navigator.storage.getDirectory();
+  await root.removeEntry('ui-project', { recursive: true }).catch(() => {});
+  const dir = await root.getDirectoryHandle('ui-project', { create: true });
+  window.showDirectoryPicker = async () => dir;
+  const at = async (path, create) => {
+    const parts = path.split('/').filter(Boolean);
+    let d = dir;
+    for (const p of parts.slice(0, -1)) d = await d.getDirectoryHandle(p, { create });
+    return [d, parts.at(-1)];
+  };
+  window.__fs = {
+    async write(path, data) {
+      const [d, name] = await at(path, true);
+      const w = await (await d.getFileHandle(name, { create: true })).createWritable();
+      await w.write(data);
+      await w.close();
+    },
+    async text(path) {
+      const [d, name] = await at(path, false);
+      return (await (await d.getFileHandle(name)).getFile()).text();
+    },
+    async list(path) {
+      const [d] = await at(`${path}/x`, false);
+      const out = [];
+      for await (const [n] of d.entries()) out.push(n);
+      return out.sort();
+    },
+    async png(w, h, color) {
+      const c = new OffscreenCanvas(w, h);
+      const g = c.getContext('2d');
+      g.fillStyle = color;
+      g.fillRect(0, 0, w, h);
+      return c.convertToBlob({ type: 'image/png' });
+    },
   };
 });
+const until = (fn, arg) => page.waitForFunction(fn, { timeout: 6000 }, arg).catch(() => {});
+
+// Save during Play: stops Play first and saves the edit-time scene. A project kept in the browser is saved to a folder.
 const rotBefore = await state(() => [...window.engine.scene.findByName('Spinning Cube').transform.rotation]);
 await page.evaluate(() => document.getElementById('gpu-canvas').focus());
 await page.keyboard.press('KeyP');
@@ -811,50 +845,117 @@ await sleep(400);
 await page.keyboard.down('Control');
 await page.keyboard.press('KeyS');
 await page.keyboard.up('Control');
-await sleep(300);
+await until(() => window.editor.project.folderName === 'ui-project');
 const saved = await state(async () => {
   const { editor, engine } = window;
-  const dl = window.__downloads[0];
-  if (!dl) return null;
-  const bytes = new Uint8Array(await (await fetch(dl.href)).arrayBuffer());
-  const project = editor.project.project.constructor.decode(bytes);
-  const scene = project.getScene(editor.project.sceneId).data;
+  const main = JSON.parse(await window.__fs.text('scenes/Main.messier'));
   return {
-    name: dl.name,
+    folder: editor.project.folderName,
     playing: engine.playing,
     dirty: editor.project.dirty,
-    scenes: project.scenes.length,
-    rot: scene.objects.find((o) => o.name === 'Spinning Cube').rotation,
-    bytes: Array.from(bytes),
+    scenes: (await window.__fs.list('scenes')).length,
+    top: await window.__fs.list(''),
+    scene: editor.project.sceneId,
+    rot: main.objects.find((o) => o.name === 'Spinning Cube').rotation,
   };
 });
-check('Ctrl+S during Play stops and saves', saved && saved.name === 'Demo.messier' && !saved.playing && !saved.dirty && saved.scenes === 7 &&
-  saved.rot.every((v, i) => Math.abs(v - rotBefore[i]) < 1e-6), JSON.stringify(saved && { ...saved, bytes: saved.bytes.length }));
+check('Ctrl+S during Play stops and saves to a project folder', saved.folder === 'ui-project' && !saved.playing && !saved.dirty && saved.scenes === 7 &&
+  saved.top.join() === 'assets,project.json,scenes,scripts' && saved.scene === 'scenes/Main.messier' && saved.rot.every((v, i) => Math.abs(v - rotBefore[i]) < 1e-6),
+  JSON.stringify(saved));
 
-if (saved) {
-  const file = `${OUT}/ui-test.messier`;
-  writeFileSync(file, Buffer.from(saved.bytes));
-  await state(() => {
-    window.editor.project.renameProject('Changed');
-    window.engine.scene.findByName('Torus').transform.position[0] = 0;
-  });
-  const input = await page.$('#import-input');
-  await input.uploadFile(file);
-  await page.waitForFunction(() => window.editor.project.project.name === 'Demo', { timeout: 10000 }).catch(() => {});
-  await sleep(300);
-  const opened = await state(() => ({
-    name: window.editor.project.project.name,
-    scenes: window.editor.project.project.scenes.length,
-    x: window.engine.scene.findByName('Torus')?.transform.position[0],
-    dirty: window.editor.project.dirty,
-    beep: window.engine.scene.findByName('beep')?.components.find((c) => 'playOnStart' in c)?.clip?.duration,
-    sky: `${window.engine.scene.sky.mode}:${window.engine.scene.sky.texture?.name}`,
-  }));
-  check('open project file', opened.name === 'Demo' && opened.scenes === 7 && opened.x === 7.25 && !opened.dirty && Math.abs(opened.beep - 0.1) < 0.01 &&
-    opened.sky === 'image:sunset', JSON.stringify(opened));
-}
+// Files put into assets/ from outside show up and load; a changed file reloads where it's used.
+await state(async () => window.__fs.write('assets/painted.png', await window.__fs.png(32, 16, '#e04040')));
+await until(() => window.editor.project.assets.some((a) => a.path === 'painted.png') && document.querySelector('.asset-row[title^="assets/painted.png"]'));
+const painted = await state(() => {
+  const a = window.editor.project.assets.find((x) => x.path === 'painted.png');
+  const tex = a && window.editor.project.texture(a.id);
+  if (tex) window.editor.setTexture(window.engine.scene.findByName('Crate 1'), tex);
+  return { id: a?.id, width: tex?.source.width, row: !!document.querySelector('.asset-row[title^="assets/painted.png"]') };
+});
+check('an image added to assets/ appears and loads', !!painted.id && painted.width === 32 && painted.row, JSON.stringify(painted));
+await state(async () => window.__fs.write('assets/painted.png', await window.__fs.png(64, 32, '#40e040')));
+await until(() => window.engine.scene.findByName('Crate 1').material.baseColorTexture?.source.width === 64);
+const repainted = await state(() => ({
+  width: window.engine.scene.findByName('Crate 1').material.baseColorTexture?.source.width,
+  sameId: window.editor.project.assets.find((x) => x.path === 'painted.png')?.id,
+}));
+check('a changed image reloads on the objects using it', repainted.width === 64 && repainted.sameId === painted.id, JSON.stringify(repainted));
+
+// A model with its .mtl, copied in from outside, then dragged from the Assets panel into the viewport.
+await state(async () => {
+  for (const f of ['icosahedron.obj', 'icosahedron.mtl']) await window.__fs.write(`assets/gem/${f}`, await (await fetch(`models/${f}`)).blob());
+});
+await until(() => window.editor.project.assets.some((a) => a.path === 'gem/icosahedron.obj'));
+const dropped = await state(() => {
+  const asset = window.editor.project.assets.find((a) => a.path === 'gem/icosahedron.obj');
+  const canvas = document.getElementById('gpu-canvas');
+  const r = canvas.getBoundingClientRect();
+  const before = window.engine.scene.rootObjects.length;
+  const dt = new DataTransfer();
+  dt.setData('application/x-messier-asset', asset.id);
+  canvas.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, clientX: r.left + r.width * 0.3, clientY: r.top + r.height * 0.8, bubbles: true, cancelable: true }));
+  return {
+    companions: asset.files.map((f) => f.name).join(),
+    added: window.engine.scene.rootObjects.length - before,
+    selected: window.editor.selected?.name,
+    meshes: window.editor.selected ? window.editor.selected.children.filter((c) => c.mesh).length : 0,
+  };
+});
+await sleep(200);
+await page.screenshot({ path: `${OUT}/ui-assets.png` });
+check('a model added to assets/ can be dragged into the scene', dropped.companions === 'icosahedron.obj,icosahedron.mtl' && dropped.added === 1 &&
+  dropped.selected === 'icosahedron' && dropped.meshes > 0, JSON.stringify(dropped));
+
+// Scripts are files: edited on disk they hot-swap; made in the editor they're written.
+await state(() => window.__fs.write('scripts/Hover.ts', "import { Script } from 'messier';\nexport default class Hover extends Script {\n  size = 9;\n}\n"));
+await until(() => window.engine.scene.scripts.get('Hover')?.defaults.size === 9);
+await state(() => window.editor.createScript('FromEditor'));
+await until(async () => (await window.__fs.list('scripts')).includes('FromEditor.ts'));
+const scriptSync = await state(async () => ({
+  hover: window.engine.scene.scripts.get('Hover')?.defaults.size,
+  written: (await window.__fs.list('scripts')).includes('FromEditor.ts'),
+}));
+check('scripts sync with their files both ways', scriptSync.hover === 9 && scriptSync.written, JSON.stringify(scriptSync));
+await sleep(1500); // let the scene with the dropped model reach the disk
+
+// The next visit reopens the folder (no prompt: the browser still allows it).
+await page.reload({ waitUntil: 'networkidle0' });
+await until(() => window.editor?.project.folderName === 'ui-project' && window.engine.scene.findByName('icosahedron'));
+const reopened = await state(() => ({
+  folder: window.editor.project.folderName,
+  model: !!window.engine.scene.findByName('icosahedron'),
+  texture: window.engine.scene.findByName('Crate 1')?.material.baseColorTexture?.source.width,
+  hover: window.engine.scene.scripts.get('Hover')?.defaults.size,
+  rows: document.querySelectorAll('.asset-row').length,
+}));
+check('a reload reopens the project folder', reopened.folder === 'ui-project' && reopened.model && reopened.texture === 64 && reopened.hover === 9 && reopened.rows >= 5,
+  JSON.stringify(reopened));
+
+// Single-file projects from before project folders still open (in the browser).
+const opened = await state(async () => {
+  const { editor, engine } = window;
+  const bytes = editor.project.project.encode();
+  await editor.project.openFile(new File([bytes], 'Old.messier'));
+  return {
+    folder: editor.project.folderName,
+    name: editor.project.project.name,
+    scenes: editor.project.project.scenes.length,
+    x: engine.scene.findByName('Torus')?.transform.position[0],
+    beep: engine.scene.findByName('beep')?.components.find((c) => 'playOnStart' in c)?.clip?.duration,
+    sky: `${engine.scene.sky.mode}:${engine.scene.sky.texture?.name}`,
+  };
+});
+check('an old single-file project opens', opened.folder === null && opened.name === 'Demo' && opened.scenes === 7 && opened.x === 7.25 &&
+  Math.abs(opened.beep - 0.1) < 0.01 && opened.sky === 'image:sunset', JSON.stringify(opened));
 
 // --- Build: the Build Settings dialog picks and orders scenes; the .zip holds a page that plays them
+// Downloads are captured instead of saved (set up again here: the reload above cleared it).
+await state(() => {
+  window.__downloads = [];
+  HTMLAnchorElement.prototype.click = function () {
+    window.__downloads.push({ href: this.href, name: this.download });
+  };
+});
 await page.evaluate(() => document.getElementById('gpu-canvas').focus());
 await page.keyboard.down('Control');
 await page.keyboard.down('Shift');

@@ -174,6 +174,41 @@ body {
   padding: 6px 10px 2px;
 }
 
+.project-location {
+  color: var(--muted);
+  font-size: 11px;
+  padding: 6px 10px 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reopen-prompt {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+.reopen-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px 20px;
+  max-width: 380px;
+}
+.reopen-card h2 {
+  margin: 0 0 6px;
+  font-size: 16px;
+}
+.reopen-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
 .menu-version {
   color: var(--muted);
   font-size: 11px;
@@ -274,6 +309,64 @@ body.view-scripts #inspector-panel {
 #hierarchy-panel {
   grid-area: hierarchy;
   border-right: 1px solid var(--border);
+}
+
+/* Below the hierarchy, in the same column. */
+.assets-panel {
+  flex: 0 0 34%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-top: 1px solid var(--border);
+}
+.assets-list.drop-target {
+  outline: 1px dashed var(--accent);
+  outline-offset: -3px;
+}
+.asset-dir {
+  color: var(--muted);
+  font-size: 11px;
+  padding: 4px 10px 1px;
+}
+.asset-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  cursor: grab;
+  white-space: nowrap;
+}
+.asset-row:hover {
+  background: var(--hover, rgba(255, 255, 255, 0.05));
+}
+.asset-other {
+  cursor: default;
+  color: var(--muted);
+}
+.asset-icon {
+  width: 12px;
+  text-align: center;
+}
+.asset-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.icon-model {
+  color: #6fd3e8;
+}
+.icon-image {
+  color: #f0c46a;
+}
+.icon-sound {
+  color: #9fd8a8;
+}
+.assets-empty {
+  padding: 8px 10px;
+}
+.btn.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #04161a;
 }
 #inspector-panel {
   grid-area: inspector;

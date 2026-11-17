@@ -1,11 +1,12 @@
-import { Project, Scene, ScriptLibrary, loadModelAsset, serializeScene, type ResourceResolver, type Vec3 } from './engine';
+import { Project, Scene, ScriptLibrary, loadModelAsset, scenePath, serializeScene, type ResourceResolver, type Vec3 } from './engine';
 import { buildDemoScene } from './demo';
 import { buildDemoGame } from './demoGame';
 import { DEMO_GAMES } from './demos';
 
 // The demo project, assembled from the scene builders. The editor opens it on a first visit, and
-// scripts/generate-demo-project.mjs saves the same thing as examples/Demo.messier. It only uses the engine, so it
-// also runs under Node, and everything in it is fixed (ids included) so that file only changes when a builder does.
+// scripts/generate-demo-project.mjs saves the same thing as the project folder examples/Demo/. It only uses the
+// engine, so it also runs under Node, and everything in it is fixed (ids and paths included) so those files only
+// change when a builder does.
 
 /** Sample models exercising the glTF and OBJ loaders, placed in the Main scene. Files are in public/models/. */
 const SAMPLE_MODELS: readonly (readonly [file: string, id: string, position: Vec3])[] = [
@@ -15,7 +16,8 @@ const SAMPLE_MODELS: readonly (readonly [file: string, id: string, position: Vec
 
 const MAIN_SCENE = 'Main';
 
-const sceneId = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+// Scene ids are their paths in a project folder.
+const sceneId = scenePath;
 
 /**
  * Builds the demo project. `readModelFile` supplies the sample model files (and their companions) by name; a model
@@ -34,7 +36,7 @@ export async function buildDemoProject(readModelFile: ResourceResolver, warnings
       const { model, asset } = await loadModelAsset(file, await readModelFile(file), readModelFile, id);
       model.transform.position = position;
       main.add(model);
-      project.assets.push(asset);
+      project.assets.push({ ...asset, path: `models/${file}` });
     } catch (err) {
       warnings.push(`Could not load ${file}: ${(err as Error).message}`);
     }
