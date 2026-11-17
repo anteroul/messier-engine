@@ -49,9 +49,10 @@ if (warnings.length) {
 }
 
 // Fresh each time, so files of renamed or removed scenes don't linger. The folder is a git repository of its own
-// (not tracked by the engine's): keep its .git.
+// (github.com/anteroul/messier-arcade, not tracked by the engine's): keep its .git and the repository's own files.
+const KEEP = new Set(['.git', '.gitignore', 'README.md', 'LICENSE']);
 mkdirSync(outDir, { recursive: true });
-for (const name of readdirSync(outDir)) if (name !== '.git') rmSync(join(outDir, name), { recursive: true, force: true });
+for (const name of readdirSync(outDir)) if (!KEEP.has(name)) rmSync(join(outDir, name), { recursive: true, force: true });
 const at = (p) => join(outDir, p);
 const folder = {
   async list(dir) {

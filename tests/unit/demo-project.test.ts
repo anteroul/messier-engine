@@ -62,7 +62,9 @@ if (!existsSync(`${root}/examples/Demo`)) {
 } else {
   const saved = nodeFolder(`${root}/examples/Demo`);
   const files = await listFiles(fresh);
-  eq('examples/Demo has the same files (else run `npm run generate:demo` in the repo root)', await listFiles(saved), files);
+  // The repository's own files aren't part of the project.
+  const projectFiles = (await listFiles(saved)).filter((f) => f !== 'README.md' && f !== 'LICENSE');
+  eq('examples/Demo has the same files (else run `npm run generate:demo` in the repo root)', projectFiles, files);
   const stale: string[] = [];
   for (const f of [...files, TYPES_PATH]) {
     const a = await fresh.read(f);
