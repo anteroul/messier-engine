@@ -12,6 +12,10 @@ Add a line under **Unreleased** with every user-visible change.
 
 ### Changed
 
+- **License:** from this version, Messier is licensed under the PolyForm Shield License 1.0.0 instead of MIT, with
+  additional permissions (`LICENSE-EXCEPTIONS.md`): you may use, modify and share Messier and make and sell games
+  with it, but not sell or offer Messier itself or a competing product. Versions up to 0.4.0 stay available under
+  MIT.
 - `examples/Demo/` left the engine repository: `npm run generate:demo` writes it, and it's a git repository of its
   own, like any game project.
 

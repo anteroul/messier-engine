@@ -405,6 +405,9 @@ the change log. `tests/unit/version.test.ts` checks that it all agrees.
 
 ## Style
 
+- Licensing: the engine is PolyForm Shield 1.0.0 with the additional permissions in `LICENSE-EXCEPTIONS.md`.
+  Don't change `LICENSE`, `LICENSE-EXCEPTIONS.md` or the `license` field without the owner, and don't copy in
+  third-party code whose terms conflict with them.
 - TypeScript strict, ES modules, no runtime dependencies. Keep it that way
   unless there's a strong reason.
 - Match the surrounding code: small focused modules, comments that explain

@@ -614,4 +614,16 @@ The tests need a working Vulkan driver. On NixOS that means
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+From version 0.5.0, Messier is licensed under the
+[PolyForm Shield License 1.0.0](LICENSE), with
+[additional permissions](LICENSE-EXCEPTIONS.md) for what you make with it:
+
+- **You may** use, study, modify and share Messier, and make games with it
+  and sell them, without royalties and without having to include the license
+  in your games.
+- **You may not** sell or offer Messier itself, or a product that competes
+  with it (another game engine or game-making tool built from it).
+- Your scenes, scripts, assets and builds are yours.
+
+Versions up to and including 0.4.0 were released under the MIT License, and
+copies of them remain available under it.
