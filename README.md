@@ -46,7 +46,7 @@ real-time scene editor. What changed in each version: [CHANGELOG.md](CHANGELOG.m
 - **No runtime dependencies**: the math, loaders, renderer and UI are all in2
   this repo. The only npm packages are build tools (Vite, TypeScript, WebGPU types).
 
-![Editor overview: hierarchy, viewport with gizmo, inspector](docs/screenshot.png)
+![Editor overview: the Material Lab gallery in the viewport, the hierarchy, and the inspector showing a material with base color, metal/rough, normal, occlusion and emissive maps](docs/screenshot.png)
 
 ## Running on NixOS (flake)
 
