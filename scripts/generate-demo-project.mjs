@@ -48,8 +48,10 @@ if (warnings.length) {
   process.exit(1);
 }
 
-// Fresh each time, so files of renamed or removed scenes don't linger.
-rmSync(outDir, { recursive: true, force: true });
+// Fresh each time, so files of renamed or removed scenes don't linger. The folder is a git repository of its own
+// (not tracked by the engine's): keep its .git.
+mkdirSync(outDir, { recursive: true });
+for (const name of readdirSync(outDir)) if (name !== '.git') rmSync(join(outDir, name), { recursive: true, force: true });
 const at = (p) => join(outDir, p);
 const folder = {
   async list(dir) {

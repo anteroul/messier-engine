@@ -338,10 +338,10 @@ its script source and a builder that only lays out objects, so each scene
 saves and edits like a hand-made one. Open them in the Scripts tab to see how
 they work. `tests/unit/demos.test.ts` plays them headlessly.
 
-The whole demo is also saved as the project folder
-[examples/Demo/](examples/Demo/), the same layout **Save** writes: open it
-with **☰ → Open Project…**. It is generated from the builders with
-`npm run generate:demo`.
+`npm run generate:demo` writes the whole demo as a project folder,
+`examples/Demo/`, the same layout **Save** writes: open it with **☰ → Open
+Project…**. That folder is a git repository of its own, like any game made
+with Messier; the engine's repository ignores `examples/`.
 
 ### Gem Rush
 
@@ -527,7 +527,7 @@ src/editor/             Editor UI (plain DOM, no framework)
   gizmo.ts              Move/rotate/scale manipulator (picking + dragging + drawing)
   hierarchy.ts inspector.ts ui.ts history.ts orbitControls.ts editor.css
 public/models/          Sample assets (lantern.glb, icosahedron.obj/.mtl)
-examples/Demo/          The demo project as a project folder (npm run generate:demo)
+examples/Demo/          The demo project as a project folder, its own git repository (npm run generate:demo; ignored)
 CHANGELOG.md            Changes per version; npm run release -- <patch|minor|major> cuts a version
 scripts/                messier-types.mjs + types-plugin.mjs (messier.d.ts for project folders),
                         generate-sample-glb.mjs (regenerates lantern.glb), release.mjs, generate-demo-project.mjs

@@ -10,6 +10,11 @@ Add a line under **Unreleased** with every user-visible change.
 
 ## [Unreleased]
 
+### Changed
+
+- `examples/Demo/` left the engine repository: `npm run generate:demo` writes it, and it's a git repository of its
+  own, like any game project.
+
 ## [0.4.0] - 2026-11-17
 
 ### Changed

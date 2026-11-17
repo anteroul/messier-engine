@@ -335,8 +335,10 @@ scenes they load. `test:ui` writes `ui-<game>.png` and `ui-game-<game>.png`: **l
 **Change anything in the demo project.** `buildDemoProject()` (`src/demoProject.ts`, engine-only) assembles it:
 `Main` from `src/demo.ts` plus the sample models, then the showcase scenes, with fixed scene and asset ids. The
 editor opens it through the normal project load on a first visit (kept in the browser), and `examples/Demo/` is the
-same project as a folder. After changing a builder, a demo script or a sample model, run `npm run generate:demo` and commit the file:
-`tests/unit/demo-project.test.ts` compares every file and fails while it's stale. Changing the engine's public API
+same project as a folder. `examples/` is ignored by the engine repository: `examples/Demo/` is a git repository of its
+own (the generator keeps its `.git`), so commit demo changes there. After changing a builder, a demo script or a sample model, run `npm run generate:demo` (and commit in `examples/Demo/`):
+`tests/unit/demo-project.test.ts` writes a fresh copy to `tests/.out/demo-folder` (opens it, type-checks its scripts)
+and, when `examples/Demo/` exists, compares every file and fails while it's stale. Changing the engine's public API
 changes `examples/Demo/.messier/messier.d.ts` too, so regenerate after that as well; the same test type-checks the
 demo scripts against it with `tsc`. Keep the builders deterministic (`seeded()`, no
 `Math.random` or dates at build time).
