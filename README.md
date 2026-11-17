@@ -318,59 +318,6 @@ give it a `static readonly typeName` and register it in `BEHAVIOURS`. It then
 shows up in the inspector's **Add…** menu, and its public number fields become
 editable parameters automatically.
 
-## Demo games
-
-The demo project holds a small arcade. Pick a scene in the scene picker and
-press Play, or press **Build**: the demo's build settings already list the
-**Arcade** menu first and the games after it, so the downloaded page is the
-whole arcade. In the menu, `A`/`D` or the arrow keys choose a game and `Enter`
-plays it; `Backspace` in a game returns to the menu.
-
-| Scene | What it shows | Controls |
-| --- | --- | --- |
-| **Arcade** | Spotlights, emissive trims, world-space text, scene loading with `sceneManager` | `A`/`D` choose, `Enter` play |
-| **Neon Run** | A neon city at speed: unlit emissive materials, 2D shapes as a sun and glows, a shadow-casting sunset, pooled obstacles | `A`/`D` steer, `R` restart |
-| **Topple** | Physics in sunlight: stacks of metal, lacquer and marble blocks, a cannon with a charged shot and an aiming arc, soft shadows | `WASD` aim, hold and release `Space` to fire, `R` reset |
-| **Starfall** | Space shooter: metallic hull, point-light explosions, parallax star sheets and nebulae made of 2D shapes | `WASD` fly, `Space` fire, `R` restart |
-| **Gem Rush** | The scripting API tour described below | `WASD` roll, `Space` jump, `R` restart |
-
-The first four are built by [src/demos/](src/demos/): one file per scene with
-its script source and a builder that only lays out objects, so each scene
-saves and edits like a hand-made one. Open them in the Scripts tab to see how
-they work. `tests/unit/demos.test.ts` plays them headlessly.
-
-`npm run generate:demo` writes the whole demo as a project folder,
-`examples/Demo/`, the same layout **Save** writes: open it with **☰ → Open
-Project…**. That folder is a git repository of its own, like any game made
-with Messier; the engine's repository ignores `examples/`.
-
-### Material Lab
-
-A second example project, `examples/MaterialLab/`, shows off material maps. Its
-**Gallery** scene has five pedestals that add the maps one at a time (base color,
-then normal, metal/rough, occlusion and emissive), in front of a wall of riveted
-hull plating, with a light sweeping across all of it. **Orbit** puts a plated
-sphere and a ring of tiled cubes under a sun that circles them. In Play, Space
-takes every map but the base color off and puts them back, and N / P switch
-scenes. It's built by [src/materialLab/](src/materialLab/) from
-`public/models/material-lab.glb`, whose textures are generated
-(`npm run generate:materials-glb`). `npm run generate:materials` writes the
-folder; `tests/unit/material-lab.test.ts` checks it's current.
-
-### Gem Rush
-
-Pick **Gem Rush** in the scene picker and press Play. Roll the ball with
-WASD or the arrow keys, jump with Space, and collect 10 gems while staying
-clear of the red sentinels (each hit costs a point, a fall off the arena two).
-Winning slows time down for a moment; `R` restarts.
-
-All of its rules are scripts in the Scripts tab (source in
-[src/demoGame.ts](src/demoGame.ts)), so it doubles as a tour and a test of the
-scripting API: input, forces and impulses on a rigid body, kinematic bodies,
-raycasts, signals between scripts, groups, `instantiate`/`destroy` of hidden
-templates, enabling and disabling behaviours, `Time.timeScale` and every
-lifecycle hook. `tests/unit/demo-game.test.ts` plays it headlessly.
-
 ## Behaviour scripts
 
 A script is a TypeScript file whose default export is a class extending
