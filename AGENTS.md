@@ -177,7 +177,11 @@ Engine.step(dt)                         src/engine/engine.ts
   it last wrote or read (`written`); `FolderSync` polls the folder (and uses `FileSystemObserver` where it exists),
   and `applyChanges()` (re)loads assets, swaps new meshes/textures/clips into live objects, and takes scripts, scenes
   and `project.json` edited outside. Folder work is serialized through `enqueue()`, and the editor's own writes are
-  reported with `noteWrite()` so they don't echo back. A browser project (first visit, other browsers, old files)
+  reported with `noteWrite()` so they don't echo back. Every folder the editor writes or opens also gets the script
+  types: `.messier/messier.d.ts` (rewritten when it differs) and a `tsconfig.json` (only if missing), via
+  `writeTypeFiles()`. The declarations come from `scripts/messier-types.mjs`, which bundles the engine's types with
+  the TypeScript API (System-module `outFile`, renamed to `messier/engine/*` plus a `declare module "messier"`);
+  `scripts/types-plugin.mjs` serves them in dev and emits `messier.d.ts` in builds, and the editor fetches that. A browser project (first visit, other browsers, old files)
   autosaves its packed manifest to IndexedDB as before. Neither writes while playing. Loading ignores unknown keys and
   keeps defaults for missing or mistyped values. Problems become warnings, not exceptions.
 - **Builds** (`src/editor/build.ts`, `src/player.ts`, `scripts/player-plugin.mjs`, `sceneManager.ts`):
@@ -332,7 +336,9 @@ scenes they load. `test:ui` writes `ui-<game>.png` and `ui-game-<game>.png`: **l
 `Main` from `src/demo.ts` plus the sample models, then the showcase scenes, with fixed scene and asset ids. The
 editor opens it through the normal project load on a first visit (kept in the browser), and `examples/Demo/` is the
 same project as a folder. After changing a builder, a demo script or a sample model, run `npm run generate:demo` and commit the file:
-`tests/unit/demo-project.test.ts` compares every file and fails while it's stale. Keep the builders deterministic (`seeded()`, no
+`tests/unit/demo-project.test.ts` compares every file and fails while it's stale. Changing the engine's public API
+changes `examples/Demo/.messier/messier.d.ts` too, so regenerate after that as well; the same test type-checks the
+demo scripts against it with `tsc`. Keep the builders deterministic (`seeded()`, no
 `Math.random` or dates at build time).
 
 **Make an edit undoable.** Push a `Command` with `undo`/`redo` closures to

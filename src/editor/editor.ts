@@ -1432,6 +1432,7 @@ export class Editor {
       'save-project': () => void this.project.save(),
       'save-project-as': () => void this.project.save(true),
       'download-project': () => void this.project.downloadZip(),
+      'export-project': () => void this.project.exportToFolder(),
       'new-scene': () => void this.project.newScene(),
       'delete-scene': () => void this.project.deleteScene(this.project.sceneId),
       'build-settings': () => this.build.open(),
@@ -1584,6 +1585,8 @@ export class Editor {
     if (location) location.textContent = pm.folderName ? `📁 ${pm.folderName}` : 'In this browser';
     const saveAs = tb.querySelector<HTMLButtonElement>('[data-action="save-project-as"]');
     if (saveAs) saveAs.hidden = !canPickFolders();
+    const exportTo = tb.querySelector<HTMLButtonElement>('[data-action="export-project"]');
+    if (exportTo) exportTo.hidden = !canPickFolders();
     const newScene = tb.querySelector<HTMLButtonElement>('[data-action="new-scene"]');
     const deleteScene = tb.querySelector<HTMLButtonElement>('[data-action="delete-scene"]');
     if (newScene) newScene.disabled = this.engine.playing;

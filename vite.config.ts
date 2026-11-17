@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import pkg from './package.json';
 import { mangleOptions } from './scripts/mangle-props.mjs';
 import { playerPlugin } from './scripts/player-plugin.mjs';
+import { typesPlugin } from './scripts/types-plugin.mjs';
 
 export default defineConfig(({ command }) => ({
   // The editor shows it (☰ menu, help).
@@ -12,5 +13,6 @@ export default defineConfig(({ command }) => ({
   // Release builds rename `_`-prefixed (internal) properties; see scripts/mangle-props.mjs.
   esbuild: command === 'build' ? mangleOptions(new URL('./src', import.meta.url)) : undefined,
   // Serves / emits messier-player.js, the game runtime File → Build puts in exported games.
-  plugins: [playerPlugin()],
+  // …and messier.d.ts, the script API's types, which the editor writes into project folders.
+  plugins: [playerPlugin(), typesPlugin()],
 }));

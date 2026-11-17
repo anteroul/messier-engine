@@ -6,7 +6,8 @@ import { serializeScene } from '@root/src/engine/serialize.ts';
 import { loadModelAsset, loadImageAsset } from '@root/src/engine/loaders/index.ts';
 import { Texture } from '@root/src/engine/material.ts';
 import {
-  MemoryFolder, diffSnapshots, listFiles, loadProjectFolder, readMeta, snapshotFolder, writeProjectFolder, folderResolver,
+  MemoryFolder, TSCONFIG_PATH, TSCONFIG_TEXT, TYPES_PATH, diffSnapshots, listFiles, loadProjectFolder, readMeta, snapshotFolder, writeProjectFolder,
+  writeTypeFiles, folderResolver,
 } from '@root/src/engine/projectFolder.ts';
 
 // The project folder format, against an in-memory folder.
@@ -138,4 +139,17 @@ async function sampleProject(): Promise<Project> {
   }
   check('a project with no scenes is refused', message.includes('no scenes'), message);
   void ProjectResources;
+}
+
+// ---- script types for code editors
+{
+  const io = new MemoryFolder();
+  eq('types and a tsconfig.json are added', await writeTypeFiles(io, 'v1'), [TYPES_PATH, TSCONFIG_PATH]);
+  eq('the same types again: nothing to write', await writeTypeFiles(io, 'v1'), []);
+  await io.write(TSCONFIG_PATH, '{ "mine": true }');
+  eq('another version replaces the types but keeps the user\'s tsconfig.json', await writeTypeFiles(io, 'v2'), [TYPES_PATH]);
+  eq('...which is untouched', new TextDecoder().decode(await io.read(TSCONFIG_PATH)), '{ "mine": true }');
+  const config = JSON.parse(TSCONFIG_TEXT);
+  check('the tsconfig checks the scripts against the types', config.include.includes('scripts/**/*.ts') && config.include.includes(TYPES_PATH) && config.compilerOptions.noEmit);
+  eq('the dot folder isn\'t part of the project', await listFiles(io), [TSCONFIG_PATH]);
 }

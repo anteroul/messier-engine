@@ -35,6 +35,7 @@ import {
   serializeScene,
   tagAssetResources,
   writeProjectFolder,
+  writeTypeFiles,
   AudioSource,
   type Asset,
   type AudioClip,
@@ -71,6 +72,8 @@ const AUTOSAVE_KEY = 'autosave';
 export const LEGACY_SCRIPTS_KEY = 'messier.scripts.v1';
 /** First bytes of a single-file project from before project folders ("MSPJ"). */
 const LEGACY_MAGIC = [0x4d, 0x53, 0x50, 0x4a];
+/** Served next to the editor by scripts/types-plugin.mjs. */
+const TYPES_FILE = 'messier.d.ts';
 
 interface AutosaveRecord {
   /** Browser project: its manifest JSON. */
@@ -110,6 +113,8 @@ export class ProjectManager {
   /** False until a project is in place: an early check would autosave an empty project over the stored one. */
   private ready = false;
   private folderInput: HTMLInputElement | null = null;
+  /** messier.d.ts as served next to the editor ('' if it couldn't be fetched). */
+  private types: Promise<string> | null = null;
 
   constructor(private readonly editor: Editor) {
     setInterval(() => this.check(), CHECK_INTERVAL_MS);
@@ -530,11 +535,33 @@ export class ProjectManager {
     return true;
   }
 
-  /** The project as a .zip of its folder layout. */
+  /**
+   * Writes a copy of the project into a folder the user picks (with the script types for code editors). The editor
+   * stays with the project where it was.
+   */
+  async exportToFolder(): Promise<boolean> {
+    const handle = await this.pick();
+    if (!handle) return false;
+    const io = handleFolder(handle);
+    if ((await io.list('')).some((e) => !e.name.startsWith('.')) && !confirm(`${handle.name} isn't empty. Export into it anyway?`)) return false;
+    this.capture();
+    try {
+      await writeProjectFolder(io, this.project);
+      await writeTypeFiles(io, await this.typesText());
+    } catch (err) {
+      this.editor.notify(`Export failed: ${(err as Error).message}`, 'error');
+      return false;
+    }
+    this.editor.notify(`Exported to ${handle.name}`, 'success');
+    return true;
+  }
+
+  /** The project as a .zip of its folder layout, script types included. */
   async downloadZip(): Promise<boolean> {
     this.capture();
     const io = new MemoryFolder();
     await writeProjectFolder(io, this.project);
+    await writeTypeFiles(io, await this.typesText());
     const root = safeFileName(this.project.name);
     const zip = await createZip([...io.files].map(([path, f]) => ({ name: `${root}/${path}`, data: f.bytes })));
     download(zip, this.fileName, 'application/zip');
@@ -588,6 +615,10 @@ export class ProjectManager {
       loaded = await loadProjectFolder(io);
     }
     await this.load(loaded.project, loaded.resources, { io, handle });
+    // Script types for VS Code: added, or updated when the folder has another version's.
+    void this.enqueue(async () => {
+      for (const p of await writeTypeFiles(io, await this.typesText())) await this.watcher?.noteWrite(p);
+    }).catch(() => undefined);
     this.report(loaded.warnings, 'Opened without');
     this.editor.notify(`Opened ${handle.name}`, 'success');
     return true;
@@ -642,6 +673,13 @@ export class ProjectManager {
     this.project.scenes.push(scene);
     await this.showScene(scene.id);
     this.editor.notify(`Added scene ${name}`, 'success');
+  }
+
+  /** messier.d.ts from next to the editor (vite builds it); '' when it can't be had, so folders just go without. */
+  private typesText(): Promise<string> {
+    return (this.types ??= fetch(`${import.meta.env.BASE_URL}${TYPES_FILE}`)
+      .then((r) => (r.ok ? r.text() : ''))
+      .catch(() => ''));
   }
 
   private async pick(): Promise<FileSystemDirectoryHandle | null> {

@@ -28,6 +28,11 @@ Add a line under **Unreleased** with every user-visible change.
 - The **Assets** panel: drag models and sounds into the viewport or hierarchy, images onto objects or the sky;
   rename and delete assets.
 - Scripts edited outside the editor (VS Code) hot-reload, even during Play.
+- Project folders get `.messier/messier.d.ts`, the types of the `'messier'` module scripts import from, and a
+  `tsconfig.json`, so VS Code type-checks and autocompletes scripts instead of reporting "Cannot find module
+  'messier'".
+- **Export to Folder…** and **Export as .zip** write a copy of the project (script types included) without moving
+  the editor to it.
 
 ## [0.3.0] - 2026-11-16
 

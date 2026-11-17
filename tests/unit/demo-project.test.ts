@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { check, eq } from './harness';
-import { MemoryFolder, listFiles, loadProjectFolder, writeProjectFolder } from '@root/src/engine/projectFolder.ts';
+import { MemoryFolder, TYPES_PATH, listFiles, loadProjectFolder, writeProjectFolder, writeTypeFiles } from '@root/src/engine/projectFolder.ts';
+import { spawnSync } from 'node:child_process';
 import { nodeFolder } from './nodeFolder';
 import { ScriptAsset, ScriptLibrary } from '@root/src/engine/scripting.ts';
 import { buildDemoProject } from '@root/src/demoProject.ts';
@@ -30,6 +31,7 @@ eq('demo project assets', built.referencedAssets().map((a) => `${a.id}:${a.files
 {
   const fresh = new MemoryFolder();
   await writeProjectFolder(fresh, built);
+  await writeTypeFiles(fresh, ''); // the tsconfig.json; the declarations are checked below
   const saved = nodeFolder(`${root}/examples/Demo`);
   const files = await listFiles(fresh);
   eq('examples/Demo has the same files (else run `npm run generate:demo` in the repo root)', await listFiles(saved), files);
@@ -55,4 +57,16 @@ eq('demo project assets', built.referencedAssets().map((a) => `${a.id}:${a.files
   }
   eq('saved demo scenes load without warnings', loadWarnings, []);
   eq('the build order survives', project.buildScenes().map((s) => s.name), ['Arcade', 'Neon Run', 'Topple', 'Starfall', 'Gem Rush']);
+}
+
+// ---- the script types: current, and the demo's scripts type-check against them (what VS Code shows)
+{
+  const node = process.execPath;
+  const types = spawnSync(node, [`${root}/scripts/messier-types.mjs`], { cwd: root, encoding: 'utf8', maxBuffer: 64 << 20 });
+  eq('messier.d.ts builds', types.status, 0);
+  const saved = readFileSync(`${root}/examples/Demo/${TYPES_PATH}`, 'utf8');
+  check('examples/Demo has the current script types (else run `npm run generate:demo`)', types.stdout === saved);
+  check('they declare the messier module', saved.includes('declare module "messier" {'));
+  const tsc = spawnSync(node, [`${root}/node_modules/typescript/bin/tsc`, '-p', `${root}/examples/Demo`], { cwd: root, encoding: 'utf8' });
+  eq('the demo scripts type-check against them', tsc.stdout.trim(), '');
 }

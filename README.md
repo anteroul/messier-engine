@@ -147,6 +147,8 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
     assets/               imported models, images and sounds, in any subfolders
       models/ship.glb
       models/ship.glb.meta   the file's id, which scenes refer to
+    tsconfig.json         lets VS Code check scripts against…
+    .messier/messier.d.ts …the types of the 'messier' module
   ```
 
   The **☰** menu creates (**New Project…**), opens (`Ctrl+O`) and saves
@@ -166,7 +168,14 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
     file with its id; move or rename a file together with its `.meta` and
     scenes keep finding it (renaming in the Assets panel moves both).
   - **Scripts are files too.** Edit `scripts/*.ts` in VS Code and the editor
-    picks up the change and hot-reloads it, even during Play.
+    picks up the change and hot-reloads it, even during Play. Every project
+    folder the editor writes gets `.messier/messier.d.ts` (the types of the
+    `'messier'` module scripts import from) and a `tsconfig.json` using it, so
+    VS Code type-checks and autocompletes scripts. The types are updated when
+    the project opens in another version; an existing `tsconfig.json` is left
+    alone.
+  - **Export** (☰ → **Export to Folder…** or **Export as .zip**) writes a copy
+    of the project, script types included, without moving the editor to it.
   - Folders need the File System Access API: Chrome or Edge. The first visit
     (and any other browser) works on a project **kept in the browser**
     (IndexedDB, saved about a second after a change); **Save** (`Ctrl+S`) puts
@@ -520,7 +529,8 @@ src/editor/             Editor UI (plain DOM, no framework)
 public/models/          Sample assets (lantern.glb, icosahedron.obj/.mtl)
 examples/Demo/          The demo project as a project folder (npm run generate:demo)
 CHANGELOG.md            Changes per version; npm run release -- <patch|minor|major> cuts a version
-scripts/                generate-sample-glb.mjs (regenerates lantern.glb), release.mjs, generate-demo-project.mjs
+scripts/                messier-types.mjs + types-plugin.mjs (messier.d.ts for project folders),
+                        generate-sample-glb.mjs (regenerates lantern.glb), release.mjs, generate-demo-project.mjs
                         (regenerates examples/Demo/), mangle-props.mjs (release build),
                         player-plugin.mjs (bundles src/player.ts into messier-player.js for builds)
 tests/                  Unit tests and optional GPU smoke tests (separate package.json)

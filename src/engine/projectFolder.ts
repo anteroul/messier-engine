@@ -300,6 +300,55 @@ export async function writeProjectFolder(io: FolderIO, project: Project): Promis
   return out;
 }
 
+// ---- types for code editors
+
+/** The script API's declarations (scripts/messier-types.mjs builds them), for VS Code and other TypeScript editors. */
+export const TYPES_PATH = '.messier/messier.d.ts';
+export const TSCONFIG_PATH = 'tsconfig.json';
+
+/** Type-checks scripts/ against the 'messier' declarations; noEmit, since the editor compiles scripts itself. */
+export const TSCONFIG_TEXT = `${JSON.stringify(
+  {
+    compilerOptions: {
+      target: 'ES2022',
+      module: 'ESNext',
+      moduleResolution: 'Bundler',
+      lib: ['ES2022', 'DOM'],
+      types: [],
+      strict: true,
+      noEmit: true,
+      skipLibCheck: true,
+      verbatimModuleSyntax: true,
+    },
+    include: [`${SCRIPTS_DIR}/**/*.ts`, TYPES_PATH],
+  },
+  null,
+  2,
+)}\n`;
+
+/**
+ * Puts the script types into a project folder: `types` as .messier/messier.d.ts (when it differs), and a
+ * tsconfig.json unless the folder has one (it may be the user's own). Returns the paths written.
+ */
+export async function writeTypeFiles(io: FolderIO, types: string): Promise<string[]> {
+  const written: string[] = [];
+  let current = '';
+  try {
+    current = text(await io.read(TYPES_PATH));
+  } catch {
+    // Not there yet.
+  }
+  if (types && current !== types) {
+    await io.write(TYPES_PATH, types);
+    written.push(TYPES_PATH);
+  }
+  if (!(await io.stat(TSCONFIG_PATH))) {
+    await io.write(TSCONFIG_PATH, TSCONFIG_TEXT);
+    written.push(TSCONFIG_PATH);
+  }
+  return written;
+}
+
 // ---- change detection
 
 /** Path → "size:modified" for every file in the folder. */

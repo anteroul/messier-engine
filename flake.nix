@@ -52,6 +52,10 @@
               ./scripts/mangle-props.d.mts
               ./scripts/player-plugin.mjs
               ./scripts/player-plugin.d.mts
+              ./scripts/types-plugin.mjs
+              ./scripts/types-plugin.d.mts
+              ./scripts/messier-types.mjs
+              ./scripts/messier-types.d.mts
               ./index.html
               ./src
               ./public

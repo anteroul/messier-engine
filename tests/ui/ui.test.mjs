@@ -854,11 +854,19 @@ const saved = await state(async () => {
     playing: engine.playing,
     dirty: editor.project.dirty,
     scenes: (await window.__fs.list('scenes')).length,
-    top: await window.__fs.list(''),
+    // The script types (.messier/, tsconfig.json) follow a moment later; checked below.
+    top: (await window.__fs.list('')).filter((n) => !n.startsWith('.') && n !== 'tsconfig.json'),
     scene: editor.project.sceneId,
     rot: main.objects.find((o) => o.name === 'Spinning Cube').rotation,
   };
 });
+// The dev server builds messier.d.ts on the first request, which takes a moment.
+await until(async () => (await window.__fs.text('tsconfig.json').catch(() => '')) !== '');
+const typeFiles = await state(async () => {
+  const types = await window.__fs.text('.messier/messier.d.ts').catch(() => '');
+  return { types: types.includes('declare module "messier"'), tsconfig: (await window.__fs.text('tsconfig.json').catch(() => '')).includes('messier.d.ts') };
+});
+check('a saved project folder gets the script types for code editors', typeFiles.types && typeFiles.tsconfig, JSON.stringify(typeFiles));
 check('Ctrl+S during Play stops and saves to a project folder', saved.folder === 'ui-project' && !saved.playing && !saved.dirty && saved.scenes === 7 &&
   saved.top.join() === 'assets,project.json,scenes,scripts' && saved.scene === 'scenes/Main.messier' && saved.rot.every((v, i) => Math.abs(v - rotBefore[i]) < 1e-6),
   JSON.stringify(saved));
@@ -917,6 +925,25 @@ const scriptSync = await state(async () => ({
 }));
 check('scripts sync with their files both ways', scriptSync.hover === 9 && scriptSync.written, JSON.stringify(scriptSync));
 await sleep(1500); // let the scene with the dropped model reach the disk
+
+// Export to Folder writes a copy (script types included) and the editor stays with its project.
+const exported = await state(async () => {
+  const root = await navigator.storage.getDirectory();
+  await root.removeEntry('ui-export', { recursive: true }).catch(() => {});
+  const dir = await root.getDirectoryHandle('ui-export', { create: true });
+  const picker = window.showDirectoryPicker;
+  window.showDirectoryPicker = async () => dir;
+  const ok = await window.editor.project.exportToFolder();
+  window.showDirectoryPicker = picker;
+  const names = [];
+  for await (const [n] of dir.entries()) names.push(n);
+  const scenes = [];
+  for await (const [n] of (await dir.getDirectoryHandle('scenes')).entries()) scenes.push(n);
+  const types = await (await (await dir.getDirectoryHandle('.messier')).getFileHandle('messier.d.ts')).getFile();
+  return { ok, names: names.sort().join(), scenes: scenes.length, types: types.size > 10000, still: window.editor.project.folderName };
+});
+check('Export to Folder writes a copy with the script types', exported.ok && exported.names === '.messier,assets,project.json,scenes,scripts,tsconfig.json' &&
+  exported.scenes === 7 && exported.types && exported.still === 'ui-project', JSON.stringify(exported));
 
 // The next visit reopens the folder (no prompt: the browser still allows it).
 await page.reload({ waitUntil: 'networkidle0' });

@@ -1,9 +1,11 @@
-// Writes examples/Demo/: the demo project the editor starts with, as a project folder (Save to Folder writes the same).
+// Writes examples/Demo/: the demo project the editor starts with, as a project folder (Export to Folder writes the
+// same, script types for code editors included).
 // Run via `npm run generate:demo` after changing a demo scene builder or a sample model (tests/unit checks it's current).
 import * as esbuild from 'esbuild'; // comes with Vite
 import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildMessierTypes } from './messier-types.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = resolve(root, 'examples/Demo');
@@ -19,7 +21,7 @@ const rawPlugin = {
 
 const bundle = await esbuild.build({
   stdin: {
-    contents: `export { buildDemoProject } from './src/demoProject.ts';\nexport { writeProjectFolder } from './src/engine/projectFolder.ts';`,
+    contents: `export { buildDemoProject } from './src/demoProject.ts';\nexport { writeProjectFolder, writeTypeFiles } from './src/engine/projectFolder.ts';`,
     resolveDir: root,
     loader: 'ts',
   },
@@ -31,7 +33,7 @@ const bundle = await esbuild.build({
   plugins: [rawPlugin],
   logLevel: 'warning',
 });
-const { buildDemoProject, writeProjectFolder } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString('base64')}`);
+const { buildDemoProject, writeProjectFolder, writeTypeFiles } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString('base64')}`);
 
 // Node can't decode images. The loaders only need a texture to exist to give it a ref the scene can save.
 globalThis.createImageBitmap = async () => ({ width: 1, height: 1, close() {} });
@@ -77,4 +79,6 @@ const folder = {
   },
 };
 const written = await writeProjectFolder(folder, project);
+// What the editor adds to every project folder, so VS Code can check the scripts.
+await writeTypeFiles(folder, buildMessierTypes(root));
 console.log(`Wrote ${outDir}/ (${written.scenes.length} scenes, ${written.scripts.length} scripts, ${written.assets.length} assets)`);
