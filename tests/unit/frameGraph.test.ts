@@ -65,7 +65,8 @@ const reset = () => {
   log.length = 0;
   passDescs.clear();
 };
-const imported = (label: string) => fakeTexture({ label, size: [8, 8], format: 'bgra8unorm', usage: 0 }) as unknown as GPUTexture;
+const imported = (label: string, format = 'bgra8unorm') => fakeTexture({ label, size: [8, 8], format, usage: 0 }) as unknown as GPUTexture;
+const targets = new Map<string, unknown>();
 const ran: string[] = [];
 const exec = (name: string) => () => void ran.push(name);
 const tex = (d: any) => (passDescs.get(d)?.colorAttachments[0]?.view.texture as FakeTexture | undefined);
@@ -212,16 +213,16 @@ const chain = (sameSize: boolean) => {
 {
   reset();
   const out = g.importTexture('canvas', imported('canvas'));
-  const shadow = g.importTexture('shadow map', imported('shadow'));
+  const shadow = g.importTexture('shadow map', imported('shadow', 'depth32float'));
   const msaa = g.createTexture('msaa', { format: 'bgra8unorm', sampleCount: 4 });
   const depth = g.createTexture('depth', { format: 'depth32float', sampleCount: 4 });
   const hdr = g.createTexture('hdr', { format: 'rgba16float' });
-  g.addRenderPass('shadow', (p) => (p.depthAttachment(shadow, { depthClearValue: 1 }), exec('shadow')));
+  g.addRenderPass('shadow', (p) => (p.depthAttachment(shadow, { depthClearValue: 1 }), (_e, res) => void targets.set('shadow', res.target)));
   g.addRenderPass('main', (p) => {
     p.read(shadow);
     p.colorAttachment(hdr, { clearValue: { r: 0, g: 0, b: 0, a: 1 } });
     p.depthAttachment(depth, { depthClearValue: 0 });
-    return exec('main');
+    return (_e, res) => void targets.set('main', res.target);
   });
   g.addRenderPass('tonemap', (p) => {
     p.read(hdr);
@@ -234,6 +235,10 @@ const chain = (sameSize: boolean) => {
     [main.colorAttachments[0].storeOp, main.depthStencilAttachment.depthStoreOp, tonemap.colorAttachments[0].storeOp],
     ['store', 'discard', 'discard']);
   eq('imported attachments are always stored', [sh.depthStencilAttachment.depthStoreOp, sh.depthStencilAttachment.depthClearValue], ['store', 1]);
+  eq('passes see their attachments\' formats', [targets.get('main'), targets.get('shadow')], [
+    { colorFormats: ['rgba16float'], depthFormat: 'depth32float', sampleCount: 1 },
+    { colorFormats: [], depthFormat: 'depth32float', sampleCount: 1 },
+  ]);
   check('the resolve target is the imported texture', (tonemap.colorAttachments[0].resolveTarget.texture as FakeTexture).label === 'canvas');
   eq('clear values and load ops pass through', [main.colorAttachments[0].loadOp, main.colorAttachments[0].clearValue, main.depthStencilAttachment.depthLoadOp],
     ['clear', { r: 0, g: 0, b: 0, a: 1 }, 'clear']);

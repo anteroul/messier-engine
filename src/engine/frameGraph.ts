@@ -54,11 +54,20 @@ export interface DepthAttachment {
   depthClearValue?: number;
 }
 
+/** Formats and sample count of a render pass's attachments, for choosing pipelines that match them. */
+export interface RenderTarget {
+  colorFormats: GPUTextureFormat[];
+  depthFormat: GPUTextureFormat | null;
+  sampleCount: number;
+}
+
 /** The textures of the frame, for a pass's execute function. */
 export interface FrameResources {
   texture(handle: TextureHandle): GPUTexture;
   /** A default view of the texture. */
   view(handle: TextureHandle): GPUTextureView;
+  /** The pass's attachments (render passes; null in compute passes). */
+  readonly target: RenderTarget | null;
 }
 
 interface PassBuilderBase {
@@ -221,20 +230,18 @@ export class FrameGraph {
       const { order, run } = this.plan();
       this.lifetimes(run);
       const encoder = this.device.createCommandEncoder({ label: 'frame' });
-      const resources: FrameResources = {
-        texture: (h) => this.gpuTexture(this.resource(h)),
-        view: (h) => this.gpuTexture(this.resource(h)).createView(),
-      };
+      const texture = (h: TextureHandle) => this.gpuTexture(this.resource(h));
+      const view = (h: TextureHandle) => this.gpuTexture(this.resource(h)).createView();
       run.forEach((pass, i) => {
         for (const r of this.resources) if (r.first === i && !r.imported) this.allocate(r);
         encoder.pushDebugGroup(pass.name);
         if (pass.kind === 'render') {
           const pe = encoder.beginRenderPass(this.renderPassDescriptor(pass, i, run));
-          (pass.execute as RenderPassExecute)(pe, resources);
+          (pass.execute as RenderPassExecute)(pe, { texture, view, target: this.renderTarget(pass) });
           pe.end();
         } else {
           const pe = encoder.beginComputePass({ label: pass.name });
-          (pass.execute as ComputePassExecute)(pe, resources);
+          (pass.execute as ComputePassExecute)(pe, { texture, view, target: null });
           pe.end();
         }
         encoder.popDebugGroup();
@@ -367,6 +374,16 @@ export class FrameGraph {
       };
     }
     return desc;
+  }
+
+  private renderTarget(pass: Pass): RenderTarget {
+    const format = (r: Resource) => r.desc?.format ?? r.imported!.format;
+    const first = pass.colors[0]?.res ?? pass.depth?.res;
+    return {
+      colorFormats: pass.colors.map((c) => format(c.res)),
+      depthFormat: pass.depth ? format(pass.depth.res) : null,
+      sampleCount: first ? (first.desc?.sampleCount ?? first.imported!.sampleCount) : 1,
+    };
   }
 
   private gpuTexture(r: Resource): GPUTexture {
