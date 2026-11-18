@@ -4,11 +4,6 @@ struct ShadowFrame {
   lightViewProj: mat4x4f,
 };
 
-struct Object {
-  model: mat4x4f,
-  normal: mat4x4f,
-};
-
 @group(0) @binding(0) var<uniform> shadow: ShadowFrame;
 @group(1) @binding(0) var<uniform> object: Object;
 

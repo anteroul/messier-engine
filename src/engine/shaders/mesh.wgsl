@@ -4,21 +4,6 @@
 // occlusion (R) are linear. Meshes carry no tangents, so normal maps use a
 // tangent frame built per pixel from screen-space derivatives of position and UV.
 
-struct Material {
-  baseColor: vec4f,
-  // rgb = emissive (linear, pre-multiplied by strength), w = metallic
-  emissive: vec4f,
-  // x = roughness, y = unlit flag, z = alpha cutoff, w = has normal map
-  params: vec4f,
-  // x = normal scale, y = occlusion strength
-  maps: vec4f,
-};
-
-struct Object {
-  model: mat4x4f,
-  normal: mat4x4f,
-};
-
 @group(0) @binding(1) var<storage, read> lights: array<Light>;
 @group(0) @binding(2) var shadowMap: texture_depth_2d;
 @group(0) @binding(3) var shadowSampler: sampler_comparison;

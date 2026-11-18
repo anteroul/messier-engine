@@ -179,6 +179,7 @@ export class Editor {
       if (!engine.playing) return;
       this.endActiveGesture();
       this.history.clear();
+      this.prewarm();
       this.sceneSwitched({ items: [], active: null });
     });
 
@@ -628,6 +629,7 @@ export class Editor {
   }
 
   afterSceneLoad(): void {
+    this.prewarm();
     this.hierarchy.markDirty();
     this.inspector.show(null, true);
     this.scripts.refresh();
@@ -896,7 +898,14 @@ export class Editor {
       obj.transform.position = parent !== this.scene.root ? [0, 0, 0] : (position ?? this.spawnPoint(0.5));
     }
     if (!obj) return null;
-    return this.addObject(obj, parent, `Add ${obj.name}`);
+    this.addObject(obj, parent, `Add ${obj.name}`);
+    this.prewarm();
+    return obj;
+  }
+
+  /** Builds the pipelines the scene needs in the background, so the next frames don't stop to build them. */
+  private prewarm(): void {
+    this.engine.renderer.prewarm(this.scene).catch((err) => this.notify(`Could not prepare shaders: ${(err as Error).message}`, 'error'));
   }
 
   // ---------------------------------------------------------------------------

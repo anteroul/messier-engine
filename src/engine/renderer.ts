@@ -6,6 +6,7 @@ import overlayWGSL from './shaders/overlay.wgsl?raw';
 import mipmapWGSL from './shaders/mipmap.wgsl?raw';
 import shape2dWGSL from './shaders/shape2d.wgsl?raw';
 import skyWGSL from './shaders/sky.wgsl?raw';
+import meshDataWGSL from './shaders/meshData.wgsl?raw';
 import tonemapWGSL from './shaders/tonemap.wgsl?raw';
 import { mat4, vec3, type Mat4, type Vec3 } from './math';
 import { VERTEX_STRIDE_BYTES, type Mesh } from './mesh';
@@ -19,7 +20,8 @@ import { Batch2D, VERTEX2D_FLOATS, type Draw2D } from './draw2d';
 import { ATLAS_SIZE, fontAtlas } from './font';
 import { Renderer2D } from './shapes2d';
 import type { SkyMode } from './sky';
-import { FrameGraph } from './frameGraph';
+import { FrameGraph, type RenderTarget } from './frameGraph';
+import { MeshPipelines, allMeshVariantKeys, meshVariantKey, type MeshPass, type MeshVariantKey } from './pipelines';
 
 export const MAX_LIGHTS = 128;
 const SHADOW_MAP_SIZE = 2048;
@@ -60,6 +62,8 @@ export interface RenderStats {
   shadowCasters: number;
   /** Shape2D/Text2D components drawn. */
   elements2D: number;
+  /** Mesh pipelines built during the frame because they weren't prewarmed (each one a hitch). */
+  pipelineBuilds: number;
 }
 
 const SKY_MODE_INDEX: Record<SkyMode, number> = { color: 0, gradient: 1, image: 2 };
@@ -81,7 +85,7 @@ export class Renderer {
   readonly sampleCount = 4;
   width = 0;
   height = 0;
-  readonly stats: RenderStats = { drawCalls: 0, triangles: 0, lights: 0, shadowCasters: 0, elements2D: 0 };
+  readonly stats: RenderStats = { drawCalls: 0, triangles: 0, lights: 0, shadowCasters: 0, elements2D: 0, pipelineBuilds: 0 };
 
   private readonly context: GPUCanvasContext;
   /** Declares, orders and runs each frame's passes, and owns their transient textures (MSAA color, depth). */
@@ -92,9 +96,8 @@ export class Renderer {
   private readonly objectLayout: GPUBindGroupLayout;
   private readonly shadowFrameLayout: GPUBindGroupLayout;
 
-  private readonly meshPipelineCulled: GPURenderPipeline;
-  private readonly meshPipelineDoubleSided: GPURenderPipeline;
-  private readonly shadowPipeline: GPURenderPipeline;
+  /** Mesh and shadow pipelines by variant (see pipelines.ts). */
+  readonly meshPipelines: MeshPipelines;
   private readonly gridPipeline: GPURenderPipeline;
   private readonly overlayDepthPipeline: GPURenderPipeline;
   private readonly overlayTopPipeline: GPURenderPipeline;
@@ -209,41 +212,14 @@ export class Renderer {
     });
 
     // --- Pipelines ----------------------------------------------------------
-    const meshVertexLayout: GPUVertexBufferLayout = {
-      arrayStride: VERTEX_STRIDE_BYTES,
-      attributes: [
-        { shaderLocation: 0, offset: 0, format: 'float32x3' },
-        { shaderLocation: 1, offset: 12, format: 'float32x3' },
-        { shaderLocation: 2, offset: 24, format: 'float32x2' },
-      ],
-    };
     const multisample: GPUMultisampleState = { count: this.sampleCount };
-    const meshModule = device.createShaderModule({ label: 'mesh', code: commonWGSL + meshWGSL });
-    const meshLayout = device.createPipelineLayout({ bindGroupLayouts: [this.frameLayout, this.materialLayout, this.objectLayout] });
-    const makeMeshPipeline = (cullMode: GPUCullMode) =>
-      device.createRenderPipeline({
-        label: `mesh-${cullMode}`,
-        layout: meshLayout,
-        vertex: { module: meshModule, entryPoint: 'vs_main', buffers: [meshVertexLayout] },
-        fragment: { module: meshModule, entryPoint: 'fs_main', targets: [{ format: HDR_FORMAT }] },
-        primitive: { topology: 'triangle-list', cullMode, frontFace: 'ccw' },
-        depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'greater' },
-        multisample,
-      });
-    this.meshPipelineCulled = makeMeshPipeline('back');
-    this.meshPipelineDoubleSided = makeMeshPipeline('none');
-
-    const shadowModule = device.createShaderModule({ label: 'shadow', code: shadowWGSL });
-    this.shadowPipeline = device.createRenderPipeline({
-      label: 'shadow',
-      layout: device.createPipelineLayout({ bindGroupLayouts: [this.shadowFrameLayout, this.objectLayout] }),
-      vertex: {
-        module: shadowModule,
-        entryPoint: 'vs_main',
-        buffers: [{ arrayStride: VERTEX_STRIDE_BYTES, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] }],
-      },
-      primitive: { topology: 'triangle-list', cullMode: 'none' },
-      depthStencil: { format: SHADOW_FORMAT, depthWriteEnabled: true, depthCompare: 'less', depthBias: 2, depthBiasSlopeScale: 2.5 },
+    this.meshPipelines = new MeshPipelines(device, {
+      common: commonWGSL,
+      meshData: meshDataWGSL,
+      mesh: meshWGSL,
+      shadow: shadowWGSL,
+      layouts: { frame: this.frameLayout, material: this.materialLayout, object: this.objectLayout, shadowFrame: this.shadowFrameLayout },
+      vertexStride: VERTEX_STRIDE_BYTES,
     });
 
     const frameOnlyLayout = device.createPipelineLayout({ bindGroupLayouts: [this.frameLayout] });
@@ -686,6 +662,7 @@ export class Renderer {
     const device = this.device;
     const stats = this.stats;
     stats.drawCalls = stats.triangles = stats.lights = stats.shadowCasters = stats.elements2D = 0;
+    const builds = this.meshPipelines.builds;
 
     // Gather live renderables and lights from the scene's component registry.
     const draws = this.draws;
@@ -786,7 +763,7 @@ export class Renderer {
     if (shadowIndex >= 0) {
       g.addRenderPass('shadow', (pass) => {
         pass.depthAttachment(shadowMap, { depthClearValue: 1, depthLoadOp: 'clear' });
-        return (encoder) => this.drawShadowCasters(encoder, draws);
+        return (encoder, res) => this.drawShadowCasters(encoder, draws, materialGroups, res.target!);
       });
     }
     const hdr = g.createTexture('hdr color', { format: HDR_FORMAT, sampleCount: this.sampleCount });
@@ -797,7 +774,7 @@ export class Renderer {
       // Alpha 0 marks pixels nothing covers (meshes and the sky write 1): the tonemap pass shows the background there.
       pass.colorAttachment(hdr, { clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear' });
       pass.depthAttachment(depth, { depthClearValue: 0, depthLoadOp: 'clear' });
-      return (encoder) => this.drawScene(encoder, draws, materialGroups, skyMode);
+      return (encoder, res) => this.drawScene(encoder, draws, materialGroups, skyMode, res.target!);
     });
     // With a sky, the background only shows where the sky pass doesn't draw (nowhere).
     const bg = skyMode === 'color' ? scene.background : [0, 0, 0];
@@ -815,18 +792,58 @@ export class Renderer {
       return (encoder) => this.drawDisplay(encoder, { grid: !!options.grid, overlay, world2DCount, screen2DCount });
     });
     g.execute();
+    stats.pipelineBuilds = this.meshPipelines.builds - builds;
     return stats;
   }
 
-  /** The shadow pass: depth only, on its own group 0 (the frame group holds the shadow map it's drawing into). */
-  private drawShadowCasters(pass: GPURenderPassEncoder, draws: MeshRenderer[]): void {
+  /** The attachments the mesh passes draw into, as the frame graph declares them: what mesh variants are made for. */
+  meshTargets(): Record<MeshPass, RenderTarget> {
+    return {
+      main: { colorFormats: [HDR_FORMAT], depthFormat: DEPTH_FORMAT, sampleCount: this.sampleCount },
+      shadow: { colorFormats: [], depthFormat: SHADOW_FORMAT, sampleCount: 1 },
+    };
+  }
+
+  /** Every mesh pipeline variant this renderer can need. */
+  meshVariantKeys(): MeshVariantKey[] {
+    return allMeshVariantKeys(this.meshTargets());
+  }
+
+  /**
+   * Builds the mesh pipelines `scene` draws with in the background, so they're ready when it's rendered instead of
+   * built in the middle of a frame. Call after a scene or an asset loads.
+   */
+  prewarm(scene: Scene): Promise<void> {
+    const targets = this.meshTargets();
+    const keys: MeshVariantKey[] = [];
+    for (const r of scene.query(MeshRenderer)) {
+      if (!r.material) continue;
+      keys.push(meshVariantKey('main', r.material, r.mesh, targets.main));
+      if (r.castShadows) keys.push(meshVariantKey('shadow', r.material, r.mesh, targets.shadow));
+    }
+    return this.meshPipelines.prewarm(keys);
+  }
+
+  /**
+   * The shadow pass: depth only, on its own group 0 (the frame group holds the shadow map it's drawing into). The
+   * alpha-tested variant reads the material from group 2.
+   */
+  private drawShadowCasters(pass: GPURenderPassEncoder, draws: MeshRenderer[], materialGroups: Map<Material, GPUBindGroup>, target: RenderTarget): void {
     const stats = this.stats;
-    pass.setPipeline(this.shadowPipeline);
     pass.setBindGroup(0, this.shadowFrameBindGroup);
+    let currentPipeline: GPURenderPipeline | null = null;
     draws.forEach((o, i) => {
       if (!o.castShadows) return;
+      const mat = o.material!;
+      const key = meshVariantKey('shadow', mat, o.mesh, target);
+      const pipeline = this.meshPipelines.get(key);
+      if (pipeline !== currentPipeline) {
+        pass.setPipeline(pipeline);
+        currentPipeline = pipeline;
+      }
       const gpu = o.mesh!.gpu!;
       pass.setBindGroup(1, this.objectBindGroup!, [i * OBJECT_STRIDE]);
+      if (key.alphaTest) pass.setBindGroup(2, materialGroups.get(mat)!);
       pass.setVertexBuffer(0, gpu.vertexBuffer);
       pass.setIndexBuffer(gpu.indexBuffer, 'uint32');
       pass.drawIndexed(o.mesh!.indices.length);
@@ -835,13 +852,19 @@ export class Renderer {
   }
 
   /** The main pass: lit meshes, then the sky behind them, as linear radiance. */
-  private drawScene(pass: GPURenderPassEncoder, draws: MeshRenderer[], materialGroups: Map<Material, GPUBindGroup>, skyMode: SkyMode): void {
+  private drawScene(
+    pass: GPURenderPassEncoder,
+    draws: MeshRenderer[],
+    materialGroups: Map<Material, GPUBindGroup>,
+    skyMode: SkyMode,
+    target: RenderTarget,
+  ): void {
     const stats = this.stats;
     pass.setBindGroup(0, this.frameBindGroup);
     let currentPipeline: GPURenderPipeline | null = null;
     draws.forEach((o, i) => {
       const mat = o.material!;
-      const pipeline = mat.doubleSided ? this.meshPipelineDoubleSided : this.meshPipelineCulled;
+      const pipeline = this.meshPipelines.get(meshVariantKey('main', mat, o.mesh, target));
       if (pipeline !== currentPipeline) {
         pass.setPipeline(pipeline);
         currentPipeline = pipeline;
