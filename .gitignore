@@ -7,9 +7,10 @@ result-*
 .DS_Store
 tests/.out/
 
-# Claude Code: personal settings and temporary worktrees (skills and settings.json are shared)
+# Claude Code: personal settings, prompts and temporary worktrees (skills and settings.json are shared)
 .claude/settings.local.json
 .claude/worktrees/
+.claude/prompts/
 
 # Example projects are git repositories of their own (npm run generate:demo writes examples/Demo/)
 examples/
