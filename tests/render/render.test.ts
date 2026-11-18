@@ -740,6 +740,105 @@ const ihdr = Buffer.alloc(13);
 ihdr.writeUInt32BE(W, 0); ihdr.writeUInt32BE(H, 4); ihdr[8] = 8; ihdr[9] = 6;
 writeFileSync(`${OUT}/frame.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]));
 
+// ---- mesh pipeline variants: every variant builds; alpha-tested materials cast shadows with holes.
+// A quad with a checkerboard alpha (its GPU texture made here, as Node can't decode images) hangs over the ground
+// under a sun shining straight down; the camera looks from below the quad's height, so the shadow's checker pattern
+// is in plain view. Saved as alpha-shadow.png.
+{
+  const { Material, Light, Texture, createPlane } = engine;
+  const device = renderer.device;
+  const keys = renderer.meshVariantKeys();
+  device.pushErrorScope('validation');
+  for (const key of keys) renderer.meshPipelines.get(key);
+  const variantErr = await device.popErrorScope();
+  check('every mesh pipeline variant builds', !variantErr && keys.every((k: any) => renderer.meshPipelines.has(k)), variantErr?.message ?? `${keys.length} variants`);
+
+  const N = 8; // checker cells per side
+  const checkerTex = device.createTexture({ size: [N, N], format: 'rgba8unorm-srgb', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+  const cells = new Uint8Array(N * N * 4);
+  for (let i = 0; i < N * N; i++) cells.set([255, 255, 255, ((i % N) + Math.floor(i / N)) % 2 ? 255 : 0], i * 4);
+  device.queue.writeTexture({ texture: checkerTex }, cells, { bytesPerRow: N * 4 }, [N, N]);
+  const checker = new Texture({ width: N, height: N } as ImageBitmap, 'checker');
+  checker.gpu = checkerTex;
+
+  const s = new Scene();
+  s.shadowExtent = 4;
+  const ground = new GameObject('Ground');
+  ground.mesh = createPlane(12);
+  ground.material = new Material('ground', { baseColor: [0.8, 0.8, 0.8, 1], roughness: 0.9 });
+  ground.castShadows = false;
+  const fence = new GameObject('Fence');
+  fence.mesh = createPlane(4);
+  fence.material = Object.assign(new Material('fence', { baseColor: [0.9, 0.5, 0.2, 1], doubleSided: true }), { baseColorTexture: checker, alphaCutoff: 0.5 });
+  fence.transform.position = [0, 1.5, 0];
+  const sun = new GameObject('Sun');
+  sun.light = new Light('directional', [1, 1, 1], 3);
+  sun.light.castShadows = true;
+  sun.transform.rotation = quat.lookRotation([0, -1, 0]);
+  s.add(ground);
+  s.add(fence);
+  s.add(sun);
+  s.updateMatrices();
+  const cam = new Camera();
+  cam.position = [0, 0.9, 6.5];
+  cam.target = [0, 0, -0.5];
+  cam.aspect = W / H;
+
+  const bpr = Math.ceil((W * 4) / 256) * 256;
+  const readFrame = async () => {
+    const out = device.createBuffer({ size: bpr * H, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const e = device.createCommandEncoder();
+    e.copyTextureToBuffer({ texture: current! }, { buffer: out, bytesPerRow: bpr }, [W, H]);
+    device.queue.submit([e.finish()]);
+    await out.mapAsync(GPUMapMode.READ);
+    const px = new Uint8Array(out.getMappedRange()).slice();
+    out.destroy();
+    return px;
+  };
+  // Brightness of the ground under the middle of each checker cell (the border cells left out: shadow filtering).
+  // Plane UVs run at half the world size, so the 4 m quad shows the checker twice: cells of 2 / N m.
+  const cell = 2 / N, count = Math.round(4 / cell);
+  const groundUnderCells = (px: Uint8Array) => {
+    const out: number[] = [];
+    const vp = cam.viewProjection();
+    for (let i = 1; i < count - 1; i++) {
+      for (let j = 1; j < count - 1; j++) {
+        const p = cam.worldToScreen([-2 + (i + 0.5) * cell, 0, -2 + (j + 0.5) * cell], W, H, vp)!;
+        const o = Math.round(p[1]) * bpr + Math.round(p[0]) * 4;
+        out.push(px[o] + px[o + 1] + px[o + 2]);
+      }
+    }
+    return out;
+  };
+  device.pushErrorScope('validation');
+  const stats = renderer.render(s, cam, { time: 0 });
+  const alphaErr = await device.popErrorScope();
+  const masked = groundUnderCells(await readFrame());
+  const maskedPx = await readFrame();
+  fence.material.alphaCutoff = 0; // the opaque variant: a solid shadow
+  renderer.render(s, cam, { time: 0 });
+  const solid = groundUnderCells(await readFrame());
+  const lo = Math.min(...solid), hi = Math.max(...masked);
+  const lit = (v: number[]) => v.filter((x) => x > (lo + hi) / 2).length;
+  check('alpha-tested shadows render', !alphaErr && stats.shadowCasters === 1, alphaErr?.message ?? JSON.stringify(stats));
+  check('an alpha-tested caster\'s shadow has holes', hi - lo > 90 && Math.abs(lit(masked) / masked.length - 0.5) < 0.1,
+    `${lit(masked)} of ${masked.length} cells lit, range ${lo}..${hi}`);
+  check('with no alpha cutoff the shadow is solid', lit(solid) === 0, `${lit(solid)} of ${solid.length} cells lit`);
+
+  const bgra = (fakeContext as any).format === 'bgra8unorm';
+  const raw = Buffer.alloc((W * 4 + 1) * H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const o = y * bpr + x * 4, d = y * (W * 4 + 1) + 1 + x * 4;
+      raw[d] = maskedPx[o + (bgra ? 2 : 0)];
+      raw[d + 1] = maskedPx[o + 1];
+      raw[d + 2] = maskedPx[o + (bgra ? 0 : 2)];
+      raw[d + 3] = 255;
+    }
+  }
+  writeFileSync(`${OUT}/alpha-shadow.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]));
+}
+
 await new Promise((r) => setTimeout(r, 100));
 check('no uncaptured GPU errors', errors.length === 0, errors.join(' | '));
 console.log(failures ? `${failures} FAILURE(S)` : 'ALL PASSED');

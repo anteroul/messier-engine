@@ -10,6 +10,10 @@ Add a line under **Unreleased** with every user-visible change.
 
 ## [Unreleased]
 
+### Fixed
+
+- Alpha-tested materials (alpha cutoff) now cast shadows with matching holes.
+
 ## [0.6.0] - 2026-11-18
 
 ### Added
