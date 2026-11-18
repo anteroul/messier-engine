@@ -473,8 +473,9 @@ src/engine/             The engine (no DOM dependencies except the canvas)
   typescript.ts         Tokenizer + position-preserving TypeScript type stripper
   renderer.ts           WebGPU device, pipelines, the frame's passes (shadow, main HDR, tonemap, overlay), uploads
   frameGraph.ts         Frame graph: pass ordering and culling, pooled transient textures, store ops
-  shaders/*.wgsl        common (shared structs, sky lookup), mesh (PBR), sky, tonemap (exposure + ACES), shadow, grid,
-                        overlay, mipmap, shape2d (2D + SDF text)
+  pipelines.ts          Mesh pipeline variants: key from pass, material, mesh and target; cache; prewarming
+  shaders/*.wgsl        common (frame structs, sky lookup), meshData (material, object), mesh (PBR), sky, tonemap
+                        (exposure + ACES), shadow (opaque and alpha-tested), grid, overlay, mipmap, shape2d (2D + SDF text)
   scene.ts              GameObject (components, groups, destroy/instantiate), Scene (registry, lifecycle)
   transform.ts          Transform: hierarchy, cached local/world matrices, world-space helpers
   component.ts          Component base class; meshRenderer.ts: MeshRenderer

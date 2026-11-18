@@ -166,6 +166,16 @@ Engine.step(dt)                         src/engine/engine.ts
   usage flags, stores attachments only when a later pass reads them (imported ones always), and records one
   encoder with a debug group per pass. It doesn't import the renderer or touch the DOM: `tests/unit/frameGraph.test.ts`
   runs it on a fake device. Mipmap generation happens at upload, outside the graph.
+- **Shader variants** (`pipelines.ts`): mesh and shadow pipelines aren't built by hand. A `MeshVariantKey` holds
+  everything that changes one (pass, cull, alpha test, color format, sample count, depth format and compare);
+  `meshVariantKey(pass, material, mesh, target)` derives it, with the formats from the frame graph's attachments
+  (`FrameResources.target`), and is the only place that decides mesh pipelines. `Renderer.meshPipelines`
+  (`MeshPipelines`) caches pipelines by `variantKeyString(key)` (shader modules and pipeline layouts cached apart):
+  `get()` builds a miss synchronously and counts it in `RenderStats.pipelineBuilds`, `prewarm()` builds ahead with
+  `createRenderPipelineAsync` (`Renderer.prewarm(scene)`, which the editor calls after a scene loads or an asset is
+  placed). `allMeshVariantKeys()` lists every valid key; `test:render` builds them all. Material features a uniform
+  or a placeholder texture can express (unlit, the main pass's alpha cutoff, the material maps) stay runtime
+  branches in `mesh.wgsl`, not variants. The grid, overlay, sky, tonemap, mipmap and 2D pipelines are hand-built.
 - **Engine vs editor:** `src/engine/**` must not import from `src/editor/**`
   and must not touch the DOM beyond the canvas passed to `Renderer`. That
   boundary is what lets `tests/render` run the engine under Node. The editor
@@ -261,23 +271,25 @@ Engine.step(dt)                         src/engine/engine.ts
     `fv`/`fu`/`fi` offsets). Sky mode codes come from `SKY_MODE_INDEX`.
   - `Light` (64 B, 16 floats): `common.wgsl` ↔ the light packing loop in
     `Renderer.render()`. Type codes come from `LIGHT_TYPE_INDEX`.
-  - `Material` (64 B): `mesh.wgsl` ↔ `Renderer.prepareMaterial()`. Its textures are bound in `TEXTURE_SLOTS` order
+  - `Material` (64 B): `meshData.wgsl` ↔ `Renderer.prepareMaterial()`. Its textures are bound in `TEXTURE_SLOTS` order
     (binding 1 base color, 2 the sampler, 3… the rest); `LINEAR_TEXTURE_SLOTS` are uploaded as `rgba8unorm`
     (`Texture.gpuLinear`), the others as sRGB (`Texture.gpu`).
   - 2D vertex (40 B: position 3, uv 2, color 4, threshold 1; threshold < 0 = solid): `shape2d.wgsl` ↔
     `VERTEX2D_FLOATS` / `Batch2D.vertex()` and the 2D pipeline's attributes.
   - `Object` (model + normal matrix, 128 B) lives in 256 B dynamic-offset
-    slots (`OBJECT_STRIDE`) and is shared by the mesh and shadow pipelines.
+    slots (`OBJECT_STRIDE`) and is shared by the mesh and shadow pipelines (declared in `meshData.wgsl`).
 - **Shaders:** `common.wgsl` is *prepended* to `mesh`, `grid`, `overlay` and `sky`.
   It declares `@group(0) @binding(0) frame`, the sky texture and sampler, `PI` and `skyRadiance()`,
-  so don't redeclare them. `mesh` and `sky` output linear radiance with alpha 1; only `tonemap.wgsl` tone maps.
-  `shadow.wgsl`, `mipmap.wgsl`, `shape2d.wgsl` and `tonemap.wgsl` are standalone. Shaders load with Vite
+  so don't redeclare them. `meshData.wgsl` (the `Material` and `Object` structs) is prepended to `mesh` (after
+  `common`) and `shadow`. `mesh` and `sky` output linear radiance with alpha 1; only `tonemap.wgsl` tone maps.
+  `mipmap.wgsl`, `shape2d.wgsl` and `tonemap.wgsl` are standalone. Shaders load with Vite
   `?raw` imports, and `tests/render/run.mjs` emulates that with an esbuild plugin.
 - **Bind groups:** group 0 = frame (uniform, lights storage, shadow map,
   comparison sampler, sky texture, sky sampler), group 1 = material, group 2 = object (dynamic offset). The frame
   group is rebuilt when the sky image changes (a 1×1 white placeholder otherwise).
-  The shadow pass uses its own group-0 layout, because binding the frame
-  group would put the shadow map in a usage conflict. The 2D pipelines have their own group 0 too (view matrix,
+  The shadow pass never binds the frame group (the shadow map would be in a usage conflict): its group 0 is its own
+  (the light's view-projection), group 1 the object, and the alpha-tested shadow variant binds the material (the
+  same bind group as the main pass's group 1) as group 2. The 2D pipelines have their own group 0 too (view matrix,
   font atlas, sampler), so rebind the frame group before drawing anything that uses it after them.
 - **Color spaces:** material and light colors are **linear**. Textures are
   `rgba8unorm-srgb`. Meshes and the sky render linear radiance into an `rgba16float` target, and the tonemap pass
@@ -347,6 +359,16 @@ through `AudioSource`s their builders lay out (`soundObject()` in `src/demos/sha
 its object (a destroyed pickup, a scene change) goes through `audio.play()`, because a source's voices stop with it.
 Unit tests get Web Audio from `tests/unit/fakeAudio.ts` (import it first, then `audio.resume()`); `played()` in
 `demos.test.ts` counts a sound's plays.
+
+**Add a shader feature or pipeline variant.** Only for what a uniform or a placeholder texture can't do (vertex
+layout, blend or depth state, bindings, a stage). Add a field to `MeshVariantKey` and to `KEY_FIELDS` (the string
+form's fixed order), derive it in `meshVariantKey()` from the material, the mesh or the target, and act on it in
+`MeshPipelines.describe()`: pipeline state directly; a branch inside a stage every variant of the pass has as a WGSL
+`override` constant set through the stage's `constants`; different inputs, bindings or stages as another entry point
+(like the shadow pass's `vs_alpha` / `fs_alpha`) or another WGSL piece in `module()`, with a new pipeline layout in
+`pipelineLayout()` if the groups change. Make `allMeshVariantKeys()` produce the new values, so `test:render` builds
+them, and extend `tests/unit/pipelines.test.ts`. Bind what the variant needs in the draw loops when its key says so
+(`drawShadowCasters` binds the material only for `alphaTest`).
 
 **Add a render pass.** Declare it in `Renderer.render()` on `this.graph`, with its draw code in a private method.
 Declare every texture it samples or writes, since that's what orders and culls passes and sets usage flags; textures
