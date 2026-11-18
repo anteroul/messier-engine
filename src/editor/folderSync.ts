@@ -22,6 +22,8 @@ export class FolderSync {
   private scanning: Promise<void> | null = null;
   private again = false;
   private stopped = false;
+  /** Files the editor wrote while a scan was running; that scan's listing may predate the write. */
+  private readonly noted = new Map<string, string | null>();
 
   constructor(
     private readonly io: FolderIO,
@@ -61,6 +63,11 @@ export class FolderSync {
         this.again = false;
         if (this.stopped) return;
         const next = await snapshotFolder(this.io);
+        for (const [path, sig] of this.noted) {
+          if (sig === null) next.delete(path);
+          else next.set(path, sig);
+        }
+        this.noted.clear();
         const changes = diffSnapshots(this.snapshot, next);
         this.snapshot = next;
         if (changes.added.length || changes.changed.length || changes.removed.length) await this.onChanges(changes);
@@ -72,7 +79,9 @@ export class FolderSync {
   /** Records a file the editor wrote (or removed), so the next scan doesn't report it. */
   async noteWrite(path: string): Promise<void> {
     const st = await this.io.stat(path);
-    if (st) this.snapshot.set(path, `${st.size}:${st.modified}`);
+    const sig = st ? `${st.size}:${st.modified}` : null;
+    if (sig) this.snapshot.set(path, sig);
     else this.snapshot.delete(path);
+    if (this.scanning) this.noted.set(path, sig);
   }
 }

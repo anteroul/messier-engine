@@ -145,7 +145,7 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
     project.json          name, build settings, start scene
     scenes/Main.messier   one file per scene (JSON)
     scripts/Player.ts     one file per script
-    assets/               imported models, images and sounds, in any subfolders
+    assets/               imported models, images and sounds, and prefabs (*.prefab), in any subfolders
       models/ship.glb
       models/ship.glb.meta   the file's id, which scenes refer to
     tsconfig.json         lets VS Code check scripts against…
@@ -187,9 +187,26 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
     one on the viewport or import it); save to turn one into a folder. A scene
     file (`.messier`) dropped on the editor joins the project as a scene.
   - Saving during Play stops Play first, so the files have the edit-time scene.
+  - Scene and prefab files carry a format version. Files from older versions
+    open and are saved again in the current format; a file from a newer version
+    is refused rather than misread.
   - Meshes are saved by reference (primitive parameters, or which asset they
     came from), never as vertex data. Meshes created by scripts at runtime
     can't be saved; Save tells you which objects lost theirs.
+- **Prefabs:** drag an object from the hierarchy onto the **Assets** panel (or
+  right-click it → **Create Prefab**) to save it with its children as
+  `assets/<Name>.prefab`; the object becomes an *instance* of it. Drag the
+  prefab into the viewport or the hierarchy, or double-click it, to add more.
+  Instances are tinted in the hierarchy. A scene saves an instance as a link
+  plus what it changes (edited fields, removed and added objects), so editing the
+  prefab reaches every instance except where an instance overrides it. The
+  inspector's *Prefab* section counts an instance's changes and has **Apply**
+  (write them into the prefab; every instance in the scene updates), **Revert**
+  (drop them) and **Unpack** (make plain objects). A prefab can contain
+  instances of other prefabs, and a prefab made from an instance is a *variant*
+  of that prefab. Prefab files are JSON: edited outside the editor, their
+  instances update within a second. Scripts add instances with
+  `this.scene.instantiate('Name')`.
 - **Building a game:** the toolbar's **Build** button (also **☰ → Build…**, `Ctrl+Shift+B`) opens the build
   settings. Tick the scenes to include and drag them (or use ▲/▼) into order:
   the first one starts the game, and the numbers are the build indices that
@@ -472,7 +489,9 @@ src/engine/             The engine (no DOM dependencies except the canvas)
   raycast.ts            Ray/AABB/triangle/sphere tests, scene picking, world bounds
   math.ts               vec3 / quat / mat4 (column-major), color helpers
   loaders/              glTF 2.0 / GLB, OBJ + MTL, resource resolvers, model assets
-  serialize.ts          Scene <-> JSON (SceneData); meshes and textures as ResourceRefs
+  serialize.ts          Scene <-> JSON (SceneData); meshes and textures as ResourceRefs; prefab instances
+  prefab.ts             Prefab files, expanding instances and diffing them against their prefab
+  sceneFormat.ts        Scene/prefab format version and the migrations that upgrade older files
   project.ts            Project (scenes, scripts, assets, build settings), its packed form (builds), ProjectResources
   projectFolder.ts      The project folder format: FolderIO, .meta ids, load/write, change detection
   sceneManager.ts       sceneManager: loadScene() by name or build index, for built games and editor Play

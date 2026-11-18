@@ -155,9 +155,15 @@ this.scene.query(Health);        // live components: enabled, on active objects;
 this.scene.getGroup('enemies');  // objects in a group
 this.scene.findByName('Player');
 this.scene.activeCamera();
+const enemy = this.scene.instantiate('Enemy'); // an instance of assets/Enemy.prefab (or null), at the top level
+this.scene.instantiate('Effects/Spark', this.object); // by path under assets/, as a child of this object
 this.scene.sky.mode = 'gradient';   // or 'color' (scene.background) or 'image' (sky.texture, a 2:1 panorama)
 this.scene.sky.top = [0.3, 0.05, 0.2]; // sky colors are linear; ambient light and reflections follow the sky
 ```
+
+`instantiate()` takes a prefab's name (`'Enemy'` for `assets/Enemy.prefab`) or its path under `assets/`, and places
+the instance where the prefab's root was when it was made; move it afterwards. A built game ships every prefab of
+the project, used in a scene or not, so scripts can spawn any of them.
 
 ## Sound
 

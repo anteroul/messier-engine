@@ -924,7 +924,80 @@ const scriptSync = await state(async () => ({
   written: (await window.__fs.list('scripts')).includes('FromEditor.ts'),
 }));
 check('scripts sync with their files both ways', scriptSync.hover === 9 && scriptSync.written, JSON.stringify(scriptSync));
-await sleep(1500); // let the scene with the dropped model reach the disk
+// Prefabs: an object dragged from the hierarchy onto the Assets panel becomes a prefab file; Apply in the inspector
+// updates every instance, undo puts it all back, and a prefab file edited outside reaches the instances.
+await state(() => {
+  const crate = window.engine.scene.findByName('Crate 1');
+  const dt = new DataTransfer();
+  dt.setData('application/x-messier-object', String(crate.id));
+  document.querySelector('.assets-list').dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
+});
+await until(() => window.engine.scene.findByName('Crate 1')?.prefab && document.querySelector('.asset-row .icon-prefab'));
+const made = await state(async () => {
+  const asset = window.editor.project.assets.find((a) => a.path === 'Crate 1.prefab');
+  const crate = window.engine.scene.findByName('Crate 1');
+  const file = JSON.parse(await window.__fs.text('assets/Crate 1.prefab'));
+  return {
+    id: asset?.id,
+    linked: crate?.prefab === asset?.id,
+    meta: (await window.__fs.list('assets')).includes('Crate 1.prefab.meta'),
+    file: `${file.format}:${file.version}:${file.root.name}:${typeof file.root.id}`,
+    row: !!document.querySelector('.tree-row.prefab-root'),
+    icon: !!document.querySelector('.asset-row .icon-prefab'),
+  };
+});
+check('dragging an object onto Assets makes a prefab file', !!made.id && made.linked && made.meta && made.file === 'messier-prefab:2:Crate 1:string' && made.row && made.icon,
+  JSON.stringify(made));
+
+await state(() => {
+  window.instancesOf = (id) => {
+    const out = [];
+    window.engine.scene.traverse((o) => void (o.prefab === id && out.push(o)));
+    return out;
+  };
+});
+const placed = await page.evaluate((id) => {
+  // Double-clicking a prefab in Assets places an instance.
+  const before = window.engine.scene.rootObjects.length;
+  document.querySelector(`.asset-row[data-asset="${id}"]`).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+  const sel = window.editor.selected;
+  sel.material.roughness = 0.123;
+  window.editor.inspector.refresh();
+  return { added: window.engine.scene.rootObjects.length - before, linked: sel.prefab === id, toasts: [...document.querySelectorAll('.toast')].map((t) => t.textContent) };
+}, made.id);
+check('double-clicking a prefab places an instance', placed.added === 1 && placed.linked, JSON.stringify(placed));
+await sleep(600);
+await page.click('.prefab-section .apply-prefab');
+await until((id) => instancesOf(id).every((o) => o.material.roughness === 0.123), made.id);
+const roughness = (id) => page.evaluate((id) => instancesOf(id).map((o) => o.material.roughness), id);
+const applied = await roughness(made.id);
+await page.screenshot({ path: `${OUT}/ui-prefab.png` });
+await page.$eval('#gpu-canvas', (e) => e.focus());
+await page.keyboard.down('Control');
+await page.keyboard.press('KeyZ');
+await page.keyboard.up('Control');
+const unapplied = await roughness(made.id);
+check('Apply updates every instance, and undoes', applied.length === 2 && applied.every((r) => r === 0.123) && unapplied.length === 2 && unapplied[0] !== 0.123 &&
+  unapplied[1] === 0.123, `${applied} → ${unapplied}`);
+
+await sleep(300); // undo rewrites the prefab file
+await state(async () => {
+  const file = JSON.parse(await window.__fs.text('assets/Crate 1.prefab'));
+  file.root.material.metallic = 1;
+  await window.__fs.write('assets/Crate 1.prefab', JSON.stringify(file));
+});
+await until((id) => instancesOf(id).every((o) => o.material.metallic === 1), made.id);
+await sleep(1500); // let the scene with the dropped model and the instances reach the disk
+const outside = await page.evaluate(async (id) => {
+  const main = JSON.parse(await window.__fs.text('scenes/Main.messier'));
+  return {
+    metallic: instancesOf(id).map((o) => o.material.metallic),
+    saved: JSON.stringify(main).split(`"prefab":"${id}"`).length - 1,
+    version: main.version,
+  };
+}, made.id);
+check('a prefab file edited outside reaches its instances; scenes save links', outside.metallic.join() === '1,1' && outside.saved === 2 && outside.version === 2,
+  JSON.stringify(outside));
 
 // Export to Folder writes a copy (script types included) and the editor stays with its project.
 const exported = await state(async () => {

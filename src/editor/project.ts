@@ -11,7 +11,6 @@ import {
   Scene,
   applySceneData,
   assetKind,
-  checkSceneData,
   dirName,
   fileName,
   fileStem,
@@ -27,6 +26,11 @@ import {
   loadProjectFolder,
   manifestText,
   metaPath,
+  metaText,
+  newAssetId,
+  prefabText,
+  readPrefab,
+  upgradeSceneData,
   quat,
   readScene,
   safeFileName,
@@ -42,6 +46,7 @@ import {
   type AudioClip,
   type ClipRef,
   type FolderIO,
+  type PrefabData,
   type ResourceRef,
   type ProjectManifest,
   type ProjectScene,
@@ -53,6 +58,7 @@ import { download } from './build';
 import { createZip } from './zip';
 import { canPickFolders, filesFolder, folderPermission, handleFolder, pickFolder } from './folderIO';
 import { FolderSync, type FolderChanges } from './folderSync';
+import type { CapturedInstance } from './editor';
 import { button, el } from './ui';
 
 // Project persistence for the editor. A project is either a *folder* on disk (project.json, scenes/*.messier,
@@ -254,6 +260,19 @@ export class ProjectManager {
     }
     for (const f of files) {
       const kind = assetKind(f.name);
+      if (kind === 'prefab') {
+        const bytes = new Uint8Array(await f.arrayBuffer());
+        try {
+          readPrefab(bytes);
+        } catch (err) {
+          warnings.push(`Could not load ${f.name}: ${(err as Error).message}`);
+          continue;
+        }
+        const asset: Asset = { id: newAssetId(), name: fileStem(f.name), files: [{ name: f.name, bytes }] };
+        this.project.assets.push(asset);
+        out.push(asset);
+        continue;
+      }
       if (kind !== 'image' && kind !== 'sound') continue;
       // With a model, images are its textures, not assets of their own.
       if (kind === 'image' && models.length) continue;
@@ -306,6 +325,60 @@ export class ProjectManager {
     for (const p of written) await this.watcher?.noteWrite(p);
     // With a model, the other files are its companions; on their own, images and sounds are assets to use.
     return written.map((p) => imported.get(p)).filter((a): a is Asset => !!a && (dir ? kindOf(a) === 'model' : kindOf(a) !== 'other'));
+  }
+
+  /** Where the open scene's prefabs come from (the project's resources). */
+  get prefabs(): ProjectResources {
+    return this.resources;
+  }
+
+  /**
+   * Adds a prefab asset holding `data`, named `name` (made unique): in a folder project the file assets/<name>.prefab.
+   */
+  async createPrefabAsset(name: string, data: PrefabData): Promise<Asset> {
+    const taken = new Set(this.project.assets.map((a) => (a.path ?? a.files[0]?.name ?? '').toLowerCase()));
+    let stem = safeFileName(name);
+    for (let i = 2; taken.has(`${stem}.prefab`.toLowerCase()); i++) stem = `${safeFileName(name)} ${i}`;
+    const file = `${stem}.prefab`;
+    const asset: Asset = { id: newAssetId(), name: stem, files: [{ name: file, bytes: new TextEncoder().encode(prefabText(data)) }] };
+    if (this.folder) {
+      const io = this.folder;
+      asset.path = file;
+      await this.enqueue(async () => {
+        for (const [path, contents] of [[joinPath(ASSETS_DIR, file), asset.files[0].bytes], [metaPath(joinPath(ASSETS_DIR, file)), metaText(asset.id)]] as const) {
+          await io.write(path, contents);
+          await this.watcher?.noteWrite(path);
+        }
+      });
+    }
+    this.project.assets.push(asset);
+    this.prefabChanged(asset);
+    return asset;
+  }
+
+  /** Replaces a prefab's contents (in a folder project, its file). Instances in the open scene are the caller's. */
+  async writePrefab(asset: Asset, data: PrefabData): Promise<void> {
+    const bytes = new TextEncoder().encode(prefabText(data));
+    asset.files[0] = { name: asset.files[0].name, bytes };
+    if (this.folder && asset.path) {
+      const io = this.folder;
+      const path = joinPath(ASSETS_DIR, asset.path);
+      await this.enqueue(async () => {
+        await io.write(path, bytes);
+        await this.watcher?.noteWrite(path);
+      });
+    }
+    this.prefabChanged(asset);
+  }
+
+  /** A browser project keeps assets in IndexedDB by id, and only writes new ones: a changed prefab must go again. */
+  private prefabChanged(asset: Asset): void {
+    if (!this.folder) {
+      this.storedAssets.delete(asset.id);
+      this.autosavedJSON = this.savedJSON = '';
+    }
+    this.onAssetsChange?.();
+    this.markChanged();
   }
 
   /** A copy of a model asset's hierarchy (its own materials; meshes shared), or null if it isn't a loaded model. */
@@ -391,7 +464,8 @@ export class ProjectManager {
           const ref = o.material?.[slot]?.ref;
           return ref && 'asset' in ref && ref.asset === assetId;
         }) ||
-        o.getComponents(AudioSource).some((s) => s.clip?.ref && 'asset' in s.clip.ref && s.clip.ref.asset === assetId);
+        o.getComponents(AudioSource).some((s) => s.clip?.ref && 'asset' in s.clip.ref && s.clip.ref.asset === assetId) ||
+        o.prefab === assetId;
       if (uses) n++;
     });
     const sky = this.editor.scene.sky.texture?.ref;
@@ -663,9 +737,7 @@ export class ProjectManager {
     }
     let data: SceneData;
     try {
-      const json: unknown = JSON.parse(new TextDecoder().decode(bytes));
-      checkSceneData(json);
-      data = json;
+      data = upgradeSceneData(JSON.parse(new TextDecoder().decode(bytes)));
     } catch (err) {
       this.editor.notify(`Could not open ${file.name}: ${(err as Error).message}`, 'error');
       return;
@@ -734,6 +806,7 @@ export class ProjectManager {
       this.editor.beforeSceneLoad();
       this.sceneId = id;
       this.project.startScene = id;
+      this.editor.scene.prefabs = this.resources;
       applySceneData(this.editor.scene, entry.data, this.resources, warnings);
     } catch (err) {
       warnings.push((err as Error).message);
@@ -842,6 +915,9 @@ export class ProjectManager {
 
     // assets/: new and changed files, then models whose companion files changed.
     const touched = [...c.added, ...c.changed].filter(isAssetPath);
+    // Prefabs edited outside: instances in the scene are rebuilt from what they saved against the old version.
+    const prefabPaths = [...touched, ...c.removed].filter((p) => isAssetPath(p) && assetKind(p) === 'prefab');
+    const instances: CapturedInstance[] = prefabPaths.length && !this.editor.engine.playing ? this.editor.captureInstances() : [];
     for (const path of touched) {
       const asset = await importAssetFile(io, path, this.project, this.resources, warnings);
       await this.watcher?.noteWrite(metaPath(path));
@@ -866,6 +942,11 @@ export class ProjectManager {
       if (this.usesOf(asset.id)) warnings.push(`${path} was removed, but the scene still uses it`);
     }
     if (reloaded.size) this.swapResources(reloaded);
+    if (instances.length) {
+      const ids = new Set(prefabPaths.map((p) => this.project.assets.find((a) => a.path === p.slice(ASSETS_DIR.length + 1))?.id ?? '').filter(Boolean));
+      // A removed prefab's instances stay as they are (saving them turns them into plain objects).
+      if (ids.size) this.editor.rebuildInstances(instances, ids, false, warnings);
+    }
 
     // scripts/
     for (const path of [...c.added, ...c.changed].filter(isScriptPath)) {

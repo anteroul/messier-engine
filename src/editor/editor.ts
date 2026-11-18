@@ -28,7 +28,15 @@ import {
   isFlatMesh,
   worldCollider,
   SCENE_EXTENSION,
+  deserializeObject,
+  instantiatePrefab,
+  prefabDependencies,
+  prefabFromObject,
+  readPrefab,
+  serializeObject,
+  unpackInstance,
   type Asset,
+  type NodeData,
   raySphere,
   raycastScene,
   quat,
@@ -46,6 +54,7 @@ import {
   type ScriptSource,
   type RenderStats,
   type Scene,
+  type Quat,
   type Vec3,
   type Vec4,
 } from '../engine';
@@ -283,7 +292,23 @@ export class Editor {
       'separator',
       { label: 'Visible', checked: () => a.visibleState() ?? false, enabled: has, action: () => a.toggleVisible() },
     ];
+    if (target) entries.push('separator', ...this.prefabMenu(target));
     return ContextMenu.open(entries, x, y);
+  }
+
+  /** Context menu entries for prefabs: create one from `obj`, or apply, revert and unpack the instance it's part of. */
+  prefabMenu(obj: GameObject): MenuEntry[] {
+    const root = this.prefabRootOf(obj);
+    const asset = root && this.prefabAsset(root);
+    const entries: MenuEntry[] = [{ label: 'Create Prefab', action: () => void this.createPrefab(obj) }];
+    if (root && asset) {
+      entries.push({ label: `Apply to Prefab "${asset.name}"`, action: () => void this.applyPrefab(root) });
+      if (this.isOutermostInstance(root)) {
+        entries.push({ label: 'Revert to Prefab', action: () => this.revertPrefab(root) });
+      }
+    }
+    if (root && this.isOutermostInstance(root)) entries.push({ label: 'Unpack Prefab', action: () => this.unpackPrefab(root) });
+    return entries;
   }
 
   /** Selects every object in the scene, in tree order. */
@@ -850,6 +875,15 @@ export class Editor {
       this.normalizeImportedScale(obj);
       if (parent !== this.scene.root) obj.transform.position = [0, 0, 0];
       else obj.transform.position = vec3.add(obj.transform.position, position ?? this.spawnPoint(0));
+    } else if (kind === 'prefab') {
+      const warnings: string[] = [];
+      obj = instantiatePrefab(asset.id, this.scene, this.project.prefabs, warnings);
+      if (!obj) {
+        this.notify(`${asset.name} can't be read, so it can't be placed`, 'error');
+        return null;
+      }
+      obj.transform.position = parent !== this.scene.root ? [0, 0, 0] : (position ?? this.spawnPoint(0));
+      for (const w of warnings) this.notify(w, 'error');
     } else if (kind === 'sound') {
       const clip = this.project.audioClip(asset.id);
       if (!clip) {
@@ -863,6 +897,183 @@ export class Editor {
     }
     if (!obj) return null;
     return this.addObject(obj, parent, `Add ${obj.name}`);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Prefabs
+
+  /** The prefab instance `obj` is part of: itself when it's an instance root, else its nearest instance root. */
+  prefabRootOf(obj: GameObject): GameObject | null {
+    for (let o: GameObject | null = obj; o && o.parent; o = o.parent) {
+      if (o.prefab) return o;
+      if (o.prefabNode === null) return null;
+    }
+    return null;
+  }
+
+  /** Whether `obj` is an instance root that isn't inside another instance (Revert and Unpack work on those). */
+  isOutermostInstance(obj: GameObject): boolean {
+    if (!obj.prefab) return false;
+    for (let p = obj.parent; p; p = p.parent) if (p.prefab) return false;
+    return true;
+  }
+
+  /** The prefab asset of an instance root (null when it's missing). */
+  prefabAsset(obj: GameObject): Asset | null {
+    const asset = obj.prefab ? this.project.project.getAsset(obj.prefab) : null;
+    return asset && kindOf(asset) === 'prefab' && !obj._prefabStash ? asset : null;
+  }
+
+  private canEditPrefabs(): boolean {
+    if (!this.engine.playing) return true;
+    this.notify('Stop Play to change prefabs');
+    return false;
+  }
+
+  /**
+   * Saves `obj` and its descendants as a new prefab asset, and turns `obj` into an instance of it (undo turns it
+   * back; the asset stays). Instances inside it become nested instances; an instance root makes a variant.
+   */
+  async createPrefab(obj: GameObject): Promise<Asset | null> {
+    if (!this.canEditPrefabs() || !obj.parent) return null;
+    const warnings: string[] = [];
+    const lib = this.project.prefabs;
+    const asset = await this.project.createPrefabAsset(obj.name, prefabFromObject(obj, lib, warnings));
+    const instance = deserializeObject({ prefab: asset.id, ...trs(obj) }, this.scene, lib, warnings);
+    if (obj.parent) this.replaceObjects([[obj, instance]], `Create prefab ${asset.name}`);
+    this.notify(`Created prefab ${asset.name}${warnings.length ? ` (${warnings[0]})` : ''}`, warnings.length ? 'error' : 'success');
+    return asset;
+  }
+
+  /**
+   * Writes an instance's changes into its prefab, and rebuilds the instances in the scene that use the prefab.
+   * Undo puts the prefab and the instances back.
+   */
+  async applyPrefab(obj: GameObject): Promise<void> {
+    const asset = this.prefabAsset(obj);
+    if (!this.canEditPrefabs() || !asset) return;
+    const warnings: string[] = [];
+    let data;
+    try {
+      data = prefabFromObject(obj, this.project.prefabs, warnings, asset.id);
+    } catch (err) {
+      this.notify(`Can't apply to ${asset.name}: ${(err as Error).message}`, 'error');
+      return;
+    }
+    const before = readPrefab(asset.files[0].bytes);
+    const captured = this.captureInstances();
+    await this.project.writePrefab(asset, data);
+    const pairs = this.rebuildInstances(captured, new Set([asset.id]), true, warnings);
+    this.history.push({
+      label: `Apply to prefab ${asset.name}`,
+      undo: () => {
+        void this.project.writePrefab(asset, before);
+        this.swapObjects(pairs.map(([a, b]) => [b, a]).reverse() as [GameObject, GameObject][]);
+      },
+      redo: () => {
+        void this.project.writePrefab(asset, data);
+        this.swapObjects(pairs);
+      },
+    });
+    this.notify(`Applied to ${asset.name}${warnings.length ? ` (${warnings[0]})` : ''}`, warnings.length ? 'error' : 'success');
+  }
+
+  /** Throws away an instance's changes: it becomes a fresh copy of its prefab, keeping its name and transform. Undoable. */
+  revertPrefab(obj: GameObject): void {
+    const asset = this.prefabAsset(obj);
+    if (!this.canEditPrefabs() || !asset || !this.isOutermostInstance(obj)) return;
+    const warnings: string[] = [];
+    const fresh = deserializeObject({ prefab: asset.id, ...trs(obj) }, this.scene, this.project.prefabs, warnings);
+    this.replaceObjects([[obj, fresh]], `Revert ${obj.name}`);
+    for (const w of warnings) this.notify(w, 'error');
+  }
+
+  /** Makes an instance plain objects (instances nested in it stay instances). Undoable. */
+  unpackPrefab(obj: GameObject): void {
+    if (!this.canEditPrefabs() || !this.isOutermostInstance(obj)) return;
+    let undo = unpackInstance(obj, this.project.prefabs);
+    const changed = () => {
+      this.hierarchy.markDirty();
+      if (this.selected === obj) this.inspector.refresh();
+    };
+    changed();
+    this.history.push({
+      label: `Unpack ${obj.name}`,
+      undo: () => {
+        undo();
+        changed();
+      },
+      redo: () => {
+        undo = unpackInstance(obj, this.project.prefabs);
+        changed();
+      },
+    });
+  }
+
+  /** How many changes an instance saves (overridden fields, removed and added objects). */
+  instanceChanges(obj: GameObject): number {
+    const d = serializeObject(obj, this.project.prefabs);
+    if (!('prefab' in d)) return 0;
+    return Object.values(d.overrides ?? {}).reduce((n, o) => n + Object.keys(o).length, 0) + (d.removed?.length ?? 0) + (d.added?.length ?? 0);
+  }
+
+  /** The saved data of every instance in the scene that isn't inside another one, before a prefab changes. */
+  captureInstances(): CapturedInstance[] {
+    const lib = this.project.prefabs;
+    const out: CapturedInstance[] = [];
+    this.scene.traverse((o) => {
+      if (!o.prefab) return;
+      const data = serializeObject(o, lib);
+      out.push({ obj: o, data, uses: prefabDependencies(data, lib) });
+      return false;
+    });
+    return out;
+  }
+
+  /**
+   * After prefabs changed: rebuilds the captured instances that use any of `changed` from their saved data (so they
+   * get the new version with their own changes), in place. Without `undoable` the undo history is cleared, since
+   * its steps may refer to the replaced objects. Returns the replaced and new objects.
+   */
+  rebuildInstances(captured: CapturedInstance[], changed: Set<string>, undoable: boolean, warnings: string[] = []): [GameObject, GameObject][] {
+    const pairs: [GameObject, GameObject][] = [];
+    for (const c of captured) {
+      if (!c.obj.parent || ![...c.uses].some((id) => changed.has(id))) continue;
+      pairs.push([c.obj, deserializeObject(c.data, this.scene, this.project.prefabs, warnings)]);
+    }
+    if (!pairs.length) return pairs;
+    this.swapObjects(pairs);
+    if (!undoable) {
+      this.endActiveGesture();
+      this.history.clear();
+    }
+    return pairs;
+  }
+
+  /** Replaces objects (and pushes an undo step that swaps them back). */
+  private replaceObjects(pairs: [GameObject, GameObject][], label: string): void {
+    this.swapObjects(pairs);
+    this.history.push({
+      label,
+      undo: () => this.swapObjects(pairs.map(([a, b]) => [b, a]).reverse() as [GameObject, GameObject][]),
+      redo: () => this.swapObjects(pairs),
+    });
+  }
+
+  /** Puts each pair's second object where its first one is; the selection follows by place in the hierarchy. */
+  private swapObjects(pairs: [GameObject, GameObject][]): void {
+    const paths = this.selectionPaths();
+    for (const [from, to] of pairs) {
+      const parent = from.parent;
+      if (!parent) continue;
+      const index = parent.children.indexOf(from);
+      parent.remove(from);
+      parent.add(to, index);
+    }
+    this.hierarchy.markDirty();
+    const find = (p: number[] | null) => (p ? objectAt(this.scene.root, p) : null);
+    this.selection.setMany(paths.items.map(find).filter((o): o is GameObject => o !== null), find(paths.active));
+    this.inspector.show(this.selected, true);
   }
 
   /** Scales models authored in very large / small units to a few meters. */
@@ -1679,6 +1890,19 @@ function locateSyntaxError(code: string): { line: number; column: number } | nul
 
 function formatCount(n: number): string {
   return n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n);
+}
+
+/** An instance's saved data, taken before a prefab changes, and the prefabs it uses. */
+export interface CapturedInstance {
+  obj: GameObject;
+  data: NodeData;
+  uses: Set<string>;
+}
+
+/** An object's name and local transform, as an instance saves them. */
+function trs(obj: GameObject): { name: string; position: Vec3; rotation: Quat; scale: Vec3 } {
+  const t = obj.transform;
+  return { name: obj.name, position: [...t.position], rotation: [...t.rotation], scale: [...t.scale] };
 }
 
 interface SelectionPaths {

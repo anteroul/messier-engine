@@ -6,10 +6,13 @@ import { button, el } from './ui';
 
 /** dataTransfer type of an asset dragged out of the Assets panel; the value is the asset id. */
 export const ASSET_MIME = 'application/x-messier-asset';
+/** dataTransfer type of an object dragged out of the hierarchy; the value is its GameObject id. */
+export const OBJECT_MIME = 'application/x-messier-object';
 
-const ICONS = { model: '◆', image: '▣', sound: '♪', other: '·' } as const;
+const ICONS = { model: '◆', image: '▣', sound: '♪', prefab: '⬢', other: '·' } as const;
 const HINTS = {
   model: 'Drag into the viewport or onto an object in the hierarchy',
+  prefab: 'A prefab: drag into the viewport or the hierarchy to add an instance',
   image: 'Drag onto an object to use as its texture, or onto the sky; double-click for the sky',
   sound: 'Drag into the viewport for an Audio Source',
   other: 'Used by a model next to it',
@@ -32,20 +35,26 @@ export class AssetsPanel {
       el('div', { class: 'panel-title panel-title-row' }, [el('span', { text: 'Assets' }), importBtn]),
       this.list,
     ]);
-    // Files dropped here are imported without being placed in the scene.
+    // Files dropped here are imported without being placed in the scene; an object from the hierarchy becomes a prefab.
     this.list.addEventListener('dragover', (e) => {
-      if (e.dataTransfer?.types.includes('Files')) {
+      if (e.dataTransfer?.types.includes('Files') || e.dataTransfer?.types.includes(OBJECT_MIME)) {
         e.preventDefault();
         this.list.classList.add('drop-target');
       }
     });
     this.list.addEventListener('dragleave', () => this.list.classList.remove('drop-target'));
     this.list.addEventListener('drop', (e) => {
-      if (!e.dataTransfer?.types.includes('Files')) return;
+      const objectId = e.dataTransfer?.getData(OBJECT_MIME);
+      if (!e.dataTransfer?.types.includes('Files') && !objectId) return;
       e.preventDefault();
       e.stopPropagation();
       this.list.classList.remove('drop-target');
-      void this.editor.project.importFiles(Array.from(e.dataTransfer.files));
+      if (objectId) {
+        const obj = this.editor.scene.find((o) => String(o.id) === objectId);
+        if (obj) void this.editor.createPrefab(obj);
+        return;
+      }
+      void this.editor.project.importFiles(Array.from(e.dataTransfer?.files ?? []));
     });
     // Cheap to rebuild, but only when something changed and at most once a frame.
     const tick = () => {
@@ -76,7 +85,7 @@ export class AssetsPanel {
         class: 'hint assets-empty',
         text: pm.folderName
           ? `Drop files here, onto the viewport, or into the ${ASSETS_DIR}/ folder of ${pm.folderName}.`
-          : 'Drop models, images and sounds here or onto the viewport.',
+          : 'Drop models, images and sounds here or onto the viewport. Drag an object here from the hierarchy to make a prefab.',
       }));
     }
     this.list.replaceChildren(...rows);
@@ -105,7 +114,7 @@ export class AssetsPanel {
     return row;
   }
 
-  /** The obvious thing to do with an asset: place a model or sound, show an image as the sky. */
+  /** The obvious thing to do with an asset: place a model, prefab or sound, show an image as the sky. */
   private use(a: Asset): void {
     const kind = kindOf(a);
     if (kind === 'image') {
@@ -121,7 +130,7 @@ export class AssetsPanel {
     const kind = kindOf(a);
     const pm = this.editor.project;
     const entries: MenuEntry[] = [];
-    if (kind === 'model' || kind === 'sound') entries.push({ label: 'Add to Scene', action: () => this.use(a) });
+    if (kind === 'model' || kind === 'sound' || kind === 'prefab') entries.push({ label: 'Add to Scene', action: () => this.use(a) });
     if (kind === 'image') entries.push({ label: 'Use as Sky', action: () => this.use(a) });
     if (entries.length) entries.push('separator');
     entries.push(

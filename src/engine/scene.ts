@@ -12,6 +12,8 @@ import { PhysicsWorld, RigidBody } from './physics';
 import { ScriptLibrary } from './scripting';
 import { Signal } from './signal';
 import { Sky } from './sky';
+import type { Json } from './data';
+import type { PrefabLibrary } from './prefab';
 
 let nextId = 1;
 const EMPTY: readonly never[] = Object.freeze([]);
@@ -26,6 +28,15 @@ export class GameObject {
   readonly transform: Transform = new Transform(this);
   /** Child objects, in order. Change it through add()/remove() or transform.setParent(). */
   readonly children: readonly GameObject[] = [];
+  /**
+   * On the root of a prefab instance (or of an instance nested in one): the prefab's asset id. Scenes save an
+   * instance as this link plus how its objects differ from the prefab.
+   */
+  prefab: string | null = null;
+  /** In a prefab instance: the id of the prefab object this one is (see prefab.ts), or null. */
+  prefabNode: string | null = null;
+  /** An instance whose prefab didn't load: its saved data, written back as it was. */
+  _prefabStash: Json | null = null;
 
   // Cached hierarchy state, refreshed top-down whenever the parent or activeSelf changes.
   _scene: Scene | null = null;
@@ -361,6 +372,9 @@ export class GameObject {
     o.transform.copyFrom(this.transform);
     o._activeSelf = this._activeSelf;
     o._castShadows = this._castShadows;
+    o.prefab = this.prefab;
+    o.prefabNode = this.prefabNode;
+    o._prefabStash = this._prefabStash;
     for (const c of this._components) o.attachComponent(c.clone());
     if (this._groups) for (const g of this._groups) o.addToGroup(g);
     for (const c of this.children) o.add(c.clone());
@@ -480,6 +494,12 @@ export class GameObject {
 
 const EMPTY_SET: ReadonlySet<string> = new Set();
 
+/** Where a scene's prefabs come from: the project it was loaded from (ProjectResources). */
+export interface PrefabSource extends PrefabLibrary {
+  /** A new, detached instance of a prefab by asset name, path under assets/ or id; null when there's no such prefab. */
+  instantiatePrefab(prefab: string, scene: Scene): GameObject | null;
+}
+
 export class Scene {
   /** Invisible container; top-level objects are its children. */
   readonly root = new GameObject('Scene');
@@ -496,6 +516,8 @@ export class Scene {
   readonly physics = new PhysicsWorld();
   /** TypeScript behaviour scripts available to this scene's objects (shared with clones). */
   readonly scripts: ScriptLibrary;
+  /** The project's prefabs, for instantiate() and for saving instances. Set by whoever loads the scene; shared with clones. */
+  prefabs: PrefabSource | null = null;
 
   /** Emitted when a behaviour's hook throws (the behaviour is then paused). Without listeners the error is logged. */
   readonly behaviourError = new Signal<[behaviour: Behaviour, error: unknown, hook: string]>();
@@ -536,8 +558,24 @@ export class Scene {
     s.shadowExtent = this.shadowExtent;
     s.physics.gravity = [...this.physics.gravity];
     s.physics.iterations = this.physics.iterations;
+    s.prefabs = this.prefabs;
     for (const c of this.root.children) s.add(c.clone());
     return s;
+  }
+
+  /**
+   * Adds an instance of a prefab of the project (by name, such as 'Enemy', or by its path under assets/) under
+   * `parent` (default: the top level), with the prefab's own transform. Returns it, or null (with a warning) when the
+   * project has no such prefab.
+   */
+  instantiate(prefab: string, parent: GameObject = this.root): GameObject | null {
+    const obj = this.prefabs?.instantiatePrefab(prefab, this) ?? null;
+    if (!obj) {
+      console.warn(`There's no prefab ${JSON.stringify(prefab)}${this.prefabs ? '' : ' (the scene has no project)'}`);
+      return null;
+    }
+    parent.add(obj);
+    return obj;
   }
 
   /** The top-level objects. */

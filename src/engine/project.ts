@@ -1,11 +1,12 @@
 import type { Mesh, ResourceRef } from './mesh';
 import type { Texture } from './material';
-import { Scene, type GameObject } from './scene';
+import { Scene, type GameObject, type PrefabSource } from './scene';
 import type { ScriptLibrary } from './scripting';
 import { buildPrimitive } from './primitives';
 import { bytesResolver, isAudioFile, isImageFile, loadAudioClip, loadImageTexture, loadModelFromBytes, type MemoryFile } from './loaders';
 import { AudioClip, type ClipRef } from './audioClip';
-import { applySceneData, checkSceneData, sceneAssetIds, tagAssetResources, type SceneData, type SceneResources } from './serialize';
+import { applySceneData, collectAssetIds, instantiatePrefab, sceneAssetIds, tagAssetResources, upgradeSceneData, type SceneData, type SceneResources } from './serialize';
+import { isPrefabFile, readPrefab, type PrefabData } from './prefab';
 import { isObject } from './data';
 
 // A project is a set of scenes plus the scripts and imported assets they share. On disk it is a folder (see
@@ -122,17 +123,65 @@ export class Project {
     p.startScene = p.scenes[0]?.id ?? '';
     p.scripts = this.scripts.map((s) => ({ ...s }));
     p.build = { title: this.build.title, scenes: p.scenes.map((s) => ({ id: s.id, enabled: true })) };
-    const ids = new Set<string>();
-    for (const s of p.scenes) sceneAssetIds(s.data, ids);
+    const ids = this.usedAssetIds(p.scenes);
     p.assets = this.assets.filter((a) => ids.has(a.id));
     return p;
   }
 
-  /** Assets used by at least one scene, in project order. */
+  /** Assets used by at least one scene, and every prefab (scripts instantiate them by name), in project order. */
   referencedAssets(): Asset[] {
-    const ids = new Set<string>();
-    for (const s of this.scenes) sceneAssetIds(s.data, ids);
+    const ids = this.usedAssetIds(this.scenes);
     return this.assets.filter((a) => ids.has(a.id));
+  }
+
+  /** Ids of the assets `scenes` use, every prefab, and what those prefabs use. */
+  usedAssetIds(scenes: readonly ProjectScene[]): Set<string> {
+    const ids = new Set<string>();
+    for (const s of scenes) sceneAssetIds(s.data, ids);
+    for (const a of this.assets) if (isPrefabAsset(a)) ids.add(a.id);
+    return this.withDependencies(ids);
+  }
+
+  /** `ids` plus the assets the prefabs among them use, recursively (in place). */
+  withDependencies(ids: Set<string>): Set<string> {
+    const done = new Set<string>();
+    for (let more = true; more; ) {
+      more = false;
+      for (const id of [...ids]) {
+        if (done.has(id)) continue;
+        done.add(id);
+        const data = this.prefabData(id);
+        if (data) {
+          const before = ids.size;
+          collectAssetIds(data.root, ids);
+          more ||= ids.size > before;
+        }
+      }
+    }
+    return ids;
+  }
+
+  /** The prefab of a prefab asset (null for other assets, and when the file can't be read). */
+  prefabData(id: string): PrefabData | null {
+    const a = this.getAsset(id);
+    if (!a || !isPrefabAsset(a)) return null;
+    try {
+      return readPrefab(a.files[0].bytes);
+    } catch {
+      return null;
+    }
+  }
+
+  /** A prefab asset by id, name or path under assets/ (with or without the extension). */
+  findPrefab(key: string): Asset | null {
+    const prefabs = this.assets.filter(isPrefabAsset);
+    const strip = (p: string) => p.replace(/\.prefab$/i, '');
+    return (
+      prefabs.find((a) => a.id === key) ??
+      prefabs.find((a) => a.name === key) ??
+      prefabs.find((a) => !!a.path && (a.path === key || strip(a.path) === key)) ??
+      null
+    );
   }
 
   /** The JSON part without file offsets. Cheap to compare for change detection. */
@@ -223,8 +272,7 @@ export class Project {
     if (typeof json.name === 'string') p.name = json.name;
     for (const s of Array.isArray(json.scenes) ? json.scenes : []) {
       if (!isObject(s) || typeof s.id !== 'string' || p.getScene(s.id)) continue;
-      checkSceneData(s.data);
-      p.scenes.push({ id: s.id, name: typeof s.name === 'string' ? s.name : 'Scene', data: s.data });
+      p.scenes.push({ id: s.id, name: typeof s.name === 'string' ? s.name : 'Scene', data: upgradeSceneData(s.data) });
     }
     if (p.scenes.length === 0) throw new Error('Project has no scenes');
     p.startScene = typeof json.startScene === 'string' && p.getScene(json.startScene) ? json.startScene : p.scenes[0].id;
@@ -259,6 +307,8 @@ export class Project {
 
 const align4 = (n: number) => (n + 3) & ~3;
 
+export const isPrefabAsset = (a: Asset) => isPrefabFile(a.files[0]?.name ?? '');
+
 interface LoadedResources {
   meshes: Mesh[];
   textures: Texture[];
@@ -269,18 +319,23 @@ interface LoadedResources {
 /**
  * Resolves scene refs for one project: rebuilds primitives and synthesized
  * sounds, and loads each imported asset once, sharing its meshes, textures and
- * clips across scene loads.
+ * clips across scene loads. Also the prefab source of the scenes it loads.
  */
-export class ProjectResources implements SceneResources {
+export class ProjectResources implements SceneResources, PrefabSource {
   private readonly assets = new Map<string, LoadedResources | null>();
   private readonly clips = new Map<string, AudioClip | null>();
   private readonly primitives = new Map<string, Mesh>();
 
   constructor(readonly project: Project) {}
 
-  /** Loads the assets `data` references that aren't loaded yet. Failures become warnings. */
+  /**
+   * Loads the assets `data` references that aren't loaded yet, and those of every prefab (a script may instantiate
+   * any of them). Failures become warnings.
+   */
   async prepare(data: SceneData, warnings: string[] = []): Promise<void> {
-    const pending = [...sceneAssetIds(data)].filter((id) => !this.has(id));
+    const ids = this.project.usedAssetIds([]);
+    for (const id of sceneAssetIds(data)) ids.add(id);
+    const pending = [...this.project.withDependencies(ids)].filter((id) => !this.has(id) && !this.project.prefabData(id));
     await Promise.all(pending.map((id) => this.load(id, warnings)));
   }
 
@@ -339,8 +394,23 @@ export class ProjectResources implements SceneResources {
   async instantiate(entry: ProjectScene, scripts: ScriptLibrary, warnings: string[] = []): Promise<Scene> {
     await this.prepare(entry.data, warnings);
     const scene = new Scene(scripts);
+    scene.prefabs = this;
     applySceneData(scene, entry.data, this, warnings);
     return scene;
+  }
+
+  prefab(id: string): PrefabData | null {
+    return this.project.prefabData(id);
+  }
+
+  /** A new instance of a prefab by name, path or id (prepare() loaded what it uses). Load problems are logged. */
+  instantiatePrefab(key: string, scene: Scene): GameObject | null {
+    const asset = this.project.findPrefab(key);
+    if (!asset) return null;
+    const warnings: string[] = [];
+    const obj = instantiatePrefab(asset.id, scene, this, warnings);
+    for (const w of warnings) console.warn(`${asset.name}: ${w}`);
+    return obj;
   }
 
   /** Makes meshes and textures of an asset imported in this session resolvable without reloading it. */

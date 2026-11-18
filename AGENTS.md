@@ -184,6 +184,23 @@ Engine.step(dt)                         src/engine/engine.ts
   `scripts/types-plugin.mjs` serves them in dev and emits `messier.d.ts` in builds, and the editor fetches that. A browser project (first visit, other browsers, old files)
   autosaves its packed manifest to IndexedDB as before. Neither writes while playing. Loading ignores unknown keys and
   keeps defaults for missing or mistyped values. Problems become warnings, not exceptions.
+- **Format versions** (`sceneFormat.ts`): scene and prefab files share `SCENE_VERSION`. Every reader goes through
+  `upgradeSceneData()` / `readPrefab()` (both `upgradeDocument()`), which run `MIGRATIONS` on a copy of an older
+  document, so the rest of the engine only sees the current version, and newer versions are refused. Version 2
+  renamed `material.texture` to `baseColorTexture` and added prefabs.
+- **Prefabs** (`prefab.ts`, plus the instance parts of `serialize.ts`): a prefab is an asset (`assets/**/*.prefab`,
+  kind `'prefab'`, JSON) whose objects all have an `id`. Instances are saved as `{ prefab, name, position, rotation,
+  scale, overrides?, removed?, added? }` keyed by those ids; loading *expands* one (a copy of the prefab, nested
+  instances expanded with ids prefixed `<nested id>/`, changes applied) and tags the objects with
+  `GameObject.prefab` (instance roots) and `prefabNode` (their id in the instance). Saving captures the live objects
+  against a fresh expansion (children are matched by `prefabNode`, anything else is *added*) and keeps the diff, so
+  the JSON level (expand/diff) and the object level must stay exact inverses: `tests/unit/prefab.test.ts` checks
+  round trips. Component keys of `ObjectData` are compared field by field (`COMPONENT_KEYS` in `prefab.ts`), the rest
+  whole. `scene.prefabs` (a `ProjectResources`) looks prefabs up for saving, and `Scene.instantiate(name)` for
+  scripts; whoever loads a scene sets it. A missing prefab leaves a placeholder that saves the instance unchanged
+  (`_prefabStash`). Projects ship every prefab and what it uses (`Project.usedAssetIds`). In the editor, Create /
+  Apply / Revert replace instance objects (`swapObjects`, undoable); a prefab changed outside rebuilds the instances
+  from their saved data and clears the undo history.
 - **Builds** (`src/editor/build.ts`, `src/player.ts`, `scripts/player-plugin.mjs`, `sceneManager.ts`):
   `Project.build` holds the scene order/inclusion and title (saved in the manifest). Build fetches
   `messier-player.js` (the plugin bundles `src/player.ts` with a nested Vite build: served by the dev server,
@@ -270,7 +287,7 @@ TypeScript `Script` classes edited in the Scripts tab (see `docs/scripting.md`).
 **Add a component type.** Extend `Component` (data) or `Behaviour` (hooks). The
 default `clone()` copies public fields (arrays one level deep, Signals fresh,
 other objects shared); override it if that's wrong. To save it with scenes,
-extend `objectToData`/`dataToObject` in `serialize.ts` (see below). Systems that
+extend `objectFields`/`dataToObject` in `serialize.ts` (see below). Systems that
 process every instance should iterate `scene.query(Type)`, not the hierarchy.
 
 **Change the type stripper.** Add a snippet to `tests/render/ts-corpus.ts`.
@@ -284,9 +301,15 @@ positions.
 `clone()`/`copyFrom()` and add it to the `*_FIELDS` list next to the class
 (`MATERIAL_FIELDS`, `LIGHT_FIELDS`, `CAMERA_FIELDS`, `RIGID_BODY_FIELDS`) so
 scenes save it. Old files without the key keep the default. For a new
-component, extend `objectToData`/`dataToObject` in `serialize.ts` and the
-round-trip test in `tests/render`. Bump `SCENE_VERSION` only for changes old
-readers would misread.
+component, extend `objectFields`/`dataToObject` in `serialize.ts` and the
+round-trip test in `tests/render`, and add its key to `COMPONENT_KEYS` in `prefab.ts` so prefab instances
+override it field by field.
+
+**Change the scene format.** New keys that old readers can ignore need nothing more. For anything old readers
+would misread (a renamed or reinterpreted key), bump `SCENE_VERSION` in `sceneFormat.ts` and append a migration to
+`MIGRATIONS` that upgrades the previous version's documents (scenes and prefabs; rename override keys
+`<component>.<field>` too), add a case to the format test in `tests/unit/prefab.test.ts`, call the bump out in the
+change log, and regenerate the example projects.
 
 **Add a material or light property.** Add the field (and copy it in `clone()`
 and the `*_FIELDS` list),

@@ -16,6 +16,7 @@
   --y: #74d64d;
   --z: #528cff;
   --hover: #202224;
+  --prefab: #8ab4ff;
   --shadow: 0 8px 24px #0008;
   color-scheme: dark;
   font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
@@ -357,6 +358,9 @@ body.view-scripts #inspector-panel {
 .icon-image {
   color: #f0c46a;
 }
+.icon-prefab {
+  color: var(--prefab);
+}
 .icon-sound {
   color: #9fd8a8;
 }
@@ -424,6 +428,17 @@ body.view-scripts #inspector-panel {
 }
 .tree-row.hidden-obj .tree-name {
   opacity: 0.45;
+}
+/* Prefab instances: the root in the prefab color, objects that come from the prefab in a fainter one. */
+.tree-row.prefab-root .tree-name {
+  color: var(--prefab);
+  font-weight: 600;
+}
+.tree-row.prefab-part .tree-name {
+  color: color-mix(in srgb, var(--prefab) 65%, var(--text));
+}
+.tree-row.prefab-missing .tree-name {
+  color: var(--danger);
 }
 .tree-toggle {
   width: 12px;

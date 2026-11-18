@@ -19,6 +19,23 @@ Add a line under **Unreleased** with every user-visible change.
 - **Material Lab example project** (`examples/MaterialLab/`, written by `npm run generate:materials`): a gallery that
   adds the maps one at a time, a wall of hull plating under a sweeping light, and an orbiting sun. Space toggles the
   maps in Play.
+- **Prefabs:** drag an object from the hierarchy onto the Assets panel (or right-click → Create Prefab) to save it
+  with its children as `assets/<Name>.prefab`, then place instances from the Assets panel. Scenes save an instance
+  as a link plus its changes (edited fields, removed and added objects), so editing the prefab updates every
+  instance except where it overrides it. The inspector shows an instance's changes and can Apply them to the
+  prefab, Revert them or Unpack the instance. Prefabs can contain other prefabs, and a prefab made from an instance
+  is a variant. Prefab files edited outside the editor update their instances. Scripts spawn instances with
+  `scene.instantiate('Name')`, and built games include every prefab.
+
+### Changed
+
+- **Scene format version 2:** scene and prefab files carry a format version, and files from older versions are
+  upgraded when they load (and saved in the new format). Version 2 saves the base color texture as
+  `baseColorTexture` (it was `texture`) and adds prefab instances. Older Messier versions refuse version 2 scenes.
+
+### Fixed
+
+- A project folder no longer briefly reports a file the editor just wrote as removed and added again.
 
 ## [0.5.0] - 2026-11-17
 

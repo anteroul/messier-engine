@@ -38,7 +38,7 @@ const image = (name: string) => new Texture({ width: 4, height: 4 } as ImageBitm
   const data = serializeScene(scene, warnings);
   eq('saves without warnings', warnings, []);
   const m = data.objects[0].material;
-  eq('the base color keeps its old key', m.texture, { asset: 'model', index: 0 });
+  eq('the base color is saved under its slot name', m.baseColorTexture, { asset: 'model', index: 0 });
   eq('other slots save as refs', [m.normalTexture, m.metallicRoughnessTexture, m.occlusionTexture, m.emissiveTexture].map((r) => r.index), [1, 2, 2, 3]);
   eq('the textures count as used assets', [...collectAssetIds(data.objects)], ['model']);
 

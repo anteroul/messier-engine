@@ -207,6 +207,8 @@ export class InspectorPanel {
   private buildObject(obj: GameObject): HTMLElement[] {
     const out: HTMLElement[] = [];
     const ed = this.editor;
+    const prefab = this.buildPrefab(obj);
+    if (prefab) out.push(prefab);
 
     // --- Object
     const general = section('Object');
@@ -420,6 +422,46 @@ export class InspectorPanel {
     }
     out.push(beh.root);
     return out;
+  }
+
+  /** For objects of a prefab instance: which prefab, how much the instance changes, and Apply / Revert / Unpack. */
+  private buildPrefab(obj: GameObject): HTMLElement | null {
+    const ed = this.editor;
+    const root = ed.prefabRootOf(obj);
+    if (!root) return null;
+    const sec = section('Prefab');
+    sec.root.classList.add('prefab-section');
+    const outermost = ed.isOutermostInstance(root);
+    if (root !== obj) sec.body.append(row('Part of', button(root.name, () => ed.select(root), 'btn btn-small prefab-root-link')));
+    const asset = ed.prefabAsset(root);
+    if (!asset) {
+      sec.body.append(el('p', { class: 'hint', text: `${root.name}'s prefab is missing, so it's an empty stand-in. Saving keeps the instance as it was.` }));
+      if (outermost) sec.body.append(row('', button('Unpack', () => ed.unpackPrefab(root), 'btn btn-small')));
+      return sec.root;
+    }
+    const info = el('p', { class: 'hint prefab-info' });
+    // Counting changes serializes the instance, so only every half second.
+    let next = 0;
+    const update = () => {
+      if (performance.now() < next) return;
+      next = performance.now() + 500;
+      const n = outermost ? ed.instanceChanges(root) : -1;
+      info.textContent = `Instance of ${asset.path ?? asset.name}${n < 0 ? '' : n ? ` with ${n} change${n === 1 ? '' : 's'}` : ', unchanged'}.`;
+    };
+    update();
+    this.add({ sync: update });
+    const apply = button('Apply', () => void ed.applyPrefab(root), 'btn btn-small apply-prefab');
+    apply.title = `Write this instance's changes into ${asset.name}; every instance gets them`;
+    const buttons = [apply];
+    if (outermost) {
+      const revert = button('Revert', () => ed.revertPrefab(root), 'btn btn-small revert-prefab');
+      revert.title = `Throw away this instance's changes`;
+      const unpack = button('Unpack', () => ed.unpackPrefab(root), 'btn btn-small unpack-prefab');
+      unpack.title = 'Turn the instance into plain objects';
+      buttons.push(revert, unpack);
+    }
+    sec.body.append(info, row('', ...buttons));
+    return sec.root;
   }
 
   private buildCamera(obj: GameObject): HTMLElement {

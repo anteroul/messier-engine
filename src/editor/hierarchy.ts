@@ -1,5 +1,5 @@
 import { AudioSource, Renderer2D, Text2D, type GameObject } from '../engine';
-import { ASSET_MIME } from './assets';
+import { ASSET_MIME, OBJECT_MIME } from './assets';
 import { el } from './ui';
 import type { Editor } from './editor';
 
@@ -92,7 +92,9 @@ export class HierarchyPanel {
     const sound = !obj.mesh && !is2D && !!obj.getComponent(AudioSource);
     const icon = obj.light ? '✦' : obj.camera ? '◉' : obj.mesh ? '◆' : is2D ? (obj.getComponent(Text2D) ? 'T' : '▢') : sound ? '♪' : '○';
     const iconClass = obj.light ? 'icon-light' : obj.camera ? 'icon-camera' : obj.mesh ? 'icon-mesh' : is2D ? 'icon-2d' : sound ? 'icon-audio' : 'icon-empty';
-    const row = el('div', { class: `tree-row${obj.visible ? '' : ' hidden-obj'}`, draggable: 'true', title: obj.name }, [
+    // Prefab instances: their roots and the objects that come from the prefab are tinted.
+    const prefab = obj.prefab ? (obj._prefabStash ? ' prefab-missing' : ' prefab-root') : obj.prefabNode !== null && this.editor.prefabRootOf(obj) ? ' prefab-part' : '';
+    const row = el('div', { class: `tree-row${obj.visible ? '' : ' hidden-obj'}${prefab}`, draggable: 'true', title: obj.name }, [
       toggle,
       el('span', { class: `tree-icon ${iconClass}`, text: icon }),
       el('span', { class: 'tree-name', text: obj.name }),
@@ -109,7 +111,8 @@ export class HierarchyPanel {
     row.addEventListener('dragstart', (e) => {
       this.dragged = obj;
       e.dataTransfer?.setData('text/plain', String(obj.id));
-      if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer?.setData(OBJECT_MIME, String(obj.id));
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copyMove';
     });
     row.addEventListener('dragend', () => {
       this.dragged = null;

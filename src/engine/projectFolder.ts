@@ -1,5 +1,6 @@
 import { Project, ProjectResources, type Asset, type ProjectScene } from './project';
-import { checkSceneData, tagAssetResources, type SceneData } from './serialize';
+import { tagAssetResources, upgradeSceneData, type SceneData } from './serialize';
+import { isPrefabFile } from './prefab';
 import { isObject } from './data';
 import { MODEL_EXTENSIONS, isAudioFile, isImageFile, loadModelFromBytes, newAssetId, recordingResolver, type MemoryFile, type ResourceResolver } from './loaders';
 
@@ -7,7 +8,7 @@ import { MODEL_EXTENSIONS, isAudioFile, isImageFile, loadModelFromBytes, newAsse
 //   project.json             name, build settings, start scene
 //   scenes/<Name>.messier    one scene each (SceneData as JSON)
 //   scripts/<Name>.ts        one script each
-//   assets/**                imported files, each with a <file>.meta holding its stable id
+//   assets/**                imported files and prefabs (*.prefab), each with a <file>.meta holding its stable id
 // Scenes refer to assets by that id ({ asset: id, index }), so a file moved or renamed together with its .meta keeps
 // its references. In memory it is the same Project as always (scene ids are their paths, asset ids their meta ids),
 // so builds and the player don't know about folders. Paths use '/' and are relative to the project folder.
@@ -36,13 +37,14 @@ export interface FolderIO {
   stat(path: string): Promise<{ size: number; modified: number } | null>;
 }
 
-export type AssetKind = 'model' | 'image' | 'sound' | 'other';
+export type AssetKind = 'model' | 'image' | 'sound' | 'prefab' | 'other';
 
 export function assetKind(path: string): AssetKind {
   const ext = extension(path);
   if (MODEL_EXTENSIONS.includes(ext)) return 'model';
   if (isImageFile(path)) return 'image';
   if (isAudioFile(path)) return 'sound';
+  if (isPrefabFile(path)) return 'prefab';
   return 'other';
 }
 
@@ -181,9 +183,7 @@ export async function loadProjectFolder(io: FolderIO): Promise<LoadedFolder> {
 }
 
 export async function readScene(io: FolderIO, path: string): Promise<ProjectScene> {
-  const data: unknown = JSON.parse(text(await io.read(path)));
-  checkSceneData(data);
-  return { id: path, name: fileStem(path), data };
+  return { id: path, name: fileStem(path), data: upgradeSceneData(JSON.parse(text(await io.read(path)))) };
 }
 
 /**
