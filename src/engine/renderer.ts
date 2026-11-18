@@ -6,6 +6,7 @@ import overlayWGSL from './shaders/overlay.wgsl?raw';
 import mipmapWGSL from './shaders/mipmap.wgsl?raw';
 import shape2dWGSL from './shaders/shape2d.wgsl?raw';
 import skyWGSL from './shaders/sky.wgsl?raw';
+import tonemapWGSL from './shaders/tonemap.wgsl?raw';
 import { mat4, vec3, type Mat4, type Vec3 } from './math';
 import { VERTEX_STRIDE_BYTES, type Mesh } from './mesh';
 import { LINEAR_TEXTURE_SLOTS, TEXTURE_SLOTS, type Material, type Texture } from './material';
@@ -30,6 +31,8 @@ const MATERIAL_UNIFORM_SIZE = 64;
 const LIGHT_FLOATS = 16;
 /** Main pass uses reversed-Z: clear to 0, 'greater' passes nearer fragments. */
 const DEPTH_FORMAT: GPUTextureFormat = 'depth32float';
+/** Meshes and the sky render linear radiance into this; the tonemap pass turns it into display colors. */
+const HDR_FORMAT: GPUTextureFormat = 'rgba16float';
 const SHADOW_FORMAT: GPUTextureFormat = 'depth32float';
 const TEXTURE_FORMAT: GPUTextureFormat = 'rgba8unorm-srgb';
 /** For textures that hold data (normals, metallic-roughness, occlusion), not colors. */
@@ -67,10 +70,9 @@ const ALPHA_BLEND: GPUBlendState = {
 };
 
 /**
- * Forward renderer: shadow pass (one directional light) followed by a 4x MSAA
- * main pass containing lit meshes, the sky, the editor grid, 2D and overlay helpers.
- * Each frame declares its passes on a FrameGraph, which orders them and owns
- * their transient textures.
+ * Forward renderer: a shadow pass (one directional light), a 4x MSAA HDR main pass (lit meshes, the sky), a tonemap
+ * pass, then the display-space overlay pass (editor grid, 2D, overlay helpers) resolved into the canvas. Each frame
+ * declares its passes on a FrameGraph, which orders them and owns their transient textures.
  */
 export class Renderer {
   readonly device: GPUDevice;
@@ -98,6 +100,13 @@ export class Renderer {
   private readonly overlayTopPipeline: GPURenderPipeline;
   private readonly mipPipelines: Record<'srgb' | 'linear', GPURenderPipeline>;
   private readonly skyPipeline: GPURenderPipeline;
+  private readonly tonemapPipeline: GPURenderPipeline;
+  private readonly tonemapLayout: GPUBindGroupLayout;
+  private readonly tonemapBuffer: GPUBuffer;
+  /** The HDR texture `tonemapGroup` reads (the graph's pool may hand out another one). */
+  private tonemapSource: GPUTexture | null = null;
+  private tonemapGroup: GPUBindGroup | null = null;
+  private readonly tonemapData = new Float32Array(4);
   private readonly world2DPipeline: GPURenderPipeline;
   private readonly screen2DPipeline: GPURenderPipeline;
 
@@ -216,7 +225,7 @@ export class Renderer {
         label: `mesh-${cullMode}`,
         layout: meshLayout,
         vertex: { module: meshModule, entryPoint: 'vs_main', buffers: [meshVertexLayout] },
-        fragment: { module: meshModule, entryPoint: 'fs_main', targets: [{ format: this.format }] },
+        fragment: { module: meshModule, entryPoint: 'fs_main', targets: [{ format: HDR_FORMAT }] },
         primitive: { topology: 'triangle-list', cullMode, frontFace: 'ccw' },
         depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'greater' },
         multisample,
@@ -280,12 +289,30 @@ export class Renderer {
       label: 'sky',
       layout: frameOnlyLayout,
       vertex: { module: skyModule, entryPoint: 'vs_main' },
-      fragment: { module: skyModule, entryPoint: 'fs_main', targets: [{ format: this.format }] },
+      fragment: { module: skyModule, entryPoint: 'fs_main', targets: [{ format: HDR_FORMAT }] },
       primitive: { topology: 'triangle-list' },
       // At depth 0 (the far plane): passes only where the depth buffer still holds its clear value.
       depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: false, depthCompare: 'greater-equal' },
       multisample,
     });
+
+    this.tonemapLayout = device.createBindGroupLayout({
+      label: 'tonemap',
+      entries: [
+        { binding: 0, visibility: FS, texture: { sampleType: 'unfilterable-float', multisampled: true } },
+        { binding: 1, visibility: FS, buffer: { type: 'uniform' } },
+      ],
+    });
+    const tonemapModule = device.createShaderModule({ label: 'tonemap', code: tonemapWGSL });
+    this.tonemapPipeline = device.createRenderPipeline({
+      label: 'tonemap',
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this.tonemapLayout] }),
+      vertex: { module: tonemapModule, entryPoint: 'vs_main' },
+      fragment: { module: tonemapModule, entryPoint: 'fs_main', targets: [{ format: this.format }] },
+      primitive: { topology: 'triangle-list' },
+      multisample,
+    });
+    this.tonemapBuffer = device.createBuffer({ label: 'tonemap', size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
     const mipModule = device.createShaderModule({ label: 'mipmap', code: mipmapWGSL });
     const makeMipPipeline = (format: GPUTextureFormat) =>
@@ -750,8 +777,9 @@ export class Renderer {
     if (overlay) this.uploadOverlay(overlay);
     const [world2DCount, screen2DCount] = this.prepare2D(scene, camera, viewProj, options);
 
-    // The frame: a shadow pass into the persistent shadow map (when a directional light casts shadows), then the
-    // main pass, multisampled, resolved into the canvas.
+    // The frame: a shadow pass into the persistent shadow map (when a directional light casts shadows), the main pass
+    // (meshes and sky as linear radiance into a multisampled HDR target), the tonemap pass (into the multisampled
+    // display target), then the display-space overlay pass (grid, 2D, editor helpers), resolved into the canvas.
     const g = this.graph;
     const shadowMap = g.importTexture('shadow map', this.shadowMap);
     const output = g.importTexture('canvas', this.context.getCurrentTexture());
@@ -761,15 +789,30 @@ export class Renderer {
         return (encoder) => this.drawShadowCasters(encoder, draws);
       });
     }
-    const color = g.createTexture('main color', { format: this.format, sampleCount: this.sampleCount });
+    const hdr = g.createTexture('hdr color', { format: HDR_FORMAT, sampleCount: this.sampleCount });
     const depth = g.createTexture('main depth', { format: DEPTH_FORMAT, sampleCount: this.sampleCount });
-    // With a sky, the clear color only shows where the sky pass doesn't draw (nowhere).
-    const bg = skyMode === 'color' ? scene.background : [0, 0, 0];
+    const display = g.createTexture('display color', { format: this.format, sampleCount: this.sampleCount });
     g.addRenderPass('main', (pass) => {
       pass.read(shadowMap); // through the frame bind group
-      pass.colorAttachment(color, { clearValue: { r: bg[0], g: bg[1], b: bg[2], a: 1 }, loadOp: 'clear', resolveTarget: output });
+      // Alpha 0 marks pixels nothing covers (meshes and the sky write 1): the tonemap pass shows the background there.
+      pass.colorAttachment(hdr, { clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear' });
       pass.depthAttachment(depth, { depthClearValue: 0, depthLoadOp: 'clear' });
-      return (encoder) => this.drawMain(encoder, { draws, materialGroups, skyMode, grid: !!options.grid, overlay, world2DCount, screen2DCount });
+      return (encoder) => this.drawScene(encoder, draws, materialGroups, skyMode);
+    });
+    // With a sky, the background only shows where the sky pass doesn't draw (nowhere).
+    const bg = skyMode === 'color' ? scene.background : [0, 0, 0];
+    const td = this.tonemapData;
+    td[0] = bg[0]; td[1] = bg[1]; td[2] = bg[2]; td[3] = scene.exposure;
+    device.queue.writeBuffer(this.tonemapBuffer, 0, td);
+    g.addRenderPass('tonemap', (pass) => {
+      pass.read(hdr);
+      pass.colorAttachment(display, { clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear' });
+      return (encoder, res) => this.drawTonemap(encoder, res.texture(hdr));
+    });
+    g.addRenderPass('overlay', (pass) => {
+      pass.colorAttachment(display, { loadOp: 'load', resolveTarget: output });
+      pass.depthAttachment(depth, { depthLoadOp: 'load' });
+      return (encoder) => this.drawDisplay(encoder, { grid: !!options.grid, overlay, world2DCount, screen2DCount });
     });
     g.execute();
     return stats;
@@ -791,10 +834,9 @@ export class Renderer {
     });
   }
 
-  /** The main pass: meshes, sky, grid, world 2D, depth-tested overlay, screen 2D (HUD), then the overlay on top. */
-  private drawMain(pass: GPURenderPassEncoder, f: MainPassInput): void {
+  /** The main pass: lit meshes, then the sky behind them, as linear radiance. */
+  private drawScene(pass: GPURenderPassEncoder, draws: MeshRenderer[], materialGroups: Map<Material, GPUBindGroup>, skyMode: SkyMode): void {
     const stats = this.stats;
-    const { draws, materialGroups, skyMode, overlay, world2DCount, screen2DCount } = f;
     pass.setBindGroup(0, this.frameBindGroup);
     let currentPipeline: GPURenderPipeline | null = null;
     draws.forEach((o, i) => {
@@ -819,7 +861,31 @@ export class Renderer {
       pass.draw(3);
       stats.drawCalls++;
     }
+  }
 
+  /** The tonemap pass: HDR radiance to display colors, per sample (see tonemap.wgsl). */
+  private drawTonemap(pass: GPURenderPassEncoder, hdr: GPUTexture): void {
+    if (hdr !== this.tonemapSource) {
+      this.tonemapSource = hdr;
+      this.tonemapGroup = this.device.createBindGroup({
+        label: 'tonemap',
+        layout: this.tonemapLayout,
+        entries: [
+          { binding: 0, resource: hdr.createView() },
+          { binding: 1, resource: { buffer: this.tonemapBuffer } },
+        ],
+      });
+    }
+    pass.setPipeline(this.tonemapPipeline);
+    pass.setBindGroup(0, this.tonemapGroup!);
+    pass.draw(3);
+  }
+
+  /** The overlay pass, display space: grid, world 2D, depth-tested overlay, screen 2D (HUD), then the overlay on top. */
+  private drawDisplay(pass: GPURenderPassEncoder, f: DisplayPassInput): void {
+    const stats = this.stats;
+    const { overlay, world2DCount, screen2DCount } = f;
+    pass.setBindGroup(0, this.frameBindGroup);
     if (f.grid) {
       pass.setPipeline(this.gridPipeline);
       pass.draw(6);
@@ -858,10 +924,7 @@ export class Renderer {
   }
 }
 
-interface MainPassInput {
-  draws: MeshRenderer[];
-  materialGroups: Map<Material, GPUBindGroup>;
-  skyMode: SkyMode;
+interface DisplayPassInput {
   grid: boolean;
   overlay: OverlayBuilder | null;
   world2DCount: number;

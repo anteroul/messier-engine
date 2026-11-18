@@ -5,7 +5,7 @@ struct Frame {
   viewProj: mat4x4f,
   lightViewProj: mat4x4f,
   cameraPos: vec4f,
-  // rgb = ambient color (linear), w = exposure
+  // rgb = ambient color (linear), w = exposure (unused here: the tonemap pass applies it)
   ambient: vec4f,
   lightCount: u32,
   shadowIndex: i32,
@@ -41,19 +41,6 @@ struct Light {
 @group(0) @binding(5) var skySampler: sampler;
 
 const PI = 3.14159265359;
-
-fn acesTonemap(x: vec3f) -> vec3f {
-  let a = 2.51;
-  let b = 0.03;
-  let c = 2.43;
-  let d = 0.59;
-  let e = 0.14;
-  return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3f(0.0), vec3f(1.0));
-}
-
-fn toDisplay(color: vec3f) -> vec3f {
-  return pow(acesTonemap(color * frame.ambient.w), vec3f(1.0 / 2.2));
-}
 
 // Linear radiance of the sky toward unit direction d. `blur` (0 sharp … 1 diffuse) widens it for rough reflections
 // and ambient light: the image sky reads a smaller mip, the gradient eases toward its average. The sun disc only

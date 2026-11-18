@@ -48,8 +48,8 @@ Engine.step(dt)                         src/engine/engine.ts
             scene.updateBehaviours → scene.lateUpdate
   input.endFrame(); scene.updateMatrices()
   overlay.begin(); beforeRender hooks   editor builds gizmo/icons into OverlayBuilder
-  renderer.render(scene, camera, …)     uploads, then a frame graph: shadow pass → main MSAA pass (meshes, sky, grid,
-                                        world 2D, overlay, HUD), compiled and executed in one command encoder
+  renderer.render(scene, camera, …)     uploads, then a frame graph: shadow → main (meshes, sky; HDR MSAA) → tonemap →
+                                        overlay (grid, world 2D, overlay, HUD), compiled and executed in one encoder
   afterRender hooks                     editor reads RenderStats
   draw2d.clear(); scene.processDestroyed()  immediate 2D layer reset; deferred destroys (onDisable → onDestroy → detach)
 ```
@@ -150,11 +150,17 @@ Engine.step(dt)                         src/engine/engine.ts
   `input.endFrame()` after the update phases (so `pressed`/`released` last one
   frame, including its fixed steps), and `setPlaying` resets it.
 - **Frame graph** (`frameGraph.ts`): `Renderer.render()` prepares uniforms and buffers, then declares the frame on a
-  `FrameGraph`: the shadow map (persistent, owned by the renderer) and the canvas texture are *imported*, the MSAA
-  color and depth are *transient* (`createTexture`, sized from the output size that `resizeIfNeeded()` sets).
+  `FrameGraph`: the shadow map (persistent, owned by the renderer) and the canvas texture are *imported*; the
+  multisampled `hdr color` (`rgba16float`), `main depth` and `display color` (canvas format) are *transient*
+  (`createTexture`, sized from the output size that `resizeIfNeeded()` sets). The passes: `shadow`; `main` (meshes
+  and sky as linear radiance into `hdr color`, cleared to alpha 0 so the tonemap knows where nothing was drawn);
+  `tonemap` (per-sample exposure + ACES + gamma 2.2 into `display color`, the display-space background where alpha
+  is 0, see `tonemap.wgsl`); `overlay` (loads `display color` and `main depth`; grid, world 2D, overlay, HUD;
+  resolves into the canvas). Tone mapping per sample, before the resolve, keeps MSAA edges as they were when the
+  scene shaders tone mapped; resolving HDR first would alias bright edges.
   `addRenderPass(name, setup)` / `addComputePass` declare what a pass reads (`read`, `readStorage`) and writes
   (attachments, `writeStorage`) and return its execute function; the draw code lives in private methods
-  (`drawShadowCasters`, `drawMain`). `execute()` orders passes by those dependencies (declaration order otherwise),
+  (`drawShadowCasters`, `drawScene`, `drawTonemap`, `drawDisplay`). `execute()` orders passes by those dependencies (declaration order otherwise),
   culls passes nothing reads (unless they write an imported texture or are `sideEffect`), allocates transients from a
   pool (aliasing non-overlapping lifetimes, reused across frames, freed after 3 idle frames or a resize), infers
   usage flags, stores attachments only when a later pass reads them (imported ones always), and records one
@@ -263,9 +269,9 @@ Engine.step(dt)                         src/engine/engine.ts
   - `Object` (model + normal matrix, 128 B) lives in 256 B dynamic-offset
     slots (`OBJECT_STRIDE`) and is shared by the mesh and shadow pipelines.
 - **Shaders:** `common.wgsl` is *prepended* to `mesh`, `grid`, `overlay` and `sky`.
-  It declares `@group(0) @binding(0) frame`, the sky texture and sampler, `PI`, `toDisplay()` and `skyRadiance()`,
-  so don't redeclare them.
-  `shadow.wgsl`, `mipmap.wgsl` and `shape2d.wgsl` are standalone. Shaders load with Vite
+  It declares `@group(0) @binding(0) frame`, the sky texture and sampler, `PI` and `skyRadiance()`,
+  so don't redeclare them. `mesh` and `sky` output linear radiance with alpha 1; only `tonemap.wgsl` tone maps.
+  `shadow.wgsl`, `mipmap.wgsl`, `shape2d.wgsl` and `tonemap.wgsl` are standalone. Shaders load with Vite
   `?raw` imports, and `tests/render/run.mjs` emulates that with an esbuild plugin.
 - **Bind groups:** group 0 = frame (uniform, lights storage, shadow map,
   comparison sampler, sky texture, sky sampler), group 1 = material, group 2 = object (dynamic offset). The frame
@@ -274,8 +280,9 @@ Engine.step(dt)                         src/engine/engine.ts
   group would put the shadow map in a usage conflict. The 2D pipelines have their own group 0 too (view matrix,
   font atlas, sampler), so rebind the frame group before drawing anything that uses it after them.
 - **Color spaces:** material and light colors are **linear**. Textures are
-  `rgba8unorm-srgb`. The canvas is non-sRGB and the shader applies ACES +
-  gamma 2.2 itself. Sky gradient colors are linear too (tone-mapped like lights). `scene.background` and 2D colors (`Shape2D`, `Text2D`, `draw2d`) are display-space
+  `rgba8unorm-srgb`. Meshes and the sky render linear radiance into an `rgba16float` target, and the tonemap pass
+  applies exposure, ACES and gamma 2.2 (the canvas is non-sRGB). Sky gradient colors are linear too (tone-mapped like
+  lights). Anything display-space draws in the overlay pass, after the tonemap. `scene.background` and 2D colors (`Shape2D`, `Text2D`, `draw2d`) are display-space
   (written as is, no tone mapping). UI pickers convert with `hexToLinear`/`linearToHex` or,
   for display-space values, `hexToRgb`/`rgbToHex`.
 - **Mesh vertex format:** interleaved `position(3) normal(3) uv(2)` floats,
@@ -346,18 +353,19 @@ Declare every texture it samples or writes, since that's what orders and culls p
 it only needs for this frame are transients:
 
 ```ts
-const hdr = g.createTexture('hdr', { format: 'rgba16float' }); // output size; `scale: 0.5` or `size: [w, h]`
-g.addRenderPass('tonemap', (pass) => {
+const bright = g.createTexture('bright', { format: 'rgba16float', scale: 0.5 }); // or `size: [w, h]`; default: output size
+g.addRenderPass('bright pass', (pass) => {
   pass.read(hdr); // sampled through a bind group made in execute
-  pass.colorAttachment(output, { clearValue: { r: 0, g: 0, b: 0, a: 1 } });
-  return (encoder, res) => this.drawTonemap(encoder, res.view(hdr));
+  pass.colorAttachment(bright, { clearValue: { r: 0, g: 0, b: 0, a: 0 } });
+  return (encoder, res) => this.drawBrightPass(encoder, res.texture(hdr));
 });
 ```
 
 Passes run after the passes whose textures they read, whatever order they're declared in. A pass whose results
 nothing reads is culled: write an imported texture, or call `pass.sideEffect()` (readbacks, picking). Don't create
 GPU textures for per-frame targets by hand, and don't bind the frame group in a pass that writes the shadow map (use
-its own group 0, like `drawShadowCasters`). Check `tests/.out/frame.png` afterwards; a pure refactor should leave it
+its own group 0, like `drawShadowCasters`). A bind group over a transient texture must be remade when the pool hands
+out a different texture (see `drawTonemap`). Check `tests/.out/frame.png` afterwards; a pure refactor should leave it
 pixel-identical with `Math.random` seeded (the demo's flickering light is random).
 
 **Add a primitive.** Write the generator in `primitives.ts` (finish with
