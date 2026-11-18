@@ -18,6 +18,7 @@ import { Batch2D, VERTEX2D_FLOATS, type Draw2D } from './draw2d';
 import { ATLAS_SIZE, fontAtlas } from './font';
 import { Renderer2D } from './shapes2d';
 import type { SkyMode } from './sky';
+import { FrameGraph } from './frameGraph';
 
 export const MAX_LIGHTS = 128;
 const SHADOW_MAP_SIZE = 2048;
@@ -79,8 +80,8 @@ export class Renderer {
   readonly stats: RenderStats = { drawCalls: 0, triangles: 0, lights: 0, shadowCasters: 0, elements2D: 0 };
 
   private readonly context: GPUCanvasContext;
-  private msaaTexture: GPUTexture | null = null;
-  private depthTexture: GPUTexture | null = null;
+  /** Declares, orders and runs each frame's passes, and owns their transient textures (MSAA color, depth). */
+  private readonly graph: FrameGraph;
 
   private readonly frameLayout: GPUBindGroupLayout;
   private readonly materialLayout: GPUBindGroupLayout;
@@ -159,6 +160,7 @@ export class Renderer {
     this.context = context;
     this.format = navigator.gpu.getPreferredCanvasFormat();
     context.configure({ device, format: this.format, alphaMode: 'opaque' });
+    this.graph = new FrameGraph(device);
 
     const VS = GPUShaderStage.VERTEX, FS = GPUShaderStage.FRAGMENT;
 
@@ -421,23 +423,10 @@ export class Renderer {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const w = Math.max(1, Math.floor(this.canvas.clientWidth * dpr));
     const h = Math.max(1, Math.floor(this.canvas.clientHeight * dpr));
-    if (w === this.width && h === this.height && this.msaaTexture) return;
+    if (w === this.width && h === this.height) return;
     this.width = this.canvas.width = w;
     this.height = this.canvas.height = h;
-    this.msaaTexture?.destroy();
-    this.depthTexture?.destroy();
-    this.msaaTexture = this.device.createTexture({
-      size: [w, h],
-      format: this.format,
-      sampleCount: this.sampleCount,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT,
-    });
-    this.depthTexture = this.device.createTexture({
-      size: [w, h],
-      format: DEPTH_FORMAT,
-      sampleCount: this.sampleCount,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT,
-    });
+    this.graph.setOutputSize(w, h);
   }
 
   private ensureMesh(mesh: Mesh): void {
@@ -759,44 +748,51 @@ export class Renderer {
     if (overlay) this.uploadOverlay(overlay);
     const [world2DCount, screen2DCount] = this.prepare2D(scene, camera, viewProj, options);
 
-    const encoder = device.createCommandEncoder({ label: 'frame' });
-
-    // Shadow pass.
+    // The frame: a shadow pass into the persistent shadow map (when a directional light casts shadows), then the
+    // main pass, multisampled, resolved into the canvas.
+    const g = this.graph;
+    const shadowMap = g.importTexture('shadow map', this.shadowMap);
+    const output = g.importTexture('canvas', this.context.getCurrentTexture());
     if (shadowIndex >= 0) {
-      const pass = encoder.beginRenderPass({
-        label: 'shadow',
-        colorAttachments: [],
-        depthStencilAttachment: { view: this.shadowMapView, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' },
+      g.addRenderPass('shadow', (pass) => {
+        pass.depthAttachment(shadowMap, { depthClearValue: 1, depthLoadOp: 'clear' });
+        return (encoder) => this.drawShadowCasters(encoder, draws);
       });
-      pass.setPipeline(this.shadowPipeline);
-      pass.setBindGroup(0, this.shadowFrameBindGroup);
-      draws.forEach((o, i) => {
-        if (!o.castShadows) return;
-        const gpu = o.mesh!.gpu!;
-        pass.setBindGroup(1, this.objectBindGroup!, [i * OBJECT_STRIDE]);
-        pass.setVertexBuffer(0, gpu.vertexBuffer);
-        pass.setIndexBuffer(gpu.indexBuffer, 'uint32');
-        pass.drawIndexed(o.mesh!.indices.length);
-        stats.shadowCasters++;
-      });
-      pass.end();
     }
-
-    // Main pass. With a sky, the clear color only shows where the sky pass doesn't draw (nowhere).
+    const color = g.createTexture('main color', { format: this.format, sampleCount: this.sampleCount });
+    const depth = g.createTexture('main depth', { format: DEPTH_FORMAT, sampleCount: this.sampleCount });
+    // With a sky, the clear color only shows where the sky pass doesn't draw (nowhere).
     const bg = skyMode === 'color' ? scene.background : [0, 0, 0];
-    const pass = encoder.beginRenderPass({
-      label: 'main',
-      colorAttachments: [
-        {
-          view: this.msaaTexture!.createView(),
-          resolveTarget: this.context.getCurrentTexture().createView(),
-          clearValue: { r: bg[0], g: bg[1], b: bg[2], a: 1 },
-          loadOp: 'clear',
-          storeOp: 'discard',
-        },
-      ],
-      depthStencilAttachment: { view: this.depthTexture!.createView(), depthClearValue: 0, depthLoadOp: 'clear', depthStoreOp: 'discard' },
+    g.addRenderPass('main', (pass) => {
+      pass.read(shadowMap); // through the frame bind group
+      pass.colorAttachment(color, { clearValue: { r: bg[0], g: bg[1], b: bg[2], a: 1 }, loadOp: 'clear', resolveTarget: output });
+      pass.depthAttachment(depth, { depthClearValue: 0, depthLoadOp: 'clear' });
+      return (encoder) => this.drawMain(encoder, { draws, materialGroups, skyMode, grid: !!options.grid, overlay, world2DCount, screen2DCount });
     });
+    g.execute();
+    return stats;
+  }
+
+  /** The shadow pass: depth only, on its own group 0 (the frame group holds the shadow map it's drawing into). */
+  private drawShadowCasters(pass: GPURenderPassEncoder, draws: MeshRenderer[]): void {
+    const stats = this.stats;
+    pass.setPipeline(this.shadowPipeline);
+    pass.setBindGroup(0, this.shadowFrameBindGroup);
+    draws.forEach((o, i) => {
+      if (!o.castShadows) return;
+      const gpu = o.mesh!.gpu!;
+      pass.setBindGroup(1, this.objectBindGroup!, [i * OBJECT_STRIDE]);
+      pass.setVertexBuffer(0, gpu.vertexBuffer);
+      pass.setIndexBuffer(gpu.indexBuffer, 'uint32');
+      pass.drawIndexed(o.mesh!.indices.length);
+      stats.shadowCasters++;
+    });
+  }
+
+  /** The main pass: meshes, sky, grid, world 2D, depth-tested overlay, screen 2D (HUD), then the overlay on top. */
+  private drawMain(pass: GPURenderPassEncoder, f: MainPassInput): void {
+    const stats = this.stats;
+    const { draws, materialGroups, skyMode, overlay, world2DCount, screen2DCount } = f;
     pass.setBindGroup(0, this.frameBindGroup);
     let currentPipeline: GPURenderPipeline | null = null;
     draws.forEach((o, i) => {
@@ -822,7 +818,7 @@ export class Renderer {
       stats.drawCalls++;
     }
 
-    if (options.grid) {
+    if (f.grid) {
       pass.setPipeline(this.gridPipeline);
       pass.draw(6);
     }
@@ -857,9 +853,16 @@ export class Renderer {
       pass.setVertexBuffer(0, this.overlayBuffer!);
       pass.draw(topCount, 1, depthCount);
     }
-    pass.end();
-
-    device.queue.submit([encoder.finish()]);
-    return stats;
   }
 }
+
+interface MainPassInput {
+  draws: MeshRenderer[];
+  materialGroups: Map<Material, GPUBindGroup>;
+  skyMode: SkyMode;
+  grid: boolean;
+  overlay: OverlayBuilder | null;
+  world2DCount: number;
+  screen2DCount: number;
+}
+
