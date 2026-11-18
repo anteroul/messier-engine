@@ -48,7 +48,8 @@ Engine.step(dt)                         src/engine/engine.ts
             scene.updateBehaviours → scene.lateUpdate
   input.endFrame(); scene.updateMatrices()
   overlay.begin(); beforeRender hooks   editor builds gizmo/icons into OverlayBuilder
-  renderer.render(scene, camera, …)     shadow pass → main MSAA pass (meshes, grid, world 2D, overlay, HUD)
+  renderer.render(scene, camera, …)     uploads, then a frame graph: shadow pass → main MSAA pass (meshes, sky, grid,
+                                        world 2D, overlay, HUD), compiled and executed in one command encoder
   afterRender hooks                     editor reads RenderStats
   draw2d.clear(); scene.processDestroyed()  immediate 2D layer reset; deferred destroys (onDisable → onDestroy → detach)
 ```
@@ -148,6 +149,17 @@ Engine.step(dt)                         src/engine/engine.ts
   forwards keydown/keyup in `bindKeyboard()`. `Engine.step` calls
   `input.endFrame()` after the update phases (so `pressed`/`released` last one
   frame, including its fixed steps), and `setPlaying` resets it.
+- **Frame graph** (`frameGraph.ts`): `Renderer.render()` prepares uniforms and buffers, then declares the frame on a
+  `FrameGraph`: the shadow map (persistent, owned by the renderer) and the canvas texture are *imported*, the MSAA
+  color and depth are *transient* (`createTexture`, sized from the output size that `resizeIfNeeded()` sets).
+  `addRenderPass(name, setup)` / `addComputePass` declare what a pass reads (`read`, `readStorage`) and writes
+  (attachments, `writeStorage`) and return its execute function; the draw code lives in private methods
+  (`drawShadowCasters`, `drawMain`). `execute()` orders passes by those dependencies (declaration order otherwise),
+  culls passes nothing reads (unless they write an imported texture or are `sideEffect`), allocates transients from a
+  pool (aliasing non-overlapping lifetimes, reused across frames, freed after 3 idle frames or a resize), infers
+  usage flags, stores attachments only when a later pass reads them (imported ones always), and records one
+  encoder with a debug group per pass. It doesn't import the renderer or touch the DOM: `tests/unit/frameGraph.test.ts`
+  runs it on a fake device. Mipmap generation happens at upload, outside the graph.
 - **Engine vs editor:** `src/engine/**` must not import from `src/editor/**`
   and must not touch the DOM beyond the canvas passed to `Renderer`. That
   boundary is what lets `tests/render` run the engine under Node. The editor
@@ -232,7 +244,7 @@ Engine.step(dt)                         src/engine/engine.ts
   Euler angles in the API are **degrees, XYZ order** (`quat.fromEulerDeg` and
   `quat.toEulerDeg` are inverses).
 - **Reversed-Z** for the main camera: `mat4.perspectiveReversedZ`, a
-  `depth32float` buffer cleared to **0**, and `depthCompare: 'greater'`
+  `depth32float` buffer (the frame graph's `main depth` transient) cleared to **0**, and `depthCompare: 'greater'`
   (overlay uses `greater-equal`). `Camera.screenRay` unprojects NDC z = 1 as
   near and z = 0 as far. The **shadow map uses normal Z** (`ortho`, clear 1,
   `less`). Don't mix them up.
@@ -328,6 +340,25 @@ through `AudioSource`s their builders lay out (`soundObject()` in `src/demos/sha
 its object (a destroyed pickup, a scene change) goes through `audio.play()`, because a source's voices stop with it.
 Unit tests get Web Audio from `tests/unit/fakeAudio.ts` (import it first, then `audio.resume()`); `played()` in
 `demos.test.ts` counts a sound's plays.
+
+**Add a render pass.** Declare it in `Renderer.render()` on `this.graph`, with its draw code in a private method.
+Declare every texture it samples or writes, since that's what orders and culls passes and sets usage flags; textures
+it only needs for this frame are transients:
+
+```ts
+const hdr = g.createTexture('hdr', { format: 'rgba16float' }); // output size; `scale: 0.5` or `size: [w, h]`
+g.addRenderPass('tonemap', (pass) => {
+  pass.read(hdr); // sampled through a bind group made in execute
+  pass.colorAttachment(output, { clearValue: { r: 0, g: 0, b: 0, a: 1 } });
+  return (encoder, res) => this.drawTonemap(encoder, res.view(hdr));
+});
+```
+
+Passes run after the passes whose textures they read, whatever order they're declared in. A pass whose results
+nothing reads is culled: write an imported texture, or call `pass.sideEffect()` (readbacks, picking). Don't create
+GPU textures for per-frame targets by hand, and don't bind the frame group in a pass that writes the shadow map (use
+its own group 0, like `drawShadowCasters`). Check `tests/.out/frame.png` afterwards; a pure refactor should leave it
+pixel-identical with `Math.random` seeded (the demo's flickering light is random).
 
 **Add a primitive.** Write the generator in `primitives.ts` (finish with
 `.fixWinding()`, and `tag()` it with its arguments so scenes can rebuild it), add it to

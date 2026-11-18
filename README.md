@@ -472,6 +472,7 @@ src/engine/             The engine (no DOM dependencies except the canvas)
   scripting.ts          Script component, ScriptAsset (compile, diagnostics, in-place hot reload)
   typescript.ts         Tokenizer + position-preserving TypeScript type stripper
   renderer.ts           WebGPU device, pipelines, shadow + main passes, uploads
+  frameGraph.ts         Frame graph: pass ordering and culling, pooled transient textures, store ops
   shaders/*.wgsl        common (shared structs, tone mapping, sky lookup), mesh (PBR), sky, shadow, grid, overlay,
                         mipmap, shape2d (2D + SDF text)
   scene.ts              GameObject (components, groups, destroy/instantiate), Scene (registry, lifecycle)

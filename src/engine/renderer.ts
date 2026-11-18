@@ -68,7 +68,9 @@ const ALPHA_BLEND: GPUBlendState = {
 
 /**
  * Forward renderer: shadow pass (one directional light) followed by a 4x MSAA
- * main pass containing lit meshes, the editor grid and overlay helpers.
+ * main pass containing lit meshes, the sky, the editor grid, 2D and overlay helpers.
+ * Each frame declares its passes on a FrameGraph, which orders them and owns
+ * their transient textures.
  */
 export class Renderer {
   readonly device: GPUDevice;

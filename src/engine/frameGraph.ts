@@ -138,10 +138,6 @@ export class FrameGraph {
     this.releaseAll();
   }
 
-  get size(): readonly [number, number] {
-    return this.outputSize;
-  }
-
   /** Pooled GPU textures (for tests and stats). */
   get pooledTextures(): number {
     return this.pool.length;
