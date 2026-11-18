@@ -63,7 +63,7 @@
           };
           # Update after changing dependencies:
           #   nix run nixpkgs#prefetch-npm-deps -- package-lock.json
-          npmDepsHash = "sha256-J3oD2MXRmd94aGS/METqAlAxjQ7Fz4lldDmLUI398NQ=";
+          npmDepsHash = "sha256-S8BBLwE9pC5gbk+zky7nGDfTLKbiBO9im9ap4nrUHq0=";
           npmBuildScript = "build";
           installPhase = ''
             runHook preInstall
