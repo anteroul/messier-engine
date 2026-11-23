@@ -27,6 +27,7 @@ export * from './draw2d';
 export * from './shapes2d';
 export * from './raycast';
 export * from './renderer';
+export * from './profiler';
 export * from './engine';
 export * from './sceneManager';
 export * from './loaders';

@@ -129,6 +129,7 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
 | `Ctrl+/` / `Tab` | In the code editor: toggle comment / indent (`Shift+Tab` outdents) |
 | `G` / `H` | Toggle grid / light and camera helpers |
 | `C` | Look through the scene camera (Play turns this on) |
+| `F2` | Profiler overlay: frame-time graph, CPU time by phase, GPU time per render pass, renderer counters (works during Play) |
 | `Esc` | Deselect |
 | `?` | Shortcut overview |
 
@@ -474,6 +475,7 @@ src/engine/             The engine (no DOM dependencies except the canvas)
   renderer.ts           WebGPU device, pipelines, the frame's passes (shadow, main HDR, tonemap, overlay), uploads
   frameGraph.ts         Frame graph: pass ordering and culling, pooled transient textures, store ops
   pipelines.ts          Mesh pipeline variants: key from pass, material, mesh and target; cache; prewarming
+  profiler.ts           Frame profiler: nested CPU sections, GPU pass times; gpuTimer.ts: timestamp queries per pass
   shaders/*.wgsl        common (frame structs, sky lookup), meshData (material, object), mesh (PBR), sky, tonemap
                         (exposure + ACES), shadow (opaque and alpha-tested), grid, overlay, mipmap, shape2d (2D + SDF text)
   scene.ts              GameObject (components, groups, destroy/instantiate), Scene (registry, lifecycle)

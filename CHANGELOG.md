@@ -10,6 +10,14 @@ Add a line under **Unreleased** with every user-visible change.
 
 ## [Unreleased]
 
+### Added
+
+- **Profiler** (the ⏱ Profiler toolbar button or `F2`, also during Play): a viewport overlay with a frame-time graph,
+  the engine's CPU time by phase (fixed update with scripts and physics apart, update, late update, matrices,
+  render, audio), GPU time per render pass (shadow, main, tonemap, overlay; needs the browser's `timestamp-query`
+  feature) and the renderer's counters. Scripts can time their own code with `profiler.begin(name)` /
+  `profiler.end()` from `'messier'`. Nothing is measured while the panel is hidden.
+
 ### Fixed
 
 - Alpha-tested materials (alpha cutoff) now cast shadows with matching holes.

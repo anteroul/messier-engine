@@ -12,6 +12,7 @@ import { PhysicsWorld, RigidBody } from './physics';
 import { ScriptLibrary } from './scripting';
 import { Signal } from './signal';
 import { Sky } from './sky';
+import { profiler } from './profiler';
 import type { Json } from './data';
 import type { PrefabLibrary } from './prefab';
 
@@ -667,9 +668,13 @@ export class Scene {
   /** One fixed step: start pending behaviours, fixedUpdate, then physics. */
   fixedUpdate(fixedDt: number): void {
     if (!this._running) return;
+    profiler.begin('scripts');
     this._flushStarts();
     this._dispatch(this._fixedList, HOOK_FIXED_UPDATE, fixedDt, 0);
+    profiler.end();
+    profiler.begin('physics');
     this.physics.step(this, fixedDt);
+    profiler.end();
   }
 
   /** Starts pending behaviours, then runs update(dt, time). */

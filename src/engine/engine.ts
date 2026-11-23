@@ -8,6 +8,7 @@ import { updateAudioSources } from './audioSource';
 import { draw2d } from './draw2d';
 import { Signal } from './signal';
 import { Time } from './time';
+import { profiler } from './profiler';
 
 export interface FrameInfo {
   dt: number;
@@ -109,9 +110,10 @@ export class Engine {
     this.last = performance.now();
     const tick = (now: number) => {
       this.frameHandle = requestAnimationFrame(tick);
-      const dt = Math.min(0.1, (now - this.last) / 1000);
+      const frameMs = now - this.last;
+      const dt = Math.min(0.1, frameMs / 1000);
       this.last = now;
-      this.step(dt);
+      this.step(dt, frameMs);
     };
     this.frameHandle = requestAnimationFrame(tick);
   }
@@ -121,7 +123,8 @@ export class Engine {
     this.frameHandle = 0;
   }
 
-  private step(dt: number): void {
+  /** `frameMs`: the real time since the previous frame (`dt` is capped), for the profiler. */
+  private step(dt: number, frameMs = dt * 1000): void {
     this.time += dt;
     this.fpsAccum += dt;
     this.fpsFrames++;
@@ -131,25 +134,42 @@ export class Engine {
       this.fpsFrames = 0;
     }
 
+    // Profiler sections (no-ops unless profiler.enabled): the frame's phases, in order.
+    const p = profiler;
     const scene = this._scene;
     if (this.playing) {
+      p.begin('fixed update');
       const steps = Time.beginFrame(dt);
       for (let i = 0; i < steps; i++) {
         scene.fixedUpdate(Time.fixedDeltaTime);
         Time.fixedStepDone();
       }
+      p.end();
+      p.begin('update');
       scene.updateBehaviours(Time.deltaTime, Time.time);
+      p.end();
+      p.begin('late update');
       scene.lateUpdate(Time.deltaTime);
+      p.end();
     }
     input.endFrame();
+    p.begin('matrices');
     scene.updateMatrices();
+    p.end();
+    p.begin('render');
     this.render(scene, dt);
+    p.end();
+    p.begin('audio');
     // After render() placed the scene camera: the listener is where the picture is taken from.
     updateAudioSources(scene);
     audio.update(scene, this.view);
+    p.end();
+    p.begin('cleanup');
     // Immediate 2D drawing lasts one frame, rendered or not.
     draw2d.clear();
     scene.processDestroyed();
+    p.end();
+    p.endFrame(frameMs);
   }
 
   private render(scene: Scene, dt: number): void {
@@ -165,7 +185,9 @@ export class Engine {
     view.aspect = canvas.clientWidth / Math.max(1, canvas.clientHeight);
     this.overlay.begin(view, canvas.clientHeight);
     const frame: FrameInfo = { dt, time: this.time, playTime: this.playing ? Time.time : 0, alpha: this.playing ? Time.alpha : 0 };
+    profiler.begin('hooks');
     for (const cb of this.beforeRenderHooks) cb(frame);
+    profiler.end();
 
     const stats = this.renderer.render(scene, view, {
       time: this.time,

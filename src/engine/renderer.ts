@@ -21,6 +21,8 @@ import { ATLAS_SIZE, fontAtlas } from './font';
 import { Renderer2D } from './shapes2d';
 import type { SkyMode } from './sky';
 import { FrameGraph, type RenderTarget } from './frameGraph';
+import { GpuTimer } from './gpuTimer';
+import { profiler } from './profiler';
 import { MeshPipelines, allMeshVariantKeys, meshVariantKey, type MeshPass, type MeshVariantKey } from './pipelines';
 
 export const MAX_LIGHTS = 128;
@@ -90,6 +92,8 @@ export class Renderer {
   private readonly context: GPUCanvasContext;
   /** Declares, orders and runs each frame's passes, and owns their transient textures (MSAA color, depth). */
   private readonly graph: FrameGraph;
+  /** Times the graph's passes for the profiler; null when the device has no `timestamp-query`. */
+  private readonly gpuTimer: GpuTimer | null;
 
   private readonly frameLayout: GPUBindGroupLayout;
   private readonly materialLayout: GPUBindGroupLayout;
@@ -159,7 +163,9 @@ export class Renderer {
     }
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
     if (!adapter) throw new Error('No suitable WebGPU adapter was found.');
-    const device = await adapter.requestDevice();
+    // Optional: lets the profiler time passes on the GPU.
+    const requiredFeatures: GPUFeatureName[] = adapter.features.has('timestamp-query') ? ['timestamp-query'] : [];
+    const device = await adapter.requestDevice({ requiredFeatures });
     return new Renderer(canvas, device);
   }
 
@@ -175,6 +181,9 @@ export class Renderer {
     this.format = navigator.gpu.getPreferredCanvasFormat();
     context.configure({ device, format: this.format, alphaMode: 'opaque' });
     this.graph = new FrameGraph(device);
+    this.gpuTimer = device.features.has('timestamp-query') ? new GpuTimer(device) : null;
+    if (this.gpuTimer) this.gpuTimer.onResults = (names, ms) => profiler.setGpuTimes(names, ms);
+    profiler.gpuSupported = !!this.gpuTimer;
 
     const VS = GPUShaderStage.VERTEX, FS = GPUShaderStage.FRAGMENT;
 
@@ -657,6 +666,7 @@ export class Renderer {
 
   /** Renders one frame. World matrices must be up to date (Scene.updateMatrices). */
   render(scene: Scene, camera: Camera, options: RenderOptions = {}): RenderStats {
+    profiler.begin('prepare');
     this.resizeIfNeeded();
     camera.aspect = this.width / this.height;
     const device = this.device;
@@ -752,7 +762,10 @@ export class Renderer {
 
     const overlay = options.overlay && !options.overlay.isEmpty ? options.overlay : null;
     if (overlay) this.uploadOverlay(overlay);
+    profiler.end();
+    profiler.begin('2D');
     const [world2DCount, screen2DCount] = this.prepare2D(scene, camera, viewProj, options);
+    profiler.end();
 
     // The frame: a shadow pass into the persistent shadow map (when a directional light casts shadows), the main pass
     // (meshes and sky as linear radiance into a multisampled HDR target), the tonemap pass (into the multisampled
@@ -791,7 +804,10 @@ export class Renderer {
       pass.depthAttachment(depth, { depthLoadOp: 'load' });
       return (encoder) => this.drawDisplay(encoder, { grid: !!options.grid, overlay, world2DCount, screen2DCount });
     });
+    g.timer = profiler.enabled ? this.gpuTimer : null;
+    profiler.begin('passes');
     g.execute();
+    profiler.end();
     stats.pipelineBuilds = this.meshPipelines.builds - builds;
     return stats;
   }

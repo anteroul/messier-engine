@@ -16,7 +16,7 @@ item to its design doc in `docs/design/` when it has one.
 - [x] Prefabs + versioned scene format (0.6.0)
 - [x] Render pass / frame graph
 - [x] Shader variant system
-- [ ] GPU + CPU profiling in the editor
+- [x] GPU + CPU profiling in the editor
 - [ ] Frustum culling + instancing
 
 ## Phase 1: Render quality

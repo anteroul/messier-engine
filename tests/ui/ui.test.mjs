@@ -537,6 +537,26 @@ await sleep(300);
 await page.screenshot({ path: `${OUT}/ui-final.png` });
 const stats = await page.$eval('#stats', (e) => e.textContent);
 check('stats overlay', /fps/.test(stats), stats);
+// --- Profiler: the toolbar button (or F2) shows frame, CPU and GPU pass times; hidden, nothing is measured
+await page.click('[data-action="profiler"]');
+await page.waitForFunction(() => /fps/.test(document.querySelector('.profiler-summary')?.textContent ?? ''), { timeout: 5000 });
+await sleep(600);
+const prof = await page.evaluate(() => ({
+  text: document.getElementById('profiler').innerText,
+  on: window.editor.profiler.visible,
+  active: document.querySelector('[data-action="profiler"]').classList.contains('active'),
+}));
+check('profiler panel shows CPU sections, GPU passes and counters',
+  prof.on && prof.active && /CPU[\s\S]*render[\s\S]*passes[\s\S]*GPU[\s\S]*draw calls/.test(prof.text), prof.text.replace(/\s+/g, ' '));
+const gpuTimes = await state(() => ({ supported: window.editor.profiler.visible && !!document.getElementById('profiler').innerText.match(/GPU\s+[\d.]+ ms/), text: document.getElementById('profiler').innerText }));
+if (/timestamp-query/.test(gpuTimes.text)) console.log('SKIP profiler GPU pass times (no timestamp-query in this browser)');
+else check('profiler lists GPU time per pass', gpuTimes.supported && /main\s+[\d.]+/.test(gpuTimes.text) && /tonemap\s+[\d.]+/.test(gpuTimes.text), gpuTimes.text.replace(/\s+/g, ' '));
+await page.screenshot({ path: `${OUT}/ui-profiler.png` });
+await page.evaluate(() => document.getElementById('gpu-canvas').focus());
+await page.keyboard.press('F2');
+const profOff = await page.evaluate(() => ({ hidden: document.getElementById('profiler').hidden, on: window.editor.profiler.visible }));
+check('F2 hides the profiler', profOff.hidden && !profOff.on, JSON.stringify(profOff));
+
 // --- 2D: world-space text and shapes, a HUD label edited in the inspector and dragged in the viewport
 await page.keyboard.press('Escape');
 await page.click('.add-menu summary');

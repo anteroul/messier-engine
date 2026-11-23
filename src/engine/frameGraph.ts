@@ -92,6 +92,18 @@ export interface ComputePassBuilder extends PassBuilderBase {
 export type RenderPassExecute = (pass: GPURenderPassEncoder, resources: FrameResources) => void;
 export type ComputePassExecute = (pass: GPUComputePassEncoder, resources: FrameResources) => void;
 
+/**
+ * Times passes on the GPU (see GpuTimer). The graph asks it for each pass's timestamp writes, lets it resolve them
+ * at the end of the encoder, and tells it when the frame was submitted.
+ */
+export interface PassTimer {
+  begin(): void;
+  /** Where the pass writes its begin and end timestamps, or undefined to leave it untimed. */
+  timestampWrites(pass: string): GPURenderPassTimestampWrites | undefined;
+  resolve(encoder: GPUCommandEncoder): void;
+  submitted(): void;
+}
+
 /** What compile() decided: the passes in execution order and the ones culled. */
 export interface CompiledFrame {
   passes: string[];
@@ -132,6 +144,8 @@ interface PoolEntry {
 }
 
 export class FrameGraph {
+  /** Times each executed pass on the GPU while set (the device needs `timestamp-query`). */
+  timer: PassTimer | null = null;
   private outputSize: [number, number] = [1, 1];
   private frame = 0;
   private resources: Resource[] = [];
@@ -230,17 +244,23 @@ export class FrameGraph {
       const { order, run } = this.plan();
       this.lifetimes(run);
       const encoder = this.device.createCommandEncoder({ label: 'frame' });
+      const timer = this.timer;
+      timer?.begin();
       const texture = (h: TextureHandle) => this.gpuTexture(this.resource(h));
       const view = (h: TextureHandle) => this.gpuTexture(this.resource(h)).createView();
       run.forEach((pass, i) => {
         for (const r of this.resources) if (r.first === i && !r.imported) this.allocate(r);
         encoder.pushDebugGroup(pass.name);
         if (pass.kind === 'render') {
-          const pe = encoder.beginRenderPass(this.renderPassDescriptor(pass, i, run));
+          const desc = this.renderPassDescriptor(pass, i, run);
+          const timestampWrites = timer?.timestampWrites(pass.name);
+          if (timestampWrites) desc.timestampWrites = timestampWrites;
+          const pe = encoder.beginRenderPass(desc);
           (pass.execute as RenderPassExecute)(pe, { texture, view, target: this.renderTarget(pass) });
           pe.end();
         } else {
-          const pe = encoder.beginComputePass({ label: pass.name });
+          const timestampWrites = timer?.timestampWrites(pass.name);
+          const pe = encoder.beginComputePass({ label: pass.name, ...(timestampWrites ? { timestampWrites } : {}) });
           (pass.execute as ComputePassExecute)(pe, { texture, view, target: null });
           pe.end();
         }
@@ -248,7 +268,9 @@ export class FrameGraph {
         // Free for transients that start later this frame.
         for (const r of this.resources) if (r.last === i && r.entry) r.entry.inUse = false;
       });
+      timer?.resolve(encoder);
       this.device.queue.submit([encoder.finish()]);
+      timer?.submitted();
       return { passes: run.map((p) => p.name), culled: order.filter((p) => !run.includes(p)).map((p) => p.name) };
     } finally {
       this.endFrame();

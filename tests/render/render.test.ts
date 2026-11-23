@@ -839,6 +839,34 @@ writeFileSync(`${OUT}/frame.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 1
   writeFileSync(`${OUT}/alpha-shadow.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]));
 }
 
+// ---- profiler: CPU sections from the renderer, and GPU time per frame graph pass where the device can time them
+{
+  const { profiler } = engine;
+  const device = renderer.device;
+  profiler.enabled = true;
+  device.pushErrorScope('validation');
+  for (let i = 0; i < 3; i++) {
+    profiler.begin('render');
+    renderer.render(scene, camera, { grid: true, overlay, time: 0.5 });
+    profiler.end();
+    profiler.endFrame(16);
+  }
+  const profErr = await device.popErrorScope();
+  await device.queue.onSubmittedWorkDone();
+  for (let i = 0; i < 20 && profiler.gpuSupported && profiler.gpu.length === 0; i++) await new Promise((r) => setTimeout(r, 10));
+  profiler.enabled = false;
+  const names = profiler.sections.map((s: any) => `${s.depth}:${s.name}`);
+  check('profiler: the renderer reports its CPU sections', !profErr && names.join() === '0:render,1:prepare,1:2D,1:passes' && profiler.cpuMs > 0,
+    profErr?.message ?? `${names.join()} ${profiler.cpuMs.toFixed(2)} ms`);
+  const gpuNames = profiler.gpu.map((g: any) => g.name).join();
+  if (profiler.gpuSupported) {
+    check('profiler: GPU time per pass', gpuNames === 'shadow,main,tonemap,overlay' && profiler.gpu.every((g: any) => g.ms >= 0) && profiler.gpuMs > 0,
+      profiler.gpu.map((g: any) => `${g.name} ${g.ms.toFixed(3)} ms`).join(', '));
+  } else {
+    console.log('SKIP profiler: GPU time per pass (no timestamp-query on this device)');
+  }
+}
+
 await new Promise((r) => setTimeout(r, 100));
 check('no uncaptured GPU errors', errors.length === 0, errors.join(' | '));
 console.log(failures ? `${failures} FAILURE(S)` : 'ALL PASSED');

@@ -672,6 +672,57 @@ body.playing #viewport {
 #stats:empty {
   display: none;
 }
+#profiler {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  width: 256px;
+  max-height: calc(100% - 48px);
+  overflow: hidden;
+  padding: 8px;
+  border-radius: 6px;
+  background: #000c;
+  color: #c9cdd6;
+  font: 11px ui-monospace, monospace;
+  pointer-events: none;
+}
+#profiler[hidden] {
+  display: none;
+}
+#profiler canvas {
+  display: block;
+  width: 240px;
+  height: 48px;
+  margin: 6px 0;
+  background: #ffffff0d;
+  border-radius: 3px;
+}
+.profiler-summary {
+  color: var(--text);
+  font-size: 12px;
+}
+.profiler-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  line-height: 1.5;
+}
+.profiler-heading {
+  margin-top: 4px;
+  color: var(--accent-text);
+}
+.profiler-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.profiler-value {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+.profiler-note {
+  color: var(--muted);
+}
 #drop-overlay {
   position: absolute;
   inset: 0;

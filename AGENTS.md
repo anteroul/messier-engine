@@ -176,6 +176,15 @@ Engine.step(dt)                         src/engine/engine.ts
   placed). `allMeshVariantKeys()` lists every valid key; `test:render` builds them all. Material features a uniform
   or a placeholder texture can express (unlit, the main pass's alpha cutoff, the material maps) stay runtime
   branches in `mesh.wgsl`, not variants. The grid, overlay, sky, tonemap, mipmap and 2D pipelines are hand-built.
+- **Profiling** (`profiler.ts`, `gpuTimer.ts`, `src/editor/profilerPanel.ts`): the `profiler` singleton collects
+  nested CPU sections (`begin(name)` / `end()`; a single branch while `profiler.enabled` is off) that `Engine.step`,
+  `Scene.fixedUpdate` and `Renderer.render()` open around their phases, and `endFrame()` publishes them (tree order,
+  smoothed averages, a frame-time ring). GPU time comes from `GpuTimer`, a `PassTimer` the renderer hands to
+  `FrameGraph.timer` while profiling: each executed pass gets `timestampWrites`, the query set is resolved at the end
+  of the encoder and read back asynchronously through a small pool of buffers, so `profiler.gpu` is a few frames
+  behind. The device only has `timestamp-query` when the adapter offers it (`profiler.gpuSupported`). The editor's
+  panel (toolbar button or `F2`) turns the profiler on while it's shown. Wrap a new engine phase or an expensive
+  step in a section so it shows up there.
 - **Engine vs editor:** `src/engine/**` must not import from `src/editor/**`
   and must not touch the DOM beyond the canvas passed to `Renderer`. That
   boundary is what lets `tests/render` run the engine under Node. The editor

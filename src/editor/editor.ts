@@ -71,6 +71,7 @@ import { canPickFolders } from './folderIO';
 import { ASSET_MIME, AssetsPanel } from './assets';
 import { ScriptsView } from './scriptsView';
 import { BuildDialog } from './build';
+import { ProfilerPanel } from './profilerPanel';
 
 type PointerMode = 'none' | 'click' | 'orbit' | 'pan' | 'gizmo' | 'drag2d' | 'fly';
 export type EditorView = 'scene' | 'scripts';
@@ -116,6 +117,8 @@ export class Editor {
   readonly project: ProjectManager;
   /** File → Build: which scenes go in a game, and the export. */
   readonly build: BuildDialog;
+  /** The viewport's profiler overlay (F2). */
+  readonly profiler = new ProfilerPanel();
   /** What's selected (hierarchy, inspector and viewport share it). */
   readonly selection = new Selection();
   /** Hierarchy editing (create, cut/copy/paste, duplicate, delete, visibility) on the selection. */
@@ -172,6 +175,7 @@ export class Editor {
     };
     this.build = new BuildDialog(this);
     document.body.append(this.build.root);
+    ui.viewport.append(this.profiler.root);
     this.initScripts();
     sceneManager.onWarning = (message) => this.notify(message, 'error');
     // A script loaded another scene during Play: show that one. (Play and Stop switch scenes while not playing.)
@@ -1204,6 +1208,7 @@ export class Editor {
     // Helpers and gizmos aren't part of the game's view.
     if (!this.engine.viewObject) this.buildOverlay();
 
+    this.profiler.update(f.dt, this.lastStats);
     this.statsTimer += f.dt;
     if (this.statsTimer > 0.25 && this.lastStats) {
       this.statsTimer = 0;
@@ -1501,6 +1506,11 @@ export class Editor {
     );
   }
 
+  toggleProfiler(): void {
+    this.profiler.setVisible(!this.profiler.visible);
+    this.updateToolbar();
+  }
+
   private objectsHaveFocus(): boolean {
     const a = document.activeElement;
     return a === this.ui.canvas || (a instanceof Node && this.ui.hierarchy.contains(a));
@@ -1526,6 +1536,12 @@ export class Editor {
         e.preventDefault();
         if (this.build.isOpen) this.build.close();
         else this.build.open();
+        return;
+      }
+      // The profiler is for watching a running game too, so it isn't a plain-key shortcut (those go to scripts).
+      if (e.code === 'F2' && !mod && !e.altKey) {
+        e.preventDefault();
+        this.toggleProfiler();
         return;
       }
       // The build dialog is modal: no scene shortcuts behind it.
@@ -1650,6 +1666,7 @@ export class Editor {
         this.updateToolbar();
       },
       'camera-view': () => this.setCameraView(!this.cameraView),
+      profiler: () => this.toggleProfiler(),
       import: () => this.pickFiles(),
       'new-project': () => void this.project.newProject(),
       'open-project': () => void this.project.open(),
@@ -1771,6 +1788,7 @@ export class Editor {
     set('grid', this.engine.showGrid);
     set('helpers', this.showHelpers);
     set('camera-view', this.cameraView);
+    set('profiler', this.profiler.visible);
     set('play', this.engine.playing);
     const mute = tb.querySelector<HTMLElement>('[data-action="mute"]');
     if (mute) {
