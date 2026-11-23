@@ -11,19 +11,19 @@ game; write down every workaround and frustration, and let that list order the n
 When you finish an item, tick it here in the same commit and note the version it shipped in once released. Link an
 item to its design doc in `docs/design/` when it has one.
 
-## Phase 0: Foundations (in progress)
+## Phase 0: Foundations (done)
 
 - [x] Prefabs + versioned scene format (0.6.0)
-- [x] Render pass / frame graph
-- [x] Shader variant system
-- [x] GPU + CPU profiling in the editor
-- [x] Frustum culling + instancing
+- [x] Render pass / frame graph (0.6.0)
+- [x] Shader variant system (0.7.0)
+- [x] GPU + CPU profiling in the editor (0.7.0)
+- [x] Frustum culling + instancing (0.7.0)
 
 ## Phase 1: Render quality
 
 - [x] Full PBR texture set: normal, metallic-roughness, occlusion, emissive (0.6.0; tangents derived per pixel)
 - [ ] Prefiltered IBL (split-sum)
-- [x] HDR render target + tonemap pass
+- [x] HDR render target + tonemap pass (0.6.0)
 - [ ] Post stack: bloom, TAA
 - [ ] Cascaded shadows, spot and point shadows
 - [ ] Transparency sorting
