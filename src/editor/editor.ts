@@ -1213,7 +1213,7 @@ export class Editor {
     if (this.statsTimer > 0.25 && this.lastStats) {
       this.statsTimer = 0;
       const s = this.lastStats;
-      this.ui.stats.textContent = `${this.engine.fps.toFixed(0)} fps · ${s.drawCalls} draws · ${formatCount(s.triangles)} tris · ${s.lights} lights${
+      this.ui.stats.textContent = `${this.engine.fps.toFixed(0)} fps · ${s.drawCalls} draws${s.culled ? ` · ${s.culled} culled` : ''} · ${formatCount(s.triangles)} tris · ${s.lights} lights${
         s.shadowCasters ? ` · ${s.shadowCasters} shadow casters` : ''
       }${this.engine.viewObject ? ` · viewing ${this.engine.viewObject.name}` : ''}`;
     }

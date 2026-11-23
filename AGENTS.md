@@ -176,6 +176,17 @@ Engine.step(dt)                         src/engine/engine.ts
   placed). `allMeshVariantKeys()` lists every valid key; `test:render` builds them all. Material features a uniform
   or a placeholder texture can express (unlit, the main pass's alpha cutoff, the material maps) stay runtime
   branches in `mesh.wgsl`, not variants. The grid, overlay, sky, tonemap, mipmap and 2D pipelines are hand-built.
+- **Culling and instancing** (`culling.ts`, `batching.ts`): each frame `Renderer.render()` hands the live
+  `MeshRenderer`s to its `DrawList`, which tests every mesh's bounds (as a box under the world matrix) against the
+  camera's frustum and, for casters, the shadow map's (`frustumPlanes()` works on any view-projection here), then
+  groups what's left into `MeshBatch`es: same mesh and a material that looks the same (`materialsEqual()`, found
+  through `materialHash()`; `MeshRenderer.clone()` copies the material, so duplicates rarely share one object). Shadow
+  batches ignore the material unless it's alpha tested. Every instance's `Object` goes into one storage buffer, a
+  batch's instances side by side, and a batch is one `drawIndexed` whose first instance is its offset there: the
+  shaders read `objects[instance_index]`. Batches keep the order of first appearance. `renderer.frustumCulling`
+  turns the culling off; `RenderStats` counts `instances` and `culled`. Neither file touches the GPU
+  (`tests/unit/batching.test.ts`). A new `Material` field that changes the look must go into both `materialHash()`
+  and `materialsEqual()`, or look-alikes that aren't get merged.
 - **Profiling** (`profiler.ts`, `gpuTimer.ts`, `src/editor/profilerPanel.ts`): the `profiler` singleton collects
   nested CPU sections (`begin(name)` / `end()`; a single branch while `profiler.enabled` is off) that `Engine.step`,
   `Scene.fixedUpdate` and `Renderer.render()` open around their phases, and `endFrame()` publishes them (tree order,
@@ -285,8 +296,9 @@ Engine.step(dt)                         src/engine/engine.ts
     (`Texture.gpuLinear`), the others as sRGB (`Texture.gpu`).
   - 2D vertex (40 B: position 3, uv 2, color 4, threshold 1; threshold < 0 = solid): `shape2d.wgsl` ↔
     `VERTEX2D_FLOATS` / `Batch2D.vertex()` and the 2D pipeline's attributes.
-  - `Object` (model + normal matrix, 128 B) lives in 256 B dynamic-offset
-    slots (`OBJECT_STRIDE`) and is shared by the mesh and shadow pipelines (declared in `meshData.wgsl`).
+  - `Object` (model + normal matrix, 128 B, `OBJECT_FLOATS`): one per drawn instance in a storage buffer
+    (`array<Object>`, indexed by the instance index), shared by the mesh and shadow pipelines (declared in
+    `meshData.wgsl`) ↔ `DrawList.emit()`.
 - **Shaders:** `common.wgsl` is *prepended* to `mesh`, `grid`, `overlay` and `sky`.
   It declares `@group(0) @binding(0) frame`, the sky texture and sampler, `PI` and `skyRadiance()`,
   so don't redeclare them. `meshData.wgsl` (the `Material` and `Object` structs) is prepended to `mesh` (after
@@ -294,7 +306,7 @@ Engine.step(dt)                         src/engine/engine.ts
   `mipmap.wgsl`, `shape2d.wgsl` and `tonemap.wgsl` are standalone. Shaders load with Vite
   `?raw` imports, and `tests/render/run.mjs` emulates that with an esbuild plugin.
 - **Bind groups:** group 0 = frame (uniform, lights storage, shadow map,
-  comparison sampler, sky texture, sky sampler), group 1 = material, group 2 = object (dynamic offset). The frame
+  comparison sampler, sky texture, sky sampler), group 1 = material, group 2 = objects (the instance array, read-only storage). The frame
   group is rebuilt when the sky image changes (a 1×1 white placeholder otherwise).
   The shadow pass never binds the frame group (the shadow map would be in a usage conflict): its group 0 is its own
   (the light's view-projection), group 1 the object, and the alpha-tested shadow variant binds the material (the
@@ -352,7 +364,7 @@ would misread (a renamed or reinterpreted key), bump `SCENE_VERSION` in `sceneFo
 change log, and regenerate the example projects.
 
 **Add a material or light property.** Add the field (and copy it in `clone()`
-and the `*_FIELDS` list),
+and the `*_FIELDS` list; a material field also in `materialHash()`/`materialsEqual()`),
 extend the WGSL struct and the TS packing (keep 16-byte alignment, and grow
 `*_UNIFORM_SIZE` if needed), add an inspector row in `inspector.ts`, and map it
 in the glTF/OBJ loaders if a standard field exists.
@@ -377,7 +389,7 @@ form's fixed order), derive it in `meshVariantKey()` from the material, the mesh
 (like the shadow pass's `vs_alpha` / `fs_alpha`) or another WGSL piece in `module()`, with a new pipeline layout in
 `pipelineLayout()` if the groups change. Make `allMeshVariantKeys()` produce the new values, so `test:render` builds
 them, and extend `tests/unit/pipelines.test.ts`. Bind what the variant needs in the draw loops when its key says so
-(`drawShadowCasters` binds the material only for `alphaTest`).
+(`drawShadowCasters` binds the material only for `alphaTest`). A variant's vertex stage must keep indexing `objects` by the instance index.
 
 **Add a render pass.** Declare it in `Renderer.render()` on `this.graph`, with its draw code in a private method.
 Declare every texture it samples or writes, since that's what orders and culls passes and sets usage flags; textures

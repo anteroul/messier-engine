@@ -65,7 +65,8 @@ export class ProfilerPanel {
     }
     if (stats) {
       rows.push(note('Renderer', ''));
-      rows.push(count('draw calls', stats.drawCalls), count('triangles', stats.triangles));
+      rows.push(count('draw calls', stats.drawCalls), count('mesh instances', stats.instances), count('culled', stats.culled));
+      rows.push(count('triangles', stats.triangles));
       rows.push(count('lights', stats.lights), count('shadow casters', stats.shadowCasters), count('2D elements', stats.elements2D));
       rows.push(count('pipeline builds', stats.pipelineBuilds));
     }

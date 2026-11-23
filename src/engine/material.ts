@@ -98,3 +98,48 @@ export class Material {
     return m;
   }
 }
+
+const hashBuffer = new Float32Array(1);
+const hashBits = new Uint32Array(hashBuffer.buffer);
+const mix = (h: number, v: number): number => {
+  hashBuffer[0] = v;
+  return Math.imul(h ^ hashBits[0], 0x01000193) >>> 0;
+};
+
+/**
+ * A number that's equal for materials that draw the same (see materialsEqual). Different materials can collide, so
+ * confirm a match with materialsEqual.
+ */
+export function materialHash(m: Material): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < 4; i++) h = mix(h, m.baseColor[i]);
+  for (let i = 0; i < 3; i++) h = mix(h, m.emissive[i]);
+  h = mix(h, m.metallic);
+  h = mix(h, m.roughness);
+  h = mix(h, m.emissiveStrength);
+  h = mix(h, m.normalScale);
+  h = mix(h, m.occlusionStrength);
+  h = mix(h, m.alphaCutoff);
+  let flags = (m.doubleSided ? 1 : 0) | (m.unlit ? 2 : 0);
+  TEXTURE_SLOTS.forEach((slot, i) => {
+    if (m[slot]) flags |= 4 << i;
+  });
+  return mix(h, flags);
+}
+
+/** Whether two materials draw the same: every field but the name, and the same textures. The renderer batches these. */
+export function materialsEqual(a: Material, b: Material): boolean {
+  for (let i = 0; i < 4; i++) if (a.baseColor[i] !== b.baseColor[i]) return false;
+  for (let i = 0; i < 3; i++) if (a.emissive[i] !== b.emissive[i]) return false;
+  for (const slot of TEXTURE_SLOTS) if (a[slot] !== b[slot]) return false;
+  return (
+    a.metallic === b.metallic &&
+    a.roughness === b.roughness &&
+    a.emissiveStrength === b.emissiveStrength &&
+    a.normalScale === b.normalScale &&
+    a.occlusionStrength === b.occlusionStrength &&
+    a.alphaCutoff === b.alphaCutoff &&
+    a.doubleSided === b.doubleSided &&
+    a.unlit === b.unlit
+  );
+}

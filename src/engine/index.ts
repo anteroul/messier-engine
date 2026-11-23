@@ -28,6 +28,8 @@ export * from './shapes2d';
 export * from './raycast';
 export * from './renderer';
 export * from './profiler';
+export * from './culling';
+export * from './batching';
 export * from './engine';
 export * from './sceneManager';
 export * from './loaders';

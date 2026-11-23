@@ -5,11 +5,11 @@ struct ShadowFrame {
 };
 
 @group(0) @binding(0) var<uniform> shadow: ShadowFrame;
-@group(1) @binding(0) var<uniform> object: Object;
+@group(1) @binding(0) var<storage, read> objects: array<Object>;
 
 @vertex
-fn vs_main(@location(0) position: vec3f) -> @builtin(position) vec4f {
-  return shadow.lightViewProj * object.model * vec4f(position, 1.0);
+fn vs_main(@location(0) position: vec3f, @builtin(instance_index) instance: u32) -> @builtin(position) vec4f {
+  return shadow.lightViewProj * objects[instance].model * vec4f(position, 1.0);
 }
 
 // Alpha-tested casters (materials with an alpha cutoff): UVs in, and a fragment stage that leaves the shadow map
@@ -26,9 +26,9 @@ struct AlphaOut {
 };
 
 @vertex
-fn vs_alpha(@location(0) position: vec3f, @location(1) uv: vec2f) -> AlphaOut {
+fn vs_alpha(@location(0) position: vec3f, @location(1) uv: vec2f, @builtin(instance_index) instance: u32) -> AlphaOut {
   var out: AlphaOut;
-  out.clip = shadow.lightViewProj * object.model * vec4f(position, 1.0);
+  out.clip = shadow.lightViewProj * objects[instance].model * vec4f(position, 1.0);
   out.uv = uv;
   return out;
 }

@@ -839,6 +839,89 @@ writeFileSync(`${OUT}/frame.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 1
   writeFileSync(`${OUT}/alpha-shadow.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]));
 }
 
+// ---- culling and instancing: cubes that look alike draw as one batch, each at its own place; the ones outside
+// the view (or the shadow map) are left out, and that changes nothing on screen.
+{
+  const { Material, Light, createCube, createPlane } = engine;
+  const device = renderer.device;
+  const s = new Scene();
+  s.shadowExtent = 8;
+  s.background = [0, 0, 0];
+  const ground = new GameObject('Ground');
+  ground.mesh = createPlane(30);
+  ground.material = new Material('ground', { baseColor: [0.02, 0.02, 0.02, 1], roughness: 1 });
+  ground.castShadows = false;
+  s.add(ground);
+  const sun = new GameObject('Sun');
+  sun.light = new Light('directional', [1, 1, 1], 1);
+  sun.light.castShadows = true;
+  sun.transform.rotation = quat.lookRotation([0, -1, 0]);
+  s.add(sun);
+  const mesh = createCube(0.6);
+  const cube = (name: string, x: number, z: number) => {
+    const o = new GameObject(name);
+    o.mesh = mesh;
+    // A material of its own, like a duplicated object has: they batch because they look the same.
+    o.material = new Material(name, { baseColor: [1, 1, 1, 1], unlit: true });
+    o.transform.position = [x, 0.5, z];
+    s.add(o);
+    return o;
+  };
+  const xs = [-3, -1.5, 0, 1.5, 3];
+  xs.forEach((x, i) => cube(`Seen ${i}`, x, 0));
+  cube('Behind', 0, 30); // behind the camera, inside the shadow map's depth range but outside its extent
+  cube('Left', -60, 0);
+  cube('Right', 60, 0);
+  const red = cube('Red', 0, -2.5);
+  red.material!.baseColor = [1, 0, 0, 1];
+  s.updateMatrices();
+  const cam = new Camera();
+  cam.position = [0, 3, 9];
+  cam.target = [0, 0.5, 0];
+  cam.aspect = W / H;
+
+  const bpr = Math.ceil((W * 4) / 256) * 256;
+  const readFrame = async () => {
+    const out = device.createBuffer({ size: bpr * H, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const e = device.createCommandEncoder();
+    e.copyTextureToBuffer({ texture: current! }, { buffer: out, bytesPerRow: bpr }, [W, H]);
+    device.queue.submit([e.finish()]);
+    await out.mapAsync(GPUMapMode.READ);
+    const px = new Uint8Array(out.getMappedRange()).slice();
+    out.destroy();
+    return px;
+  };
+  const at = (px: Uint8Array, p: [number, number, number]) => {
+    const [x, y] = cam.worldToScreen(p, W, H)!;
+    const o = Math.round(y) * bpr + Math.round(x) * 4;
+    return px[o] + px[o + 1] + px[o + 2];
+  };
+
+  device.pushErrorScope('validation');
+  const culled = { ...renderer.render(s, cam, { time: 0 }) };
+  const culledPx = await readFrame();
+  renderer.frustumCulling = false;
+  const all = { ...renderer.render(s, cam, { time: 0 }) };
+  const allPx = await readFrame();
+  renderer.frustumCulling = true;
+  const err = await device.popErrorScope();
+
+  // Ground, the white cubes, the red one.
+  check('look-alike meshes draw as one instanced batch', !err && culled.drawCalls === 3 && culled.instances === 7,
+    err?.message ?? JSON.stringify(culled));
+  check('meshes outside the view are culled', culled.culled === 3 && all.culled === 0 && all.instances === 10 && all.drawCalls === 3,
+    `${JSON.stringify(culled)} / ${JSON.stringify(all)}`);
+  check('shadow casters outside the shadow map are culled', culled.shadowCasters === 6 && all.shadowCasters === 9,
+    `${culled.shadowCasters} / ${all.shadowCasters}`);
+  const centers = xs.map((x) => at(culledPx, [x, 0.5, 0]));
+  const gaps = [-2.25, -0.75, 0.75, 2.25].map((x) => at(culledPx, [x, 0.5, 0]));
+  check('every instance is drawn at its own transform', Math.min(...centers) > 600 && Math.max(...gaps) < 150,
+    `cubes ${centers.join()} gaps ${gaps.join()}`);
+  let differing = 0;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W * 4; x++) if (culledPx[y * bpr + x] !== allPx[y * bpr + x]) differing++;
+  check('culling leaves the frame unchanged', differing === 0, `${differing} differing bytes`);
+}
+
 // ---- profiler: CPU sections from the renderer, and GPU time per frame graph pass where the device can time them
 {
   const { profiler } = engine;
@@ -856,7 +939,7 @@ writeFileSync(`${OUT}/frame.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 1
   for (let i = 0; i < 20 && profiler.gpuSupported && profiler.gpu.length === 0; i++) await new Promise((r) => setTimeout(r, 10));
   profiler.enabled = false;
   const names = profiler.sections.map((s: any) => `${s.depth}:${s.name}`);
-  check('profiler: the renderer reports its CPU sections', !profErr && names.join() === '0:render,1:prepare,1:2D,1:passes' && profiler.cpuMs > 0,
+  check('profiler: the renderer reports its CPU sections', !profErr && names.join() === '0:render,1:prepare,2:cull + batch,1:2D,1:passes' && profiler.cpuMs > 0,
     profErr?.message ?? `${names.join()} ${profiler.cpuMs.toFixed(2)} ms`);
   const gpuNames = profiler.gpu.map((g: any) => g.name).join();
   if (profiler.gpuSupported) {

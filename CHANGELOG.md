@@ -18,6 +18,18 @@ Add a line under **Unreleased** with every user-visible change.
   feature) and the renderer's counters. Scripts can time their own code with `profiler.begin(name)` /
   `profiler.end()` from `'messier'`. Nothing is measured while the panel is hidden.
 
+- **Frustum culling:** meshes outside the camera's view aren't drawn, and shadow casters outside the shadow map
+  aren't rendered into it. `renderer.frustumCulling = false` turns it off; the stats bar and the profiler show how
+  many were culled.
+- **Instancing:** objects that share a mesh and have materials that look the same (duplicates, pooled objects,
+  prefab instances) are drawn with one instanced draw call. Nothing to set up: change one copy's material and it
+  simply leaves the batch. `RenderStats` gained `instances` and `culled`, and `materialsEqual()` is exported.
+
+### Changed
+
+- `RenderStats.drawCalls` counts batches, so it drops where instancing applies, and `shadowCasters` counts only the
+  casters inside the shadow map.
+
 ### Fixed
 
 - Alpha-tested materials (alpha cutoff) now cast shadows with matching holes.

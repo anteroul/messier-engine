@@ -475,6 +475,7 @@ src/engine/             The engine (no DOM dependencies except the canvas)
   renderer.ts           WebGPU device, pipelines, the frame's passes (shadow, main HDR, tonemap, overlay), uploads
   frameGraph.ts         Frame graph: pass ordering and culling, pooled transient textures, store ops
   pipelines.ts          Mesh pipeline variants: key from pass, material, mesh and target; cache; prewarming
+  culling.ts            Frustum planes and box tests; batching.ts: culled, instanced draw lists (DrawList)
   profiler.ts           Frame profiler: nested CPU sections, GPU pass times; gpuTimer.ts: timestamp queries per pass
   shaders/*.wgsl        common (frame structs, sky lookup), meshData (material, object), mesh (PBR), sky, tonemap
                         (exposure + ACES), shadow (opaque and alpha-tested), grid, overlay, mipmap, shape2d (2D + SDF text)

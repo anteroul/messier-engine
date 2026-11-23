@@ -17,7 +17,7 @@ item to its design doc in `docs/design/` when it has one.
 - [x] Render pass / frame graph
 - [x] Shader variant system
 - [x] GPU + CPU profiling in the editor
-- [ ] Frustum culling + instancing
+- [x] Frustum culling + instancing
 
 ## Phase 1: Render quality
 

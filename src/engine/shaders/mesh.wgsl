@@ -16,7 +16,8 @@
 @group(1) @binding(5) var occlusionTex: texture_2d<f32>;
 @group(1) @binding(6) var emissiveTex: texture_2d<f32>;
 
-@group(2) @binding(0) var<uniform> object: Object;
+// One entry per instance; a batch's instances are consecutive, starting at the draw's first instance.
+@group(2) @binding(0) var<storage, read> objects: array<Object>;
 
 struct VSIn {
   @location(0) position: vec3f,
@@ -32,8 +33,9 @@ struct VSOut {
 };
 
 @vertex
-fn vs_main(in: VSIn) -> VSOut {
+fn vs_main(in: VSIn, @builtin(instance_index) instance: u32) -> VSOut {
   var out: VSOut;
+  let object = objects[instance];
   let world = object.model * vec4f(in.position, 1.0);
   out.worldPos = world.xyz;
   out.normal = (object.normal * vec4f(in.normal, 0.0)).xyz;

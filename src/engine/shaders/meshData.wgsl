@@ -1,5 +1,5 @@
-// Shared by the mesh shaders (prepended to mesh.wgsl and shadow.wgsl): the per-material and per-object uniforms.
-// Layouts must match Renderer.prepareMaterial() (Material, 64 B) and the object packing (Object, 128 B).
+// Shared by the mesh shaders (prepended to mesh.wgsl and shadow.wgsl): the per-material uniforms and the per-instance
+// object data. Layouts must match Renderer.prepareMaterial() (Material, 64 B) and DrawList's packing (Object, 128 B).
 
 struct Material {
   baseColor: vec4f,

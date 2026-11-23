@@ -21,15 +21,15 @@ import { ATLAS_SIZE, fontAtlas } from './font';
 import { Renderer2D } from './shapes2d';
 import type { SkyMode } from './sky';
 import { FrameGraph, type RenderTarget } from './frameGraph';
+import { DrawList, OBJECT_FLOATS, type MeshBatch } from './batching';
 import { GpuTimer } from './gpuTimer';
 import { profiler } from './profiler';
 import { MeshPipelines, allMeshVariantKeys, meshVariantKey, type MeshPass, type MeshVariantKey } from './pipelines';
 
 export const MAX_LIGHTS = 128;
 const SHADOW_MAP_SIZE = 2048;
-/** Per-object uniform slot; must be a multiple of minUniformBufferOffsetAlignment (256). */
-const OBJECT_STRIDE = 256;
-const OBJECT_UNIFORM_SIZE = 128;
+/** One instance in the object storage buffer (model + normal matrix). */
+const OBJECT_SIZE = OBJECT_FLOATS * 4;
 const FRAME_UNIFORM_SIZE = 336;
 const MATERIAL_UNIFORM_SIZE = 64;
 const LIGHT_FLOATS = 16;
@@ -58,9 +58,15 @@ export interface RenderOptions {
 }
 
 export interface RenderStats {
+  /** Draw calls of the main and overlay passes (a batch of instances is one). */
   drawCalls: number;
   triangles: number;
+  /** Mesh instances drawn in the main pass. */
+  instances: number;
+  /** Mesh renderers skipped because they're outside the view. */
+  culled: number;
   lights: number;
+  /** Mesh instances drawn into the shadow map. */
   shadowCasters: number;
   /** Shape2D/Text2D components drawn. */
   elements2D: number;
@@ -87,7 +93,9 @@ export class Renderer {
   readonly sampleCount = 4;
   width = 0;
   height = 0;
-  readonly stats: RenderStats = { drawCalls: 0, triangles: 0, lights: 0, shadowCasters: 0, elements2D: 0, pipelineBuilds: 0 };
+  readonly stats: RenderStats = { drawCalls: 0, triangles: 0, instances: 0, culled: 0, lights: 0, shadowCasters: 0, elements2D: 0, pipelineBuilds: 0 };
+  /** Skip meshes outside the camera's view (and, in the shadow pass, outside the shadow map). */
+  frustumCulling = true;
 
   private readonly context: GPUCanvasContext;
   /** Declares, orders and runs each frame's passes, and owns their transient textures (MSAA color, depth). */
@@ -135,7 +143,7 @@ export class Renderer {
   private objectBuffer: GPUBuffer | null = null;
   private objectBindGroup: GPUBindGroup | null = null;
   private objectCapacity = 0;
-  private objectStaging = new Float32Array(0);
+  private readonly drawList = new DrawList();
 
   private overlayBuffer: GPUBuffer | null = null;
   private overlayCapacity = 0;
@@ -213,7 +221,7 @@ export class Renderer {
     });
     this.objectLayout = device.createBindGroupLayout({
       label: 'object',
-      entries: [{ binding: 0, visibility: VS, buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: OBJECT_UNIFORM_SIZE } }],
+      entries: [{ binding: 0, visibility: VS, buffer: { type: 'read-only-storage', minBindingSize: OBJECT_SIZE } }],
     });
     this.shadowFrameLayout = device.createBindGroupLayout({
       label: 'shadow-frame',
@@ -554,13 +562,12 @@ export class Renderer {
     if (count <= this.objectCapacity && this.objectBindGroup) return;
     const capacity = Math.max(64, 2 ** Math.ceil(Math.log2(Math.max(1, count))));
     this.objectBuffer?.destroy();
-    this.objectBuffer = this.device.createBuffer({ label: 'objects', size: capacity * OBJECT_STRIDE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.objectBuffer = this.device.createBuffer({ label: 'objects', size: capacity * OBJECT_SIZE, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     this.objectBindGroup = this.device.createBindGroup({
       label: 'objects',
       layout: this.objectLayout,
-      entries: [{ binding: 0, resource: { buffer: this.objectBuffer, size: OBJECT_UNIFORM_SIZE } }],
+      entries: [{ binding: 0, resource: { buffer: this.objectBuffer } }],
     });
-    this.objectStaging = new Float32Array((capacity * OBJECT_STRIDE) / 4);
     this.objectCapacity = capacity;
   }
 
@@ -671,7 +678,7 @@ export class Renderer {
     camera.aspect = this.width / this.height;
     const device = this.device;
     const stats = this.stats;
-    stats.drawCalls = stats.triangles = stats.lights = stats.shadowCasters = stats.elements2D = 0;
+    stats.drawCalls = stats.triangles = stats.instances = stats.culled = stats.lights = stats.shadowCasters = stats.elements2D = 0;
     const builds = this.meshPipelines.builds;
 
     // Gather live renderables and lights from the scene's component registry.
@@ -747,18 +754,20 @@ export class Renderer {
     fv.set([SKY_MODE_INDEX[skyMode], sky.lighting, (sky.rotation * Math.PI) / 180, mips], 80);
     device.queue.writeBuffer(this.frameBuffer, 0, this.frameData);
 
-    // Per-object uniforms in one dynamic-offset buffer.
-    this.ensureObjectCapacity(draws.length);
-    const staging = this.objectStaging;
-    draws.forEach((o, i) => {
-      staging.set(o.transform.worldMatrix, (i * OBJECT_STRIDE) / 4);
-      staging.set(o.transform.normalMatrix, (i * OBJECT_STRIDE) / 4 + 16);
-      this.ensureMesh(o.mesh!);
-    });
-    if (draws.length > 0) device.queue.writeBuffer(this.objectBuffer!, 0, staging, 0, (draws.length * OBJECT_STRIDE) / 4);
+    // Cull against the view and the shadow map, batch what's left into instanced draws, and upload every instance's
+    // matrices into one storage buffer.
+    profiler.begin('cull + batch');
+    const list = this.drawList;
+    list.build(draws, viewProj, shadowIndex >= 0 ? lightViewProj : null, this.frustumCulling);
+    profiler.end();
+    stats.culled = list.culled;
+    this.ensureObjectCapacity(list.objectCount);
+    if (list.objectCount > 0) device.queue.writeBuffer(this.objectBuffer!, 0, list.objects, 0, list.objectCount * OBJECT_FLOATS);
+    for (const b of list.main) this.ensureMesh(b.mesh);
+    for (const b of list.shadow) this.ensureMesh(b.mesh);
 
     const materialGroups = new Map<Material, GPUBindGroup>();
-    for (const o of draws) if (!materialGroups.has(o.material!)) materialGroups.set(o.material!, this.prepareMaterial(o.material!));
+    for (const m of list.materials) materialGroups.set(m, this.prepareMaterial(m));
 
     const overlay = options.overlay && !options.overlay.isEmpty ? options.overlay : null;
     if (overlay) this.uploadOverlay(overlay);
@@ -776,7 +785,7 @@ export class Renderer {
     if (shadowIndex >= 0) {
       g.addRenderPass('shadow', (pass) => {
         pass.depthAttachment(shadowMap, { depthClearValue: 1, depthLoadOp: 'clear' });
-        return (encoder, res) => this.drawShadowCasters(encoder, draws, materialGroups, res.target!);
+        return (encoder, res) => this.drawShadowCasters(encoder, list.shadow, materialGroups, res.target!);
       });
     }
     const hdr = g.createTexture('hdr color', { format: HDR_FORMAT, sampleCount: this.sampleCount });
@@ -787,7 +796,7 @@ export class Renderer {
       // Alpha 0 marks pixels nothing covers (meshes and the sky write 1): the tonemap pass shows the background there.
       pass.colorAttachment(hdr, { clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear' });
       pass.depthAttachment(depth, { depthClearValue: 0, depthLoadOp: 'clear' });
-      return (encoder, res) => this.drawScene(encoder, draws, materialGroups, skyMode, res.target!);
+      return (encoder, res) => this.drawScene(encoder, list.main, materialGroups, skyMode, res.target!);
     });
     // With a sky, the background only shows where the sky pass doesn't draw (nowhere).
     const bg = skyMode === 'color' ? scene.background : [0, 0, 0];
@@ -844,56 +853,55 @@ export class Renderer {
    * The shadow pass: depth only, on its own group 0 (the frame group holds the shadow map it's drawing into). The
    * alpha-tested variant reads the material from group 2.
    */
-  private drawShadowCasters(pass: GPURenderPassEncoder, draws: MeshRenderer[], materialGroups: Map<Material, GPUBindGroup>, target: RenderTarget): void {
+  private drawShadowCasters(pass: GPURenderPassEncoder, batches: MeshBatch[], materialGroups: Map<Material, GPUBindGroup>, target: RenderTarget): void {
     const stats = this.stats;
     pass.setBindGroup(0, this.shadowFrameBindGroup);
+    if (batches.length > 0) pass.setBindGroup(1, this.objectBindGroup!);
     let currentPipeline: GPURenderPipeline | null = null;
-    draws.forEach((o, i) => {
-      if (!o.castShadows) return;
-      const mat = o.material!;
-      const key = meshVariantKey('shadow', mat, o.mesh, target);
+    for (const b of batches) {
+      const key = meshVariantKey('shadow', b.material, b.mesh, target);
       const pipeline = this.meshPipelines.get(key);
       if (pipeline !== currentPipeline) {
         pass.setPipeline(pipeline);
         currentPipeline = pipeline;
       }
-      const gpu = o.mesh!.gpu!;
-      pass.setBindGroup(1, this.objectBindGroup!, [i * OBJECT_STRIDE]);
-      if (key.alphaTest) pass.setBindGroup(2, materialGroups.get(mat)!);
+      const gpu = b.mesh.gpu!;
+      if (key.alphaTest) pass.setBindGroup(2, materialGroups.get(b.material)!);
       pass.setVertexBuffer(0, gpu.vertexBuffer);
       pass.setIndexBuffer(gpu.indexBuffer, 'uint32');
-      pass.drawIndexed(o.mesh!.indices.length);
-      stats.shadowCasters++;
-    });
+      // The first instance is where the batch starts in the object buffer (the shader's instance index includes it).
+      pass.drawIndexed(b.mesh.indices.length, b.count, 0, 0, b.first);
+      stats.shadowCasters += b.count;
+    }
   }
 
   /** The main pass: lit meshes, then the sky behind them, as linear radiance. */
   private drawScene(
     pass: GPURenderPassEncoder,
-    draws: MeshRenderer[],
+    batches: MeshBatch[],
     materialGroups: Map<Material, GPUBindGroup>,
     skyMode: SkyMode,
     target: RenderTarget,
   ): void {
     const stats = this.stats;
     pass.setBindGroup(0, this.frameBindGroup);
+    if (batches.length > 0) pass.setBindGroup(2, this.objectBindGroup!);
     let currentPipeline: GPURenderPipeline | null = null;
-    draws.forEach((o, i) => {
-      const mat = o.material!;
-      const pipeline = this.meshPipelines.get(meshVariantKey('main', mat, o.mesh, target));
+    for (const b of batches) {
+      const pipeline = this.meshPipelines.get(meshVariantKey('main', b.material, b.mesh, target));
       if (pipeline !== currentPipeline) {
         pass.setPipeline(pipeline);
         currentPipeline = pipeline;
       }
-      const gpu = o.mesh!.gpu!;
-      pass.setBindGroup(1, materialGroups.get(mat)!);
-      pass.setBindGroup(2, this.objectBindGroup!, [i * OBJECT_STRIDE]);
+      const gpu = b.mesh.gpu!;
+      pass.setBindGroup(1, materialGroups.get(b.material)!);
       pass.setVertexBuffer(0, gpu.vertexBuffer);
       pass.setIndexBuffer(gpu.indexBuffer, 'uint32');
-      pass.drawIndexed(o.mesh!.indices.length);
+      pass.drawIndexed(b.mesh.indices.length, b.count, 0, 0, b.first);
       stats.drawCalls++;
-      stats.triangles += o.mesh!.triangleCount;
-    });
+      stats.instances += b.count;
+      stats.triangles += b.mesh.triangleCount * b.count;
+    }
 
     if (skyMode !== 'color') {
       pass.setPipeline(this.skyPipeline);
