@@ -22,6 +22,8 @@ import {
   type TextAlign,
   type TextBaseline,
   type TextureSlot,
+  BLEND_MODES,
+  type BlendMode,
   DEG2RAD,
   PROJECTIONS,
   RAD2DEG,
@@ -268,6 +270,10 @@ export class InspectorPanel {
       const emissiveStrength = numberRow('Emissive ×', () => mat.emissiveStrength, (v) => (mat.emissiveStrength = v), { step: 0.1, min: 0, max: 100 });
       const unlit = checkboxRow('Unlit', () => mat.unlit, (v) => (mat.unlit = v));
       const doubleSided = checkboxRow('Double sided', () => mat.doubleSided, (v) => (mat.doubleSided = v));
+      const blend = selectRow('Blend', [...BLEND_MODES], () => mat.blend, (v) => {
+        mat.blend = v as BlendMode;
+        this.refresh();
+      });
 
       // Each texture slot: Load… imports an image as a project asset (so the scene saves with it); setTexture rebuilds the panel.
       const texRow = (label: string, slot: TextureSlot) => {
@@ -302,8 +308,14 @@ export class InspectorPanel {
         s.body.append(occlusionStrength.row);
         this.add(occlusionStrength.binding);
       }
-      s.body.append(emissive.row, emissiveStrength.row, texRow('Emissive map', 'emissiveTexture'), unlit.row, doubleSided.row);
-      this.add(color.binding, metallic.binding, roughness.binding, emissive.binding, emissiveStrength.binding, unlit.binding, doubleSided.binding);
+      s.body.append(emissive.row, emissiveStrength.row, texRow('Emissive map', 'emissiveTexture'), unlit.row, doubleSided.row, blend.row);
+      this.add(color.binding, metallic.binding, roughness.binding, emissive.binding, emissiveStrength.binding, unlit.binding, doubleSided.binding, blend.binding);
+      // The base color's alpha only matters to blended materials (and alpha-tested ones, which keep their texture's).
+      if (mat.blend !== 'opaque') {
+        const opacity = sliderRow('Opacity', () => mat.baseColor[3], (v) => (mat.baseColor = [mat.baseColor[0], mat.baseColor[1], mat.baseColor[2], v]), 0, 1, 0.01);
+        s.body.append(opacity.row);
+        this.add(opacity.binding);
+      }
       out.push(s.root);
     }
 

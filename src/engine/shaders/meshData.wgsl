@@ -7,7 +7,7 @@ struct Material {
   emissive: vec4f,
   // x = roughness, y = unlit flag, z = alpha cutoff, w = has normal map
   params: vec4f,
-  // x = normal scale, y = occlusion strength
+  // x = normal scale, y = occlusion strength, z = blended (alpha out is the opacity; otherwise 1)
   maps: vec4f,
 };
 

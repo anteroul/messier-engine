@@ -552,7 +552,7 @@ export class Renderer {
     d[11] = m.normalTexture ? 1 : 0;
     d[12] = m.normalScale;
     d[13] = m.occlusionStrength;
-    d[14] = 0;
+    d[14] = m.blend === 'opaque' ? 0 : 1;
     d[15] = 0;
     this.device.queue.writeBuffer(m.gpu.uniformBuffer, 0, d);
     return m.gpu.bindGroup;
@@ -758,13 +758,14 @@ export class Renderer {
     // matrices into one storage buffer.
     profiler.begin('cull + batch');
     const list = this.drawList;
-    list.build(draws, viewProj, shadowIndex >= 0 ? lightViewProj : null, this.frustumCulling);
+    list.build(draws, viewProj, camera.position, shadowIndex >= 0 ? [lightViewProj] : [], this.frustumCulling);
     profiler.end();
     stats.culled = list.culled;
     this.ensureObjectCapacity(list.objectCount);
     if (list.objectCount > 0) device.queue.writeBuffer(this.objectBuffer!, 0, list.objects, 0, list.objectCount * OBJECT_FLOATS);
     for (const b of list.main) this.ensureMesh(b.mesh);
-    for (const b of list.shadow) this.ensureMesh(b.mesh);
+    for (const b of list.transparent) this.ensureMesh(b.mesh);
+    for (const casters of list.shadows) for (const b of casters) this.ensureMesh(b.mesh);
 
     const materialGroups = new Map<Material, GPUBindGroup>();
     for (const m of list.materials) materialGroups.set(m, this.prepareMaterial(m));
@@ -785,7 +786,7 @@ export class Renderer {
     if (shadowIndex >= 0) {
       g.addRenderPass('shadow', (pass) => {
         pass.depthAttachment(shadowMap, { depthClearValue: 1, depthLoadOp: 'clear' });
-        return (encoder, res) => this.drawShadowCasters(encoder, list.shadow, materialGroups, res.target!);
+        return (encoder, res) => this.drawShadowCasters(encoder, list.shadows[0], materialGroups, res.target!);
       });
     }
     const hdr = g.createTexture('hdr color', { format: HDR_FORMAT, sampleCount: this.sampleCount });
@@ -796,7 +797,7 @@ export class Renderer {
       // Alpha 0 marks pixels nothing covers (meshes and the sky write 1): the tonemap pass shows the background there.
       pass.colorAttachment(hdr, { clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear' });
       pass.depthAttachment(depth, { depthClearValue: 0, depthLoadOp: 'clear' });
-      return (encoder, res) => this.drawScene(encoder, list.main, materialGroups, skyMode, res.target!);
+      return (encoder, res) => this.drawScene(encoder, list, materialGroups, skyMode, res.target!);
     });
     // With a sky, the background only shows where the sky pass doesn't draw (nowhere).
     const bg = skyMode === 'color' ? scene.background : [0, 0, 0];
@@ -875,19 +876,13 @@ export class Renderer {
     }
   }
 
-  /** The main pass: lit meshes, then the sky behind them, as linear radiance. */
-  private drawScene(
-    pass: GPURenderPassEncoder,
-    batches: MeshBatch[],
-    materialGroups: Map<Material, GPUBindGroup>,
-    skyMode: SkyMode,
-    target: RenderTarget,
-  ): void {
+  /** The main pass, as linear radiance: opaque meshes, the sky behind them, then blended meshes back to front. */
+  private drawScene(pass: GPURenderPassEncoder, list: DrawList, materialGroups: Map<Material, GPUBindGroup>, skyMode: SkyMode, target: RenderTarget): void {
     const stats = this.stats;
     pass.setBindGroup(0, this.frameBindGroup);
-    if (batches.length > 0) pass.setBindGroup(2, this.objectBindGroup!);
+    if (list.mainInstances > 0) pass.setBindGroup(2, this.objectBindGroup!);
     let currentPipeline: GPURenderPipeline | null = null;
-    for (const b of batches) {
+    const draw = (b: MeshBatch) => {
       const pipeline = this.meshPipelines.get(meshVariantKey('main', b.material, b.mesh, target));
       if (pipeline !== currentPipeline) {
         pass.setPipeline(pipeline);
@@ -901,13 +896,16 @@ export class Renderer {
       stats.drawCalls++;
       stats.instances += b.count;
       stats.triangles += b.mesh.triangleCount * b.count;
-    }
+    };
+    for (const b of list.main) draw(b);
 
     if (skyMode !== 'color') {
       pass.setPipeline(this.skyPipeline);
       pass.draw(3);
       stats.drawCalls++;
+      currentPipeline = null;
     }
+    for (const b of list.transparent) draw(b);
   }
 
   /** The tonemap pass: HDR radiance to display colors, per sample (see tonemap.wgsl). */

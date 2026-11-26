@@ -119,8 +119,10 @@ fn fs_main(in: VSOut, @builtin(front_facing) frontFacing: bool) -> @location(0) 
     discard;
   }
   let emissive = material.emissive.rgb * emissiveSample;
+  // Opaque surfaces cover the pixel; blended ones hand their opacity to the blend state.
+  let alpha = mix(1.0, base.a, material.maps.z);
   if (material.params.y > 0.5) {
-    return vec4f(base.rgb + emissive, 1.0);
+    return vec4f(base.rgb + emissive, alpha);
   }
 
   var N = normalize(in.normal);
@@ -199,5 +201,5 @@ fn fs_main(in: VSOut, @builtin(front_facing) frontFacing: bool) -> @location(0) 
     ambientSpecular = frame.ambient.rgb * env * Fa * (1.0 - 0.6 * roughness) * 2.5;
   }
   let color = Lo + (ambientDiffuse + ambientSpecular) * occlusion + emissive;
-  return vec4f(color, 1.0);
+  return vec4f(color, alpha);
 }

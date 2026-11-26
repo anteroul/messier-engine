@@ -2,7 +2,9 @@
 //
 // A fullscreen triangle into the multisampled display target, shaded once per sample: each sample is tone mapped on
 // its own and the MSAA resolve averages the results, so edges look as they did when the scene shaders tone mapped.
-// Where nothing was drawn (alpha 0; meshes and the sky write 1) the display-space background shows instead.
+// Alpha is coverage: 0 where nothing was drawn (the display-space background shows there), 1 under opaque meshes and
+// the sky, in between where only blended surfaces were drawn over nothing. Blending leaves the color premultiplied
+// by it, so it's divided out before the curve.
 
 struct Params {
   // rgb = background (display space), w = exposure
@@ -31,6 +33,7 @@ fn acesTonemap(x: vec3f) -> vec3f {
 fn fs_main(@builtin(position) pos: vec4f, @builtin(sample_index) sample: u32) -> @location(0) vec4f {
   let c = textureLoad(hdr, vec2i(pos.xy), i32(sample));
   // Radiance past half float's range is stored as infinity, which the curve would turn into NaN.
-  let display = pow(acesTonemap(min(c.rgb, vec3f(65504.0)) * params.background.w), vec3f(1.0 / 2.2));
+  let radiance = min(c.rgb / max(c.a, 1e-4), vec3f(65504.0));
+  let display = pow(acesTonemap(radiance * params.background.w), vec3f(1.0 / 2.2));
   return vec4f(mix(params.background.rgb, display, c.a), 1.0);
 }

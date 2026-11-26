@@ -922,6 +922,74 @@ writeFileSync(`${OUT}/frame.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 1
   check('culling leaves the frame unchanged', differing === 0, `${differing} differing bytes`);
 }
 
+// ---- transparency: blended materials are drawn after the opaque ones, back to front, whatever the scene's order.
+// Unlit panes in front of a white wall and of the empty background.
+{
+  const { Material, createPlane } = engine;
+  const device = renderer.device;
+  const upright = quat.fromEulerDeg(90, 0, 0);
+  const build = (order: string[]) => {
+    const s = new Scene();
+    s.background = [0, 0, 1];
+    const make: Record<string, () => void> = {
+      wall: () => pane('Wall', new Material('wall', { baseColor: [1, 1, 1, 1], unlit: true }), -1.5, -2, 3),
+      red: () => pane('Red', new Material('red', { baseColor: [1, 0, 0, 0.5], unlit: true, blend: 'alpha' }), 0, 0, 6),
+      green: () => pane('Green', new Material('green', { baseColor: [0, 1, 0, 0.5], unlit: true, blend: 'alpha' }), 0, 1, 2),
+      glow: () => pane('Glow', new Material('glow', { baseColor: [0, 0.2, 0, 1], unlit: true, blend: 'additive' }), -1.5, 2, 1),
+    };
+    const pane = (name: string, material: any, x: number, z: number, size: number) => {
+      const o = new GameObject(name);
+      o.mesh = createPlane(size);
+      o.material = material;
+      o.material.doubleSided = true;
+      o.transform.position = [x, 0, z];
+      o.transform.rotation = upright;
+      s.add(o);
+    };
+    for (const name of order) make[name]();
+    s.updateMatrices();
+    return s;
+  };
+  const cam = new Camera();
+  cam.position = [0, 0, 10];
+  cam.target = [0, 0, 0];
+  cam.aspect = W / H;
+  const bpr = Math.ceil((W * 4) / 256) * 256;
+  const bgra = (fakeContext as any).format === 'bgra8unorm';
+  const readFrame = async () => {
+    const out = device.createBuffer({ size: bpr * H, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const e = device.createCommandEncoder();
+    e.copyTextureToBuffer({ texture: current! }, { buffer: out, bytesPerRow: bpr }, [W, H]);
+    device.queue.submit([e.finish()]);
+    await out.mapAsync(GPUMapMode.READ);
+    const px = new Uint8Array(out.getMappedRange()).slice();
+    out.destroy();
+    return px;
+  };
+  const rgb = (px: Uint8Array, p: [number, number, number]) => {
+    const [x, y] = cam.worldToScreen(p, W, H)!;
+    const o = Math.round(y) * bpr + Math.round(x) * 4;
+    return [px[o + (bgra ? 2 : 0)], px[o + 1], px[o + (bgra ? 0 : 2)]];
+  };
+  device.pushErrorScope('validation');
+  const stats = { ...renderer.render(build(['wall', 'red', 'green', 'glow']), cam, { time: 0 }) };
+  const a = await readFrame();
+  renderer.render(build(['glow', 'green', 'red', 'wall']), cam, { time: 0 });
+  const b = await readFrame();
+  const err = await device.popErrorScope();
+  check('blended meshes render', !err && stats.drawCalls === 4, err?.message ?? JSON.stringify(stats));
+  let differing = 0;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W * 4; x++) if (a[y * bpr + x] !== b[y * bpr + x]) differing++;
+  check('the scene\'s order doesn\'t change a blended frame', differing === 0, `${differing} differing bytes`);
+  const overWall = rgb(a, [-1.5, 1.2, 0]), overBoth = rgb(a, [-0.5, 0.5, 0]), overNothing = rgb(a, [2.4, 2.4, 0]);
+  const redOverWall = rgb(a, [-2.2, -1.2, 0]), glow = rgb(a, [-1.5, 0, 2]);
+  check('a half-transparent pane lets the wall behind it through', redOverWall[0] > 250 && redOverWall[1] > 120 && redOverWall[1] < 230 && redOverWall[1] === redOverWall[2],
+    redOverWall.join());
+  check('the nearer pane is blended last', overBoth[1] > overBoth[0] && overBoth[0] > 60, overBoth.join());
+  check('over nothing, a pane blends with the background', overNothing[0] > 150 && overNothing[1] < 5 && overNothing[2] > 100 && overNothing[2] < 160, overNothing.join());
+  check('additive materials only add light', glow[1] > overWall[1] - 1 && glow[0] >= redOverWall[0] - 1, `${glow.join()} over ${overWall.join()}`);
+}
+
 // ---- profiler: CPU sections from the renderer, and GPU time per frame graph pass where the device can time them
 {
   const { profiler } = engine;

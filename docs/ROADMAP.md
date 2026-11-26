@@ -26,7 +26,7 @@ item to its design doc in `docs/design/` when it has one.
 - [x] HDR render target + tonemap pass (0.6.0)
 - [ ] Post stack: bloom, TAA
 - [ ] Cascaded shadows, spot and point shadows
-- [ ] Transparency sorting
+- [x] Transparency sorting (blend modes, back-to-front batches)
 
 ## Phase 2: Animation
 

@@ -178,6 +178,7 @@ export async function loadGLTF(data: ArrayBuffer, name: string, resolve: Resourc
       if (m.emissiveFactor) mat.emissive = [...m.emissiveFactor] as Material['emissive'];
       mat.emissiveStrength = m.extensions?.KHR_materials_emissive_strength?.emissiveStrength ?? 1;
       if (m.alphaMode === 'MASK') mat.alphaCutoff = m.alphaCutoff ?? 0.5;
+      else if (m.alphaMode === 'BLEND') mat.blend = 'alpha';
       mat.doubleSided = !!m.doubleSided;
       mat.unlit = !!m.extensions?.KHR_materials_unlit;
       return mat;

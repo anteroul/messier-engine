@@ -10,6 +10,13 @@ Add a line under **Unreleased** with every user-visible change.
 
 ## [Unreleased]
 
+### Added
+
+- **Transparent materials:** a material's new **Blend** setting (inspector, `material.blend`) is `opaque` (as before),
+  `alpha` (glass, smoke: mixes by the base color's alpha, set with the new **Opacity** row) or `additive` (fire,
+  beams: adds light). Blended meshes are drawn after the opaque ones, sorted back to front, don't write depth and
+  cast no shadows. glTF materials with `alphaMode: BLEND` load as `alpha`.
+
 ## [0.7.0] - 2026-11-23
 
 ### Added

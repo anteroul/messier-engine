@@ -1,5 +1,5 @@
 import { GameObject, type Scene } from './scene';
-import { Material, MATERIAL_FIELDS, TEXTURE_SLOTS, type Texture } from './material';
+import { BLEND_MODES, Material, MATERIAL_FIELDS, TEXTURE_SLOTS, type Texture } from './material';
 import { Light, LIGHT_FIELDS, LIGHT_TYPE_INDEX } from './light';
 import { CameraComponent, CAMERA_FIELDS, PROJECTIONS } from './camera';
 import { BODY_TYPES, COLLIDER_SHAPES, RigidBody, RIGID_BODY_FIELDS } from './physics';
@@ -461,6 +461,7 @@ function dataToObject(d: Json, scene: Scene, res: SceneResources, warnings: stri
   }
   if (isObject(d.material)) {
     const m = assignKnown(new Material(), d.material, MATERIAL_FIELDS);
+    if (!BLEND_MODES.includes(m.blend)) m.blend = 'opaque';
     for (const slot of TEXTURE_SLOTS) {
       const ref = d.material[slot];
       if (ref === undefined) continue;
