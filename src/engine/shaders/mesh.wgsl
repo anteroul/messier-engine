@@ -9,6 +9,13 @@
 // Point and spot light shadows: a layer per spot light, six per point light, each with its matrix (shadows.ts).
 @group(0) @binding(6) var localShadowMap: texture_depth_2d_array;
 @group(0) @binding(7) var<storage, read> localShadowViews: array<mat4x4f>;
+// Image-based lighting from a gradient or image sky (environment.ts): diffuse irradiance, the specular environment
+// prefiltered by roughness (a mip per step of SPECULAR_LEVELS), and the split-sum BRDF table.
+@group(0) @binding(8) var irradianceMap: texture_cube<f32>;
+@group(0) @binding(9) var specularMap: texture_cube<f32>;
+@group(0) @binding(10) var brdfLut: texture_2d<f32>;
+@group(0) @binding(11) var envSampler: sampler;
+const SPECULAR_LEVELS = 6.0;
 
 @group(1) @binding(0) var<uniform> material: Material;
 @group(1) @binding(1) var baseColorTex: texture_2d<f32>;
@@ -255,11 +262,14 @@ fn fs_main(in: VSOut, @builtin(front_facing) frontFacing: bool) -> @location(0) 
   var ambientDiffuse: vec3f;
   var ambientSpecular: vec3f;
   if (frame.sky.x > 0.5) {
-    // The sky lights the scene: diffuse from a very blurred sky around the normal, specular from the sky in the
-    // reflected direction, blurred by roughness.
+    // The sky lights the scene (split sum): diffuse from its irradiance around the normal, specular from it prefiltered
+    // to this roughness in the reflected direction, times the BRDF's scale and bias to F0.
     let strength = frame.sky.y;
-    ambientDiffuse = skyRadiance(N, 0.85) * strength * base.rgb * (vec3f(1.0) - Fa) * (1.0 - metallic);
-    ambientSpecular = skyRadiance(R, roughness) * strength * Fa;
+    let irradiance = textureSampleLevel(irradianceMap, envSampler, N, 0.0).rgb;
+    let prefiltered = textureSampleLevel(specularMap, envSampler, R, roughness * (SPECULAR_LEVELS - 1.0)).rgb;
+    let brdf = textureSampleLevel(brdfLut, envSampler, vec2f(NdotV, roughness), 0.0).rg;
+    ambientDiffuse = irradiance * strength * base.rgb * (vec3f(1.0) - Fa) * (1.0 - metallic);
+    ambientSpecular = prefiltered * strength * (F0 * brdf.x + brdf.y);
   } else {
     // Hemispheric ambient diffuse: brighter from above.
     let hemi = mix(0.55, 1.0, N.y * 0.5 + 0.5);

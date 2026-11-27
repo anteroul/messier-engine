@@ -119,11 +119,16 @@ Engine.step(dt)                         src/engine/engine.ts
   `gradient` or `image`). `color` is the old flat clear color, and the mesh shader's old hemispheric ambient and fake
   reflection gradient. Otherwise the sky pass draws a fullscreen triangle at depth 0 after the opaque meshes
   (`greater-equal`, so it only fills cleared pixels) and before the grid, reconstructing view rays from
-  `frame.invViewProj`; and the mesh shader takes ambient diffuse from `skyRadiance(N, 0.85)` and reflections from
-  `skyRadiance(R, roughness)`, times `sky.lighting`. Image skies are equirectangular `rgba8unorm-srgb` textures whose
-  ordinary mip chain stands in for prefiltering (`textureSampleLevel`, so it's fine in non-uniform control flow). The
-  gradient's sun follows the shadow-casting (or first) directional light; its disc is drawn only unblurred, since
-  lit surfaces already get the light's specular highlight. Saved in `settings.sky`, with `texture` as an image
+  `frame.invViewProj`; and the mesh shader lights with it by image-based lighting (split sum, `environment.ts`):
+  when the frame's sky values (`common.wgsl` offsets 44–67, minus `sky.lighting`, which applies when read) or the
+  sky image change, two compute passes (`environment capture`, `environment filter`) bake the sky into a 128² cube
+  with averaged mips, then a 6-mip specular cube (roughness `mip / 5`, GGX importance sampling that reads the mip
+  matching each sample's solid angle) and a 32² irradiance cube (cosine-weighted average radiance); the 64² BRDF
+  table (scale and bias to F0) is made once. `cube.wgsl` maps cube texels to directions in WebGPU's face order, and
+  `tests/render` checks it against what's sampled. `SPECULAR_LEVELS` is mirrored by hand in `mesh.wgsl`. Image skies
+  are equirectangular `rgba8unorm-srgb` textures; the capture reads the mip with about one texel per cube texel. The
+  gradient's sun follows the shadow-casting (or first) directional light; the capture leaves its disc out
+  (`skyRadiance(d, level, 0)`), since lit surfaces already get the light's specular highlight. Saved in `settings.sky`, with `texture` as an image
   asset ref; `sceneAssetIds()` (not `collectAssetIds()`) counts it.
 - **2D** (`shapes2d.ts`, `draw2d.ts`, `font.ts`): `Shape2D` and `Text2D` extend the abstract `Renderer2D`
   component. Each frame the renderer queries them, tessellates them on the CPU into a `Batch2D` through
@@ -153,7 +158,8 @@ Engine.step(dt)                         src/engine/engine.ts
   `FrameGraph`: the shadow map (persistent, owned by the renderer, a layer per cascade) and the canvas texture are *imported*; the
   multisampled `hdr color` (`rgba16float`), `main depth` and `display color` (canvas format) are *transient*
   (`createTexture`, sized from the output size that `resizeIfNeeded()` sets). The passes: `shadow 0`… (one per cascade, each attaching its `layer`), `light shadow 0`… (one per point/spot layer,
-  into `local shadow map`); `main` (meshes
+  into `local shadow map`), `environment capture` and `environment filter` (compute, only in frames whose sky
+  changed); `main` (meshes
   and sky as linear radiance into `hdr color`, cleared to alpha 0 so the tonemap knows where nothing was drawn);
   `tonemap` (per-sample exposure + ACES + gamma 2.2 into `display color`, the display-space background where alpha
   is 0, see `tonemap.wgsl`); `overlay` (loads `display color` and `main depth`; grid, world 2D, overlay, HUD;
@@ -316,14 +322,16 @@ Engine.step(dt)                         src/engine/engine.ts
   - `Object` (model + normal matrix, 128 B, `OBJECT_FLOATS`): one per drawn instance in a storage buffer
     (`array<Object>`, indexed by the instance index), shared by the mesh and shadow pipelines (declared in
     `meshData.wgsl`) ↔ `DrawList.emit()`.
-- **Shaders:** `common.wgsl` is *prepended* to `mesh`, `grid`, `overlay` and `sky`.
+- **Shaders:** `common.wgsl` is *prepended* to `mesh`, `grid`, `overlay`, `sky` and `envCapture` (after it, `cube`).
   It declares `@group(0) @binding(0) frame`, the sky texture and sampler, `PI` and `skyRadiance()`,
   so don't redeclare them. `meshData.wgsl` (the `Material` and `Object` structs) is prepended to `mesh` (after
   `common`) and `shadow`. `mesh` and `sky` output linear radiance with alpha 1; only `tonemap.wgsl` tone maps.
-  `mipmap.wgsl`, `shape2d.wgsl` and `tonemap.wgsl` are standalone. Shaders load with Vite
+  `mipmap.wgsl`, `shape2d.wgsl` and `tonemap.wgsl` are standalone; `environment.wgsl` gets only `cube.wgsl`. The
+  environment compute pipelines use `layout: 'auto'`, one entry point per group-0 binding set. Shaders load with Vite
   `?raw` imports, and `tests/render/run.mjs` emulates that with an esbuild plugin.
 - **Bind groups:** group 0 = frame (uniform, lights storage, shadow map,
-  comparison sampler, sky texture, sky sampler, point/spot shadow map, its matrices storage), group 1 = material, group 2 = objects (the instance array, read-only storage). The frame
+  comparison sampler, sky texture, sky sampler, point/spot shadow map, its matrices storage, irradiance cube,
+  specular cube, BRDF table, their sampler), group 1 = material, group 2 = objects (the instance array, read-only storage). The frame
   group is rebuilt when the sky image changes (a 1×1 white placeholder otherwise).
   The shadow passes never bind the frame group (the shadow map would be in a usage conflict): their group 0 is their
   own (the view's matrix: one bind group per shadow view, cascades then point/spot layers, over 256-byte slots of

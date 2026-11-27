@@ -29,8 +29,9 @@ real-time scene editor. What changed in each version: [CHANGELOG.md](CHANGELOG.m
   colliders, dynamic / static / kinematic bodies, friction, restitution,
   damping and sleeping, solved with fixed-step sequential impulses.
 - **Skies**: a gradient sky with a sun that follows the scene's directional
-  light, or an equirectangular panorama image. The sky also lights the scene:
-  metals reflect it, blurrier the rougher they are.
+  light, or an equirectangular panorama image. The sky also lights the scene
+  by prefiltered image-based lighting (split sum): metals reflect it, blurrier
+  the rougher they are, and it gives soft ambient light.
 - **Audio**: an `AudioSource` component plays imported sound files (`.wav`,
   `.mp3`, `.ogg`…, saved inside the project) or sound effects from a built-in
   synthesizer (lasers, coins, explosions, from a few parameters, no files), in
@@ -478,6 +479,7 @@ src/engine/             The engine (no DOM dependencies except the canvas)
   scripting.ts          Script component, ScriptAsset (compile, diagnostics, in-place hot reload)
   typescript.ts         Tokenizer + position-preserving TypeScript type stripper
   renderer.ts           WebGPU device, pipelines, the frame's passes (shadows, main HDR, tonemap, overlay), uploads
+  environment.ts        The sky baked for image-based lighting (specular and irradiance cubes, BRDF table)
   shadows.ts            Shadow cascades and point/spot light shadow views
   frameGraph.ts         Frame graph: pass ordering and culling, pooled transient textures, store ops
   pipelines.ts          Mesh pipeline variants: key from pass, material, mesh and target; cache; prewarming
@@ -585,8 +587,9 @@ The tests need a working Vulkan driver. On NixOS that means
 - **Rendering:** blended materials are sorted per object, not per triangle, so
   intersecting or self-overlapping transparent meshes can draw in the wrong
   order, and they cast no shadows. Shadows from one directional light, and from
-  at most twelve spot lights or two point lights at a time. Environment lighting is a sky/ground gradient approximation, not
-  image-based lighting.
+  at most twelve spot lights or two point lights at a time. Image-based lighting
+  comes from the sky only: reflections don't show other objects, and a flat
+  *color* sky lights with a simple gradient instead.
 - **2D:** text uses the browser's fonts through an `OffscreenCanvas`, without
   kerning or right-to-left shaping. 2D shapes aren't lit, don't cast shadows
   and don't collide. Text outlines reach about 0.15 × the font size.

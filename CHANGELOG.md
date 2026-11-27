@@ -10,6 +10,14 @@ Add a line under **Unreleased** with every user-visible change.
 
 ## [Unreleased]
 
+### Changed
+
+- **Image-based lighting:** gradient and image skies now light the scene properly. When the sky changes it's baked
+  into a prefiltered reflection map (one blur per roughness) and an irradiance map, so rough metals show a smoothly
+  blurred sky instead of a resampled one, ambient light comes from the whole sky around a surface, and reflections
+  dim at grazing angles as they should (split-sum BRDF). Mirror-like surfaces no longer show the sun twice (its disc
+  in the sky reflection and its light's highlight).
+
 ## [0.8.0] - 2026-11-27
 
 ### Added

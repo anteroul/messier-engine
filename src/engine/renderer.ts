@@ -26,6 +26,7 @@ import { GpuTimer } from './gpuTimer';
 import { profiler } from './profiler';
 import { MAX_LOCAL_SHADOW_LAYERS, MAX_SHADOW_CASCADES, assignLocalShadows, computeCascades, type LocalShadowLight } from './shadows';
 import { frustumPlanes } from './culling';
+import { EnvironmentMaps, type EnvironmentHandles } from './environment';
 import { MeshPipelines, allMeshVariantKeys, meshVariantKey, type MeshPass, type MeshVariantKey } from './pipelines';
 
 export const MAX_LIGHTS = 128;
@@ -150,8 +151,11 @@ export class Renderer {
   private readonly localShadowData = new Float32Array(MAX_LOCAL_SHADOW_LAYERS * 16);
   private readonly viewPlanes = new Float32Array(24);
   private frameBindGroup: GPUBindGroup;
-  /** The sky texture `frameBindGroup` was made with (null: the white placeholder). */
+  /** The sky texture `frameBindGroup` was made with (null: the white placeholder), and its view. */
   private frameSky: Texture | null = null;
+  private frameSkyView!: GPUTextureView;
+  /** The sky prefiltered for image-based lighting (see environment.ts). */
+  private readonly environment: EnvironmentMaps;
   private readonly shadowSampler: GPUSampler;
   private readonly skySampler: GPUSampler;
   /** One per shadow view (SHADOW_SLOTS): its matrix. */
@@ -227,6 +231,10 @@ export class Renderer {
         { binding: 5, visibility: FS, sampler: { type: 'filtering' } },
         { binding: 6, visibility: FS, texture: { sampleType: 'depth', viewDimension: '2d-array' } },
         { binding: 7, visibility: FS, buffer: { type: 'read-only-storage' } },
+        { binding: 8, visibility: FS, texture: { sampleType: 'float', viewDimension: 'cube' } },
+        { binding: 9, visibility: FS, texture: { sampleType: 'float', viewDimension: 'cube' } },
+        { binding: 10, visibility: FS, texture: { sampleType: 'float' } },
+        { binding: 11, visibility: FS, sampler: { type: 'filtering' } },
       ],
     });
     this.materialLayout = device.createBindGroupLayout({
@@ -454,6 +462,7 @@ export class Renderer {
     this.view2DBuffers = [worldBuf, screenBuf];
     this.view2DGroups = [worldGroup, screenGroup];
 
+    this.environment = new EnvironmentMaps(device, commonWGSL);
     this.frameBindGroup = this.makeFrameBindGroup(null);
     this.shadowFrameBindGroups = Array.from({ length: SHADOW_SLOTS }, (_, i) =>
       device.createBindGroup({
@@ -467,6 +476,8 @@ export class Renderer {
 
   private makeFrameBindGroup(sky: Texture | null): GPUBindGroup {
     this.frameSky = sky;
+    this.frameSkyView = sky ? this.ensureTexture(sky).createView() : this.whiteTextureView;
+    const env = this.environment;
     return this.device.createBindGroup({
       label: 'frame',
       layout: this.frameLayout,
@@ -475,10 +486,14 @@ export class Renderer {
         { binding: 1, resource: { buffer: this.lightBuffer } },
         { binding: 2, resource: this.shadowMapView },
         { binding: 3, resource: this.shadowSampler },
-        { binding: 4, resource: sky ? this.ensureTexture(sky).createView() : this.whiteTextureView },
+        { binding: 4, resource: this.frameSkyView },
         { binding: 5, resource: this.skySampler },
         { binding: 6, resource: this.localShadowMapView },
         { binding: 7, resource: { buffer: this.localShadowBuffer } },
+        { binding: 8, resource: env.irradianceView },
+        { binding: 9, resource: env.specularView },
+        { binding: 10, resource: env.brdfView },
+        { binding: 11, resource: env.sampler },
       ],
     });
   }
@@ -838,6 +853,16 @@ export class Renderer {
     const g = this.graph;
     const shadowMap = g.importTexture('shadow map', this.shadowMap);
     const output = g.importTexture('canvas', this.context.getCurrentTexture());
+    // A changed gradient or image sky is baked again for image-based lighting before the main pass reads it. The key
+    // is the frame's sky values (layout: common.wgsl), without how strongly it lights the scene (applied when read).
+    let environment: EnvironmentHandles | null = null;
+    if (skyMode !== 'color') {
+      const key = fv.slice(44, 68);
+      key[21] = 0;
+      if (this.environment.needsBake(key, skyTexture)) {
+        environment = this.environment.bake(g, key, skyTexture, this.frameBuffer, this.frameSkyView, this.skySampler);
+      }
+    }
     cascades.forEach((_, i) => {
       g.addRenderPass(`shadow ${i}`, (pass) => {
         pass.depthAttachment(shadowMap, { depthClearValue: 1, depthLoadOp: 'clear', layer: i });
@@ -858,6 +883,10 @@ export class Renderer {
     g.addRenderPass('main', (pass) => {
       pass.read(shadowMap); // through the frame bind group
       if (localShadowMap) pass.read(localShadowMap);
+      if (environment) {
+        pass.read(environment.specular);
+        pass.read(environment.irradiance);
+      }
       // Alpha 0 marks pixels nothing covers (meshes and the sky write 1): the tonemap pass shows the background there.
       pass.colorAttachment(hdr, { clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear' });
       pass.depthAttachment(depth, { depthClearValue: 0, depthLoadOp: 'clear' });

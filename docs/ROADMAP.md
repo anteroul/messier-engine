@@ -22,7 +22,7 @@ item to its design doc in `docs/design/` when it has one.
 ## Phase 1: Render quality
 
 - [x] Full PBR texture set: normal, metallic-roughness, occlusion, emissive (0.6.0; tangents derived per pixel)
-- [ ] Prefiltered IBL (split-sum)
+- [x] Prefiltered IBL (split-sum)
 - [x] HDR render target + tonemap pass (0.6.0)
 - [ ] Post stack: bloom, TAA
 - [x] Cascaded shadows, spot and point shadows

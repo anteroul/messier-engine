@@ -1173,6 +1173,172 @@ writeFileSync(`${OUT}/frame.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 1
   }
 }
 
+// ---- image-based lighting: a gradient sky is baked into the environment cubes when it changes, the brightest texel
+// of the capture looks toward the sun (so the faces are laid out as WebGPU samples them), rougher mips are smoother,
+// irradiance comes from where the sky is bright, and the BRDF table has its known corners. Saved as ibl.png: metal and
+// plastic spheres from mirror to rough.
+{
+  const { Material, Light, createSphere, createPlane } = engine;
+  const device = renderer.device;
+  const env = (renderer as any).environment;
+  const half = (h: number) => {
+    const e = (h >> 10) & 31, m = h & 1023, sgn = h & 32768 ? -1 : 1;
+    return sgn * (e === 0 ? (m / 1024) * 2 ** -14 : e === 31 ? Infinity : (1 + m / 1024) * 2 ** (e - 15));
+  };
+  /** Every texel of one mip of a 6-layer rgba16float texture, as [face][y][x] → rgb. */
+  const readCube = async (texture: GPUTexture, mip: number, size: number) => {
+    const bpr = Math.max(256, Math.ceil((size * 8) / 256) * 256);
+    const out = device.createBuffer({ size: bpr * size * 6, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const e = device.createCommandEncoder();
+    e.copyTextureToBuffer({ texture, mipLevel: mip }, { buffer: out, bytesPerRow: bpr, rowsPerImage: size }, [size, size, 6]);
+    device.queue.submit([e.finish()]);
+    await out.mapAsync(GPUMapMode.READ);
+    const u16 = new Uint16Array(out.getMappedRange().slice(0));
+    out.destroy();
+    const faces: number[][][][] = [];
+    for (let f = 0; f < 6; f++) {
+      const rows: number[][][] = [];
+      for (let y = 0; y < size; y++) {
+        const row: number[][] = [];
+        for (let x = 0; x < size; x++) {
+          const o = (f * bpr * size + y * bpr + x * 8) / 2;
+          row.push([half(u16[o]), half(u16[o + 1]), half(u16[o + 2])]);
+        }
+        rows.push(row);
+      }
+      faces.push(rows);
+    }
+    return faces;
+  };
+  // cube.wgsl's mapping, for checking it against what WebGPU samples.
+  const cubeDir = (face: number, u: number, v: number): [number, number, number] => {
+    const d: [number, number, number][] = [[1, -v, -u], [-1, -v, u], [u, 1, v], [u, -1, -v], [u, -v, 1], [-u, -v, -1]];
+    return vec3.normalize(d[face]);
+  };
+  const lum = (c: number[]) => c[0] + c[1] + c[2];
+
+  const s = new Scene();
+  Object.assign(s.sky, { mode: 'gradient', top: [0.1, 0.2, 0.6], horizon: [0.4, 0.45, 0.5], ground: [0.02, 0.02, 0.02], sunGlow: 2 });
+  const sun = new GameObject('Sun');
+  sun.light = new Light('directional', [1, 0.9, 0.8], 3);
+  s.add(sun);
+  const floor = new GameObject('Floor');
+  floor.mesh = createPlane(30);
+  floor.material = new Material('floor', { baseColor: [0.3, 0.3, 0.3, 1], roughness: 0.8 });
+  s.add(floor);
+  const sphere = createSphere(0.45, 48, 24);
+  for (let i = 0; i < 6; i++) {
+    for (const [row, metal] of [[0, 1], [1, 0]] as const) {
+      const o = new GameObject(`Ball ${i}`);
+      o.mesh = sphere;
+      o.material = new Material('ball', { baseColor: metal ? [0.95, 0.8, 0.5, 1] : [0.7, 0.1, 0.1, 1], metallic: metal, roughness: i / 5 });
+      o.transform.position = [(i - 2.5) * 1.1, 0.5, row * -1.2];
+      s.add(o);
+    }
+  }
+  const cam = new Camera();
+  cam.position = [0, 2.2, 5.5];
+  cam.target = [0, 0.4, -0.6];
+  cam.aspect = W / H;
+
+  const brightestToward = async (dir: [number, number, number]) => {
+    sun.transform.rotation = quat.lookRotation(vec3.scale(dir, -1));
+    s.updateMatrices();
+    renderer.render(s, cam, { time: 0 });
+    const faces = await readCube(env.env, 0, 128);
+    let best = -1, at: [number, number, number] = [0, 0, 0];
+    faces.forEach((rows, f) => rows.forEach((row, y) => row.forEach((c, x) => {
+      if (lum(c) > best) {
+        best = lum(c);
+        at = cubeDir(f, ((x + 0.5) / 128) * 2 - 1, ((y + 0.5) / 128) * 2 - 1);
+      }
+    })));
+    return (Math.acos(Math.min(1, vec3.dot(at, vec3.normalize(dir)))) * 180) / Math.PI;
+  };
+  device.pushErrorScope('validation');
+  const bakes0 = env.bakes;
+  const off = [await brightestToward([0.85, 0.3, 0.43]), await brightestToward([-0.3, 0.45, -0.84]), await brightestToward([0.2, 0.9, 0.1])];
+  check('the capture is brightest toward the sun, on any face', off.every((a) => a < 3), off.map((a) => a.toFixed(1) + '°').join(' '));
+  check('each sky change bakes it again', env.bakes === bakes0 + 3, `${env.bakes - bakes0}`);
+  renderer.render(s, cam, { time: 0 });
+  s.sky.lighting = 0.5;
+  renderer.render(s, cam, { time: 0 });
+  check('an unchanged sky, or only its lighting strength, is not baked again', env.bakes === bakes0 + 3, `${env.bakes - bakes0}`);
+  s.sky.lighting = 1;
+
+  const sharp = (await readCube(env.specular, 0, 128)).flat(2), rough = (await readCube(env.specular, 5, 4)).flat(2);
+  const stats = (texels: number[][]) => {
+    const l = texels.map(lum), mean = l.reduce((a, b) => a + b, 0) / l.length;
+    return { mean, spread: Math.sqrt(l.reduce((a, b) => a + (b - mean) ** 2, 0) / l.length) / mean };
+  };
+  const a = stats(sharp), b = stats(rough);
+  check('rougher mips are smoother, with about the same light', b.spread < a.spread * 0.7 && Math.abs(b.mean / a.mean - 1) < 0.35,
+    `spread ${a.spread.toFixed(3)} → ${b.spread.toFixed(3)}, mean ${a.mean.toFixed(3)} → ${b.mean.toFixed(3)}`);
+  const irr = await readCube(env.irradiance, 0, 32);
+  const up = lum(irr[2][16][16]), down = lum(irr[3][16][16]);
+  check('irradiance comes from the bright sky, not the dark ground', up > down * 3 && Number.isFinite(up), `up ${up.toFixed(3)} down ${down.toFixed(3)}`);
+
+  const err = await device.popErrorScope();
+  check('image-based lighting bakes without errors', !err, err?.message);
+
+  // A second look at the table, through a small compute readback of its corners.
+  {
+    const module = device.createShaderModule({ code: `
+      @group(0) @binding(0) var lut: texture_2d<f32>;
+      @group(0) @binding(1) var<storage, read_write> out: array<vec4f, 3>;
+      @compute @workgroup_size(1) fn main() {
+        out[0] = textureLoad(lut, vec2u(63u, 0u), 0);
+        out[1] = textureLoad(lut, vec2u(63u, 63u), 0);
+        out[2] = textureLoad(lut, vec2u(0u, 63u), 0);
+      }` });
+    const pipe = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'main' } });
+    const buf = device.createBuffer({ size: 48, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+    const read = device.createBuffer({ size: 48, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const e = device.createCommandEncoder();
+    const p = e.beginComputePass();
+    p.setPipeline(pipe);
+    p.setBindGroup(0, device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: env.brdfView }, { binding: 1, resource: { buffer: buf } }] }));
+    p.dispatchWorkgroups(1);
+    p.end();
+    e.copyBufferToBuffer(buf, 0, read, 0, 48);
+    device.queue.submit([e.finish()]);
+    await read.mapAsync(GPUMapMode.READ);
+    const v = new Float32Array(read.getMappedRange().slice(0));
+    read.destroy();
+    const [smooth, roughHead, roughGrazing] = [[v[0], v[1]], [v[4], v[5]], [v[8], v[9]]];
+    check('the BRDF table: a smooth surface seen head-on reflects F0 as is', smooth[0] > 0.9 && smooth[1] < 0.05, smooth.map((x) => x.toFixed(3)).join());
+    // Reference values from integrating the same BRDF numerically (Monte Carlo, 200k samples) at those texel centers.
+    const near = (got: number[], want: number[]) => got.every((x, i) => Math.abs(x - want[i]) < 0.02);
+    check('…and a rough one as numerical integration says, head-on and at grazing angles', near(roughHead, [0.315, 0]) && near(roughGrazing, [0.594, 0.02]),
+      `${roughHead.map((x) => x.toFixed(3))} / ${roughGrazing.map((x) => x.toFixed(3))}`);
+  }
+
+  // The picture: the sun low behind the camera's right shoulder.
+  sun.transform.rotation = quat.lookRotation(vec3.normalize([-0.5, -0.45, -0.75]));
+  s.updateMatrices();
+  renderer.render(s, cam, { time: 0 });
+  const bpr = Math.ceil((W * 4) / 256) * 256;
+  const out = device.createBuffer({ size: bpr * H, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  const e = device.createCommandEncoder();
+  e.copyTextureToBuffer({ texture: current! }, { buffer: out, bytesPerRow: bpr }, [W, H]);
+  device.queue.submit([e.finish()]);
+  await out.mapAsync(GPUMapMode.READ);
+  const px = new Uint8Array(out.getMappedRange().slice(0));
+  out.destroy();
+  const bgra = (fakeContext as any).format === 'bgra8unorm';
+  const raw = Buffer.alloc((W * 4 + 1) * H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const o = y * bpr + x * 4, d = y * (W * 4 + 1) + 1 + x * 4;
+      raw[d] = px[o + (bgra ? 2 : 0)];
+      raw[d + 1] = px[o + 1];
+      raw[d + 2] = px[o + (bgra ? 0 : 2)];
+      raw[d + 3] = 255;
+    }
+  }
+  writeFileSync(`${OUT}/ibl.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]));
+}
+
 // ---- profiler: CPU sections from the renderer, and GPU time per frame graph pass where the device can time them
 {
   const { profiler } = engine;

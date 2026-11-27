@@ -51,27 +51,23 @@ struct Light {
 
 const PI = 3.14159265359;
 
-// Linear radiance of the sky toward unit direction d. `blur` (0 sharp … 1 diffuse) widens it for rough reflections
-// and ambient light: the image sky reads a smaller mip, the gradient eases toward its average. The sun disc only
-// shows unblurred, because lit surfaces already get the sun's highlight from its light.
-fn skyRadiance(d: vec3f, blur: f32) -> vec3f {
+// Linear radiance of the sky toward unit direction d. `level` is the image sky's mip to read (the environment capture
+// reads a smaller one than the screen, so the panorama doesn't alias); `sunDisc` (0 or 1) includes the gradient sky's
+// sun disc, which the environment capture leaves out: lit surfaces already get the sun's highlight from its light.
+fn skyRadiance(d: vec3f, level: f32, sunDisc: f32) -> vec3f {
   if (frame.sky.x > 1.5) {
     let u = atan2(d.x, -d.z) / (2.0 * PI) + 0.5 + frame.sky.z / (2.0 * PI);
     let v = acos(clamp(d.y, -1.0, 1.0)) / PI;
-    let level = blur * max(frame.sky.w - 1.0, 0.0);
     return textureSampleLevel(skyTex, skySampler, vec2f(u, v), level).rgb * frame.skyTop.w;
   }
-  let w = 0.015 + blur * 0.5;
-  let up = mix(frame.skyHorizon.rgb, frame.skyTop.rgb, pow(clamp(d.y, 0.0, 1.0), mix(0.5, 1.0, blur)));
-  let down = mix(frame.skyHorizon.rgb, frame.skyGround.rgb, pow(clamp(-d.y, 0.0, 1.0), mix(0.35, 1.0, blur)));
-  var c = mix(down, up, smoothstep(-w, w, d.y));
-  let average = (frame.skyTop.rgb + 2.0 * frame.skyHorizon.rgb + frame.skyGround.rgb) * 0.25;
-  c = mix(c, average, blur * blur * 0.6);
+  let up = mix(frame.skyHorizon.rgb, frame.skyTop.rgb, pow(clamp(d.y, 0.0, 1.0), 0.5));
+  let down = mix(frame.skyHorizon.rgb, frame.skyGround.rgb, pow(clamp(-d.y, 0.0, 1.0), 0.35));
+  var c = mix(down, up, smoothstep(-0.015, 0.015, d.y));
   if (frame.sunDir.w < 1.0) {
     let cosA = dot(d, frame.sunDir.xyz);
     let edge = 1.0 - frame.sunDir.w;
-    let disc = smoothstep(frame.sunDir.w - edge * 0.3, frame.sunDir.w + edge * 0.05, cosA) * (1.0 - smoothstep(0.0, 0.02, blur));
-    let glow = pow(max(cosA, 0.0), mix(48.0, 3.0, blur)) * frame.sunColor.w;
+    let disc = smoothstep(frame.sunDir.w - edge * 0.3, frame.sunDir.w + edge * 0.05, cosA) * sunDisc;
+    let glow = pow(max(cosA, 0.0), 48.0) * frame.sunColor.w;
     c += frame.sunColor.rgb * (disc * 25.0 + glow * 0.3);
   }
   return c;
