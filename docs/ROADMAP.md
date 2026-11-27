@@ -36,7 +36,7 @@ item to its design doc in `docs/design/` when it has one.
 
 ## Phase 3: Physics
 
-- [?] Own solver or Rapier? Decide before the colliders, joints and character controller.
+- [ ] Implement Rapier for more advanced physics.
 - [ ] BVH broad phase
 - [ ] Capsule, convex and mesh colliders
 - [ ] Triggers, collision layers, joints
