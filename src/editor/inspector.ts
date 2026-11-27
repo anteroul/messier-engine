@@ -343,13 +343,17 @@ export class InspectorPanel {
         s.body.append(inner.row, outer.row);
         this.add(inner.binding, outer.binding);
       }
-      if (light.type === 'directional') {
-        const shadows = checkboxRow('Cast shadows', () => light.castShadows, (v) => (light.castShadows = v));
-        s.body.append(shadows.row, el('p', { class: 'hint', text: 'Only the first shadow-casting directional light renders shadows. Rotate the object to aim it.' }));
-        this.add(shadows.binding);
-      } else if (light.type === 'spot') {
-        s.body.append(el('p', { class: 'hint', text: 'Spot lights shine along the object’s local −Z axis.' }));
-      }
+      const shadows = checkboxRow('Cast shadows', () => light.castShadows, (v) => (light.castShadows = v));
+      s.body.append(shadows.row);
+      this.add(shadows.binding);
+      const hint = {
+        directional: 'Only the first shadow-casting directional light renders shadows. Rotate the object to aim it.',
+        spot: 'Spot lights shine along the object’s local −Z axis. Up to twelve spot lights (or two point lights) cast ' +
+          'shadows at once, the nearest first; a mesh around the light, like a lamp shade, blocks it unless it casts no shadows.',
+        point: 'Up to two point lights (or twelve spot lights) cast shadows at once, the nearest first; a mesh around ' +
+          'the light, like a lantern, blocks it unless it casts no shadows.',
+      }[light.type];
+      s.body.append(el('p', { class: 'hint', text: hint }));
       out.push(s.root);
     }
 

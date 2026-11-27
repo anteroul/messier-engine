@@ -20,12 +20,23 @@ Add a line under **Unreleased** with every user-visible change.
   (`scene.shadowDistance`, default 50 m), split into up to four **Cascades** (`scene.shadowCascades`) that keep
   near shadows sharp and still reach far, with soft transitions between them and a fade at the end. Shadow edges no
   longer shimmer as the camera moves or turns.
+- **Point and spot light shadows:** **Cast shadows** now works on point and spot lights too. Up to twelve spot
+  lights or two point lights (or a mix) cast shadows at once; the ones nearest to the view get them first. The demo's
+  spot light casts them now.
+- **Twilight Heist**, a new example project (`examples/TwilightHeist/`, `npm run generate:heist`): a stealth game in a
+  castle garden at dusk. Sneak past sweeping watchtower lamps to take six coins; whatever a lamp lights sees you, so
+  the shadows of hedges and statues are where you hide. It shows cascaded, spot and point light shadows, alpha-blended
+  stained glass and water, and additive flames, halos and fireflies.
 
 ### Changed
 
 - `scene.shadowExtent` (a box around the camera's target) is replaced by `scene.shadowDistance` (how far from the
   camera shadows reach). **Scene format 3**: older scenes are upgraded on load, with three times their extent as the
   distance. Scripts that set `shadowExtent` need to set `shadowDistance` instead.
+
+### Removed
+
+- Neon Run's engine drone.
 
 ## [0.7.0] - 2026-11-23
 

@@ -25,7 +25,7 @@ item to its design doc in `docs/design/` when it has one.
 - [ ] Prefiltered IBL (split-sum)
 - [x] HDR render target + tonemap pass (0.6.0)
 - [ ] Post stack: bloom, TAA
-- [ ] Cascaded shadows, spot and point shadows (cascades done)
+- [x] Cascaded shadows, spot and point shadows
 - [x] Transparency sorting (blend modes, back-to-front batches)
 
 ## Phase 2: Animation

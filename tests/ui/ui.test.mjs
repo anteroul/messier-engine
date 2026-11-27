@@ -686,8 +686,6 @@ for (const [name, object, key] of [['Neon Run', 'Ship', 'KeyD'], ['Topple', 'Tur
   await page.keyboard.press('Escape');
   await sleep(200);
   check(`${name} plays`, played.playing && played.found && !!played.camera && errors.length === 0, JSON.stringify({ played, errors }));
-  // Neon Run's engine drones all the time; the other two make sounds when firing, a moment ago.
-  if (name === 'Neon Run') check('Neon Run is heard', played.sounds > 0, JSON.stringify(played));
 }
 check('Stop silences the game', (await state(() => window.audio.activeVoices)) === 0);
 

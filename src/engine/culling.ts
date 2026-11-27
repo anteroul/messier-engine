@@ -49,3 +49,13 @@ export function boxOutsideFrustum(planes: FrustumPlanes, world: Readonly<Mat4>, 
   }
   return false;
 }
+
+/** Whether the sphere at `center` with `radius` lies entirely outside one of the planes. */
+export function sphereOutsideFrustum(planes: FrustumPlanes, center: Readonly<Vec3>, radius: number): boolean {
+  for (let p = 0; p < 24; p += 4) {
+    const a = planes[p], b = planes[p + 1], c = planes[p + 2];
+    // The planes aren't normalized: scale the radius instead of the distance.
+    if (a * center[0] + b * center[1] + c * center[2] + planes[p + 3] < -radius * Math.hypot(a, b, c)) return true;
+  }
+  return false;
+}

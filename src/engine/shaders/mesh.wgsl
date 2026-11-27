@@ -1,12 +1,14 @@
-// Forward PBR shader (metallic-roughness, GGX) with N dynamic lights and
-// PCF-filtered cascaded shadow maps for one directional light. Material textures follow
-// glTF: base color and emissive are sRGB; normal, metallic-roughness (G, B) and
-// occlusion (R) are linear. Meshes carry no tangents, so normal maps use a
-// tangent frame built per pixel from screen-space derivatives of position and UV.
+// Forward PBR shader (metallic-roughness, GGX) with N dynamic lights and PCF-filtered shadow maps: cascades for one
+// directional light, and point and spot light shadows. Material textures follow glTF: base color and emissive are
+// sRGB; normal, metallic-roughness (G, B) and occlusion (R) are linear. Meshes carry no tangents, so normal maps use
+// a tangent frame built per pixel from screen-space derivatives of position and UV.
 
 @group(0) @binding(1) var<storage, read> lights: array<Light>;
 @group(0) @binding(2) var shadowMap: texture_depth_2d_array;
 @group(0) @binding(3) var shadowSampler: sampler_comparison;
+// Point and spot light shadows: a layer per spot light, six per point light, each with its matrix (shadows.ts).
+@group(0) @binding(6) var localShadowMap: texture_depth_2d_array;
+@group(0) @binding(7) var<storage, read> localShadowViews: array<mat4x4f>;
 
 @group(1) @binding(0) var<uniform> material: Material;
 @group(1) @binding(1) var baseColorTex: texture_2d<f32>;
@@ -111,6 +113,44 @@ fn shadowFactor(worldPos: vec3f, N: vec3f, L: vec3f) -> f32 {
   return mix(s, next, t);
 }
 
+// Shadow of a point or spot light (its first layer in params.z) at a point `dist` from it. A point light's layer is
+// the cube face the point is on, in shadows.ts's order (+x, −x, +y, −y, +z, −z). The point is moved off the surface
+// and toward the light by a few texels, which grow with the distance, instead of biasing the (nonlinear) depth.
+fn localShadow(light: Light, worldPos: vec3f, N: vec3f, L: vec3f, dist: f32) -> f32 {
+  let texel = light.params.w * dist;
+  let NdotL = clamp(dot(N, L), 0.0, 1.0);
+  let p = worldPos + N * texel * (1.0 + 2.0 * (1.0 - NdotL)) + L * texel * 1.5;
+  var layer = i32(light.params.z);
+  if (light.position.w < 1.5) {
+    let d = p - light.position.xyz;
+    let a = abs(d);
+    if (a.x >= a.y && a.x >= a.z) {
+      layer += select(1, 0, d.x > 0.0);
+    } else if (a.y >= a.z) {
+      layer += select(3, 2, d.y > 0.0);
+    } else {
+      layer += select(5, 4, d.z > 0.0);
+    }
+  }
+  let lp = localShadowViews[layer] * vec4f(p, 1.0);
+  if (lp.w <= 0.0) {
+    return 1.0;
+  }
+  let ndc = lp.xyz / lp.w;
+  let uv = vec2f(ndc.x * 0.5 + 0.5, -ndc.y * 0.5 + 0.5);
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || ndc.z > 1.0) {
+    return 1.0;
+  }
+  let size = 1.0 / f32(textureDimensions(localShadowMap).x);
+  var sum = 0.0;
+  for (var y = -1; y <= 1; y++) {
+    for (var x = -1; x <= 1; x++) {
+      sum += textureSampleCompareLevel(localShadowMap, shadowSampler, uv + vec2f(f32(x), f32(y)) * size, layer, ndc.z);
+    }
+  }
+  return sum / 9.0;
+}
+
 // Applies a tangent-space normal `n` to N. dp* and duv* are the screen-space derivatives of the world position and the
 // UV (Schüler's cotangent frame), so mirrored and rotated UV islands work without stored tangents.
 fn perturbNormal(N: vec3f, dp1: vec3f, dp2: vec3f, duv1: vec2f, duv2: vec2f, n: vec3f) -> vec3f {
@@ -174,12 +214,13 @@ fn fs_main(in: VSOut, @builtin(front_facing) frontFacing: bool) -> @location(0) 
     let light = lights[i];
     let kind = light.position.w;
     var L: vec3f;
+    var dist = 0.0;
     var radiance = light.color.rgb * light.color.a;
     if (kind < 0.5) {
       L = normalize(-light.direction.xyz);
     } else {
       let toLight = light.position.xyz - in.worldPos;
-      let dist = length(toLight);
+      dist = length(toLight);
       L = toLight / max(dist, 1e-4);
       let range = max(light.direction.w, 1e-3);
       let falloff = clamp(1.0 - pow(dist / range, 4.0), 0.0, 1.0);
@@ -195,6 +236,8 @@ fn fs_main(in: VSOut, @builtin(front_facing) frontFacing: bool) -> @location(0) 
     }
     if (i32(i) == frame.shadowIndex) {
       radiance *= shadowFactor(in.worldPos, N, L);
+    } else if (light.params.z >= 0.0) {
+      radiance *= localShadow(light, in.worldPos, N, L, dist);
     }
     let H = normalize(V + L);
     let NdotH = max(dot(N, H), 0.0);

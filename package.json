@@ -14,6 +14,7 @@
     "generate:demo": "node scripts/generate-demo-project.mjs",
     "generate:materials-glb": "node scripts/generate-material-glb.mjs",
     "generate:materials": "node scripts/generate-material-lab.mjs",
+    "generate:heist": "node scripts/generate-twilight-heist.mjs",
     "release": "node scripts/release.mjs"
   },
   "devDependencies": {

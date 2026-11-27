@@ -52,7 +52,6 @@ export default class NeonRun extends Script {
   private flash: Shape2D | null = null;
   private scoreText: Text2D | null = null;
   private message: Text2D | null = null;
-  private engine: AudioSource | null = null;
   private ringSound: AudioSource | null = null;
   private crashSound: AudioSource | null = null;
   private camX = 0;
@@ -94,7 +93,6 @@ export default class NeonRun extends Script {
     this.flash = scene.findByName('Flash')?.getComponent(Shape2D) ?? null;
     this.scoreText = scene.findByName('Score')?.getComponent(Text2D) ?? null;
     this.message = scene.findByName('Message')?.getComponent(Text2D) ?? null;
-    this.engine = scene.findByName('Engine Sound')?.getComponent(AudioSource) ?? null;
     this.ringSound = scene.findByName('Ring Sound')?.getComponent(AudioSource) ?? null;
     this.crashSound = scene.findByName('Crash Sound')?.getComponent(AudioSource) ?? null;
     if (this.cam) [this.camX, this.camY, this.camZ] = this.cam.transform.position;
@@ -174,11 +172,6 @@ export default class NeonRun extends Script {
         this.setFlashColor(1, 0.85, 0.3);
         this.ringSound?.playOneShot();
       }
-    }
-    // The engine drone rises with speed and dies down with the ship.
-    if (this.engine) {
-      this.engine.pitch = 0.7 + 0.9 * clamp(this.speed / this.topSpeed, 0, 1);
-      this.engine.volume += ((alive ? 0.5 : 0) - this.engine.volume) * Math.min(1, dt * 3);
     }
     this.moveShip(dt, time, alive);
     this.moveCamera(dt, time);
@@ -388,7 +381,6 @@ function buildShip(): GameObject {
   hull.add(flare);
   ship.add(hull);
   // Lights the road under the ship and the barriers it passes.
-  ship.add(soundObject('Engine Sound', 'hum', { loop: true, playOnStart: true, volume: 0.5 }));
   ship.add(lightObject('Underglow', new Light('point', CYAN, 14), [0, -0.3, 0.2], 9));
   return ship;
 }

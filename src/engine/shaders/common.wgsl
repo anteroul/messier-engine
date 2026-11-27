@@ -40,7 +40,8 @@ struct Light {
   direction: vec4f,
   // rgb = linear color, a = intensity
   color: vec4f,
-  // x = cos(inner angle), y = cos(outer angle)
+  // x = cos(inner angle), y = cos(outer angle), z = first point/spot shadow layer (-1: no shadow),
+  // w = shadow texel size per unit of distance from the light
   params: vec4f,
 };
 

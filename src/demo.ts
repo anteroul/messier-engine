@@ -227,6 +227,7 @@ export function buildDemoScene(scene: Scene): void {
   spot.range = 14;
   spot.innerAngle = 14;
   spot.outerAngle = 24;
+  spot.castShadows = true;
   const spotObj = lightObject('Spot Light', spot, [-4, 5, 4], [-50, -40, 0]);
   scene.add(spotObj);
 }

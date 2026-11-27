@@ -1083,6 +1083,96 @@ writeFileSync(`${OUT}/frame.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 1
   check('fewer cascades, fewer shadow casters drawn', one.shadowCasters < stats.shadowCasters, `${one.shadowCasters} < ${stats.shadowCasters}`);
 }
 
+// ---- point and spot light shadows: a light beside a block shades the ground behind it; the ground as far from the
+// light on its other side is lit. Saved as light-shadows.png (the spot light's frame).
+{
+  const { Material, Light, createCube, createPlane } = engine;
+  const device = renderer.device;
+  const bpr = Math.ceil((W * 4) / 256) * 256;
+  const cam = new Camera();
+  cam.position = [0, 12, 9];
+  cam.target = [0, 0, 0];
+  cam.aspect = W / H;
+  const px = new Uint8Array(bpr * H);
+  const readInto = async () => {
+    const out = device.createBuffer({ size: bpr * H, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const e = device.createCommandEncoder();
+    e.copyTextureToBuffer({ texture: current! }, { buffer: out, bytesPerRow: bpr }, [W, H]);
+    device.queue.submit([e.finish()]);
+    await out.mapAsync(GPUMapMode.READ);
+    px.set(new Uint8Array(out.getMappedRange()));
+    out.destroy();
+  };
+  const lum = (p: [number, number, number]) => {
+    const [x, y] = cam.worldToScreen(p, W, H)!;
+    const o = Math.round(y) * bpr + Math.round(x) * 4;
+    return px[o] + px[o + 1] + px[o + 2];
+  };
+  // The light at x = 0, 3 m up; a block 2 m tall from x = 1 to 2 shades the ground from x = 2 to 4.
+  const build = (type: 'point' | 'spot', castShadows: boolean) => {
+    const s = new Scene();
+    s.background = [0, 0, 0];
+    s.ambientIntensity = 0;
+    const ground = new GameObject('Ground');
+    ground.mesh = createPlane(20);
+    ground.material = new Material('ground', { baseColor: [0.7, 0.7, 0.7, 1], roughness: 1 });
+    ground.castShadows = false;
+    s.add(ground);
+    const block = new GameObject('Block');
+    block.mesh = createCube(1);
+    block.material = new Material('block', { baseColor: [0.7, 0.7, 0.7, 1] });
+    block.transform.position = [1.5, 1, 0];
+    block.transform.scale = [1, 2, 1];
+    s.add(block);
+    const lamp = new GameObject('Lamp');
+    lamp.light = new Light(type, [1, 1, 1], 60);
+    lamp.light.range = 15;
+    lamp.light.outerAngle = 70;
+    lamp.light.innerAngle = 60;
+    lamp.light.castShadows = castShadows;
+    lamp.transform.position = [0, 3, 0];
+    lamp.transform.rotation = quat.lookRotation([0, -1, 0]);
+    s.add(lamp);
+    s.updateMatrices();
+    return s;
+  };
+  device.pushErrorScope('validation');
+  const results: Record<string, number[]> = {};
+  let spotStats: any = null;
+  for (const type of ['point', 'spot'] as const) {
+    for (const shadows of [true, false]) {
+      const stats = { ...renderer.render(build(type, shadows), cam, { time: 0 }) };
+      if (type === 'spot' && shadows) spotStats = stats;
+      await readInto();
+      // Behind the block, and as far from the light on the other side (toward the camera too, for good measure).
+      results[`${type} ${shadows}`] = [lum([3, 0, 0]), lum([-3, 0, 0]), lum([0, 0, 3])];
+      if (type === 'spot' && shadows) {
+        const raw = Buffer.alloc((W * 4 + 1) * H);
+        const bgra = (fakeContext as any).format === 'bgra8unorm';
+        for (let y = 0; y < H; y++) {
+          for (let x = 0; x < W; x++) {
+            const o = y * bpr + x * 4, d = y * (W * 4 + 1) + 1 + x * 4;
+            raw[d] = px[o + (bgra ? 2 : 0)];
+            raw[d + 1] = px[o + 1];
+            raw[d + 2] = px[o + (bgra ? 0 : 2)];
+            raw[d + 3] = 255;
+          }
+        }
+        writeFileSync(`${OUT}/light-shadows.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]));
+      }
+    }
+  }
+  const err = await device.popErrorScope();
+  const show = JSON.stringify(results);
+  check('point and spot light shadows render', !err && spotStats?.shadowCasters === 1, err?.message ?? JSON.stringify(spotStats));
+  for (const type of ['point', 'spot']) {
+    const [behind, other, front] = results[`${type} true`];
+    const [behindOff] = results[`${type} false`];
+    check(`a ${type} light's shadow falls behind the block`, behind < other * 0.4 && Math.abs(other - front) < other * 0.1, show);
+    check(`a ${type} light without shadows lights it`, behindOff > other * 0.9, show);
+  }
+}
+
 // ---- profiler: CPU sections from the renderer, and GPU time per frame graph pass where the device can time them
 {
   const { profiler } = engine;
@@ -1104,7 +1194,7 @@ writeFileSync(`${OUT}/frame.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 1
     profErr?.message ?? `${names.join()} ${profiler.cpuMs.toFixed(2)} ms`);
   const gpuNames = profiler.gpu.map((g: any) => g.name).join();
   if (profiler.gpuSupported) {
-    check('profiler: GPU time per pass', gpuNames === 'shadow 0,shadow 1,shadow 2,shadow 3,main,tonemap,overlay' && profiler.gpu.every((g: any) => g.ms >= 0) && profiler.gpuMs > 0,
+    check('profiler: GPU time per pass', gpuNames === 'shadow 0,shadow 1,shadow 2,shadow 3,light shadow 0,main,tonemap,overlay' && profiler.gpu.every((g: any) => g.ms >= 0) && profiler.gpuMs > 0,
       profiler.gpu.map((g: any) => `${g.name} ${g.ms.toFixed(3)} ms`).join(', '));
   } else {
     console.log('SKIP profiler: GPU time per pass (no timestamp-query on this device)');

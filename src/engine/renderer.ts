@@ -24,14 +24,21 @@ import { FrameGraph, type RenderTarget } from './frameGraph';
 import { DrawList, OBJECT_FLOATS, type MeshBatch } from './batching';
 import { GpuTimer } from './gpuTimer';
 import { profiler } from './profiler';
-import { MAX_SHADOW_CASCADES, computeCascades } from './shadows';
+import { MAX_LOCAL_SHADOW_LAYERS, MAX_SHADOW_CASCADES, assignLocalShadows, computeCascades, type LocalShadowLight } from './shadows';
+import { frustumPlanes } from './culling';
 import { MeshPipelines, allMeshVariantKeys, meshVariantKey, type MeshPass, type MeshVariantKey } from './pipelines';
 
 export const MAX_LIGHTS = 128;
 /** Texels across each cascade's layer of the shadow map. */
 const SHADOW_MAP_SIZE = 2048;
-/** Each cascade's light matrix sits at its own offset of the shadow frame buffer (uniform offsets align to 256). */
+/** Texels across each layer of the point and spot light shadow map. */
+const LOCAL_SHADOW_MAP_SIZE = 1024;
+/**
+ * Each shadow view's matrix sits at its own offset of the shadow frame buffer (uniform offsets align to 256): the
+ * cascades first, then the point and spot light layers.
+ */
 const SHADOW_SLOT_SIZE = 256;
+const SHADOW_SLOTS = MAX_SHADOW_CASCADES + MAX_LOCAL_SHADOW_LAYERS;
 /** One instance in the object storage buffer (model + normal matrix). */
 const OBJECT_SIZE = OBJECT_FLOATS * 4;
 const FRAME_UNIFORM_SIZE = 592;
@@ -86,9 +93,10 @@ const ALPHA_BLEND: GPUBlendState = {
 };
 
 /**
- * Forward renderer: shadow passes (a cascade each, for one directional light), a 4x MSAA HDR main pass (lit meshes, the sky), a tonemap
- * pass, then the display-space overlay pass (editor grid, 2D, overlay helpers) resolved into the canvas. Each frame
- * declares its passes on a FrameGraph, which orders them and owns their transient textures.
+ * Forward renderer: shadow passes (a cascade each for one directional light, a layer each for point and spot
+ * lights), a 4x MSAA HDR main pass (lit meshes, the sky), a tonemap pass, then the display-space overlay pass (editor
+ * grid, 2D, overlay helpers) resolved into the canvas. Each frame declares its passes on a FrameGraph, which orders
+ * them and owns their transient textures.
  */
 export class Renderer {
   readonly device: GPUDevice;
@@ -134,12 +142,19 @@ export class Renderer {
   private readonly shadowFrameBuffer: GPUBuffer;
   private readonly shadowMap: GPUTexture;
   private readonly shadowMapView: GPUTextureView;
+  /** Point and spot light shadows: a layer per spot light, six per point light (see shadows.ts). */
+  private readonly localShadowMap: GPUTexture;
+  private readonly localShadowMapView: GPUTextureView;
+  /** Each local shadow layer's matrix, for the main pass. */
+  private readonly localShadowBuffer: GPUBuffer;
+  private readonly localShadowData = new Float32Array(MAX_LOCAL_SHADOW_LAYERS * 16);
+  private readonly viewPlanes = new Float32Array(24);
   private frameBindGroup: GPUBindGroup;
   /** The sky texture `frameBindGroup` was made with (null: the white placeholder). */
   private frameSky: Texture | null = null;
   private readonly shadowSampler: GPUSampler;
   private readonly skySampler: GPUSampler;
-  /** One per cascade: its light matrix. */
+  /** One per shadow view (SHADOW_SLOTS): its matrix. */
   private readonly shadowFrameBindGroups: GPUBindGroup[];
   private readonly textureSampler: GPUSampler;
   private readonly mipSampler: GPUSampler;
@@ -210,6 +225,8 @@ export class Renderer {
         { binding: 3, visibility: FS, sampler: { type: 'comparison' } },
         { binding: 4, visibility: FS, texture: { sampleType: 'float' } },
         { binding: 5, visibility: FS, sampler: { type: 'filtering' } },
+        { binding: 6, visibility: FS, texture: { sampleType: 'depth', viewDimension: '2d-array' } },
+        { binding: 7, visibility: FS, buffer: { type: 'read-only-storage' } },
       ],
     });
     this.materialLayout = device.createBindGroupLayout({
@@ -365,7 +382,7 @@ export class Renderer {
     this.lightBuffer = device.createBuffer({ label: 'lights', size: MAX_LIGHTS * LIGHT_FLOATS * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     this.shadowFrameBuffer = device.createBuffer({
       label: 'shadow-frame',
-      size: MAX_SHADOW_CASCADES * SHADOW_SLOT_SIZE,
+      size: SHADOW_SLOTS * SHADOW_SLOT_SIZE,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     // A layer per cascade.
@@ -376,6 +393,18 @@ export class Renderer {
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
     this.shadowMapView = this.shadowMap.createView({ dimension: '2d-array' });
+    this.localShadowMap = device.createTexture({
+      label: 'local-shadow-map',
+      size: [LOCAL_SHADOW_MAP_SIZE, LOCAL_SHADOW_MAP_SIZE, MAX_LOCAL_SHADOW_LAYERS],
+      format: SHADOW_FORMAT,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this.localShadowMapView = this.localShadowMap.createView({ dimension: '2d-array' });
+    this.localShadowBuffer = device.createBuffer({
+      label: 'local-shadow-matrices',
+      size: MAX_LOCAL_SHADOW_LAYERS * 64,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
     this.shadowSampler = device.createSampler({ compare: 'less', magFilter: 'linear', minFilter: 'linear' });
     // Equirectangular: wraps around horizontally, not over the poles.
     this.skySampler = device.createSampler({
@@ -426,7 +455,7 @@ export class Renderer {
     this.view2DGroups = [worldGroup, screenGroup];
 
     this.frameBindGroup = this.makeFrameBindGroup(null);
-    this.shadowFrameBindGroups = Array.from({ length: MAX_SHADOW_CASCADES }, (_, i) =>
+    this.shadowFrameBindGroups = Array.from({ length: SHADOW_SLOTS }, (_, i) =>
       device.createBindGroup({
         label: `shadow-frame ${i}`,
         layout: this.shadowFrameLayout,
@@ -448,6 +477,8 @@ export class Renderer {
         { binding: 3, resource: this.shadowSampler },
         { binding: 4, resource: sky ? this.ensureTexture(sky).createView() : this.whiteTextureView },
         { binding: 5, resource: this.skySampler },
+        { binding: 6, resource: this.localShadowMapView },
+        { binding: 7, resource: { buffer: this.localShadowBuffer } },
       ],
     });
   }
@@ -683,6 +714,8 @@ export class Renderer {
     const lights = scene.query(Light);
     const lightObjects = lights.length > MAX_LIGHTS ? lights.slice(0, MAX_LIGHTS) : lights;
 
+    const viewProj = camera.viewProjection();
+
     // Lights.
     let shadowIndex = -1;
     let shadowDir: Vec3 = [0, -1, 0];
@@ -690,6 +723,7 @@ export class Renderer {
     let sun: Light | null = null;
     let sunDir: Vec3 = [0, -1, 0];
     const ld = this.lightData;
+    const localRequests: (LocalShadowLight | null)[] = [];
     lightObjects.forEach((light, i) => {
       const world = light.transform.worldMatrix;
       const pos = mat4.getTranslation(world);
@@ -700,7 +734,8 @@ export class Renderer {
       ld[o + 8] = light.color[0]; ld[o + 9] = light.color[1]; ld[o + 10] = light.color[2]; ld[o + 11] = light.intensity;
       const outer = Math.min(89, Math.max(0.5, light.outerAngle));
       const inner = Math.min(outer - 0.01, Math.max(0, light.innerAngle));
-      ld[o + 12] = Math.cos((inner * Math.PI) / 180); ld[o + 13] = Math.cos((outer * Math.PI) / 180); ld[o + 14] = 0; ld[o + 15] = 0;
+      ld[o + 12] = Math.cos((inner * Math.PI) / 180); ld[o + 13] = Math.cos((outer * Math.PI) / 180); ld[o + 14] = -1; ld[o + 15] = 0;
+      localRequests.push(light.castShadows && light.type !== 'directional' ? { type: light.type, position: pos, direction: dir, range: light.range, outerAngle: outer } : null);
       if (shadowIndex < 0 && light.type === 'directional' && light.castShadows) {
         shadowIndex = i;
         shadowDir = dir;
@@ -711,17 +746,31 @@ export class Renderer {
         sunDir = dir;
       }
     });
+    // Point and spot shadows: layers for the lights that reach into the view, nearest first. A light's params.z is its
+    // first layer (-1: none), params.w the texel size per unit of distance (common.wgsl).
+    const localShadows = assignLocalShadows(localRequests, camera.position, frustumPlanes(viewProj, this.viewPlanes), MAX_LOCAL_SHADOW_LAYERS, LOCAL_SHADOW_MAP_SIZE);
+    const localViews: Mat4[] = [];
+    localShadows.forEach((ls, i) => {
+      if (!ls) return;
+      ld[i * LIGHT_FLOATS + 14] = ls.layer;
+      ld[i * LIGHT_FLOATS + 15] = ls.texelPerDistance;
+      ls.views.forEach((v, f) => {
+        localViews[ls.layer + f] = v;
+        this.localShadowData.set(v, (ls.layer + f) * 16);
+      });
+    });
+    if (localViews.length > 0) device.queue.writeBuffer(this.localShadowBuffer, 0, this.localShadowData, 0, localViews.length * 16);
     if (lightObjects.length > 0) device.queue.writeBuffer(this.lightBuffer, 0, ld, 0, lightObjects.length * LIGHT_FLOATS);
     stats.lights = lightObjects.length;
 
     const cascades = shadowIndex >= 0 ? computeCascades(camera, shadowDir, scene.shadowDistance, scene.shadowCascades, SHADOW_MAP_SIZE) : [];
     cascades.forEach((c, i) => device.queue.writeBuffer(this.shadowFrameBuffer, i * SHADOW_SLOT_SIZE, c.viewProj));
+    localViews.forEach((v, i) => device.queue.writeBuffer(this.shadowFrameBuffer, (MAX_SHADOW_CASCADES + i) * SHADOW_SLOT_SIZE, v));
 
     // Frame uniforms (layout: shaders/common.wgsl).
     const fv = new Float32Array(this.frameData);
     const fi = new Int32Array(this.frameData);
     const fu = new Uint32Array(this.frameData);
-    const viewProj = camera.viewProjection();
     fv.set(viewProj, 0);
     fv.set([camera.position[0], camera.position[1], camera.position[2], 1], 16);
     const amb = vec3.scale(scene.ambientColor, scene.ambientIntensity);
@@ -762,7 +811,8 @@ export class Renderer {
     // matrices into one storage buffer.
     profiler.begin('cull + batch');
     const list = this.drawList;
-    list.build(draws, viewProj, camera.position, cascades.map((c) => c.viewProj), this.frustumCulling);
+    // Shadow views: the cascades, then the local layers (list.shadows follows that order).
+    list.build(draws, viewProj, camera.position, [...cascades.map((c) => c.viewProj), ...localViews], this.frustumCulling);
     profiler.end();
     stats.culled = list.culled;
     this.ensureObjectCapacity(list.objectCount);
@@ -794,11 +844,20 @@ export class Renderer {
         return (encoder, res) => this.drawShadowCasters(encoder, i, list.shadows[i], materialGroups, res.target!);
       });
     });
+    const localShadowMap = localViews.length > 0 ? g.importTexture('local shadow map', this.localShadowMap) : null;
+    localViews.forEach((_, i) => {
+      const slot = cascades.length + i;
+      g.addRenderPass(`light shadow ${i}`, (pass) => {
+        pass.depthAttachment(localShadowMap!, { depthClearValue: 1, depthLoadOp: 'clear', layer: i });
+        return (encoder, res) => this.drawShadowCasters(encoder, MAX_SHADOW_CASCADES + i, list.shadows[slot], materialGroups, res.target!);
+      });
+    });
     const hdr = g.createTexture('hdr color', { format: HDR_FORMAT, sampleCount: this.sampleCount });
     const depth = g.createTexture('main depth', { format: DEPTH_FORMAT, sampleCount: this.sampleCount });
     const display = g.createTexture('display color', { format: this.format, sampleCount: this.sampleCount });
     g.addRenderPass('main', (pass) => {
       pass.read(shadowMap); // through the frame bind group
+      if (localShadowMap) pass.read(localShadowMap);
       // Alpha 0 marks pixels nothing covers (meshes and the sky write 1): the tonemap pass shows the background there.
       pass.colorAttachment(hdr, { clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear' });
       pass.depthAttachment(depth, { depthClearValue: 0, depthLoadOp: 'clear' });
@@ -856,18 +915,19 @@ export class Renderer {
   }
 
   /**
-   * The shadow pass: depth only, on its own group 0 (the frame group holds the shadow map it's drawing into). The
-   * alpha-tested variant reads the material from group 2.
+   * A shadow pass (one view: a cascade or a point/spot light layer): depth only, on its own group 0 (the frame group
+   * holds the shadow map it's drawing into), the view's matrix at `slot`. The alpha-tested variant reads the material
+   * from group 2.
    */
   private drawShadowCasters(
     pass: GPURenderPassEncoder,
-    cascade: number,
+    slot: number,
     batches: MeshBatch[],
     materialGroups: Map<Material, GPUBindGroup>,
     target: RenderTarget,
   ): void {
     const stats = this.stats;
-    pass.setBindGroup(0, this.shadowFrameBindGroups[cascade]);
+    pass.setBindGroup(0, this.shadowFrameBindGroups[slot]);
     if (batches.length > 0) pass.setBindGroup(1, this.objectBindGroup!);
     let currentPipeline: GPURenderPipeline | null = null;
     for (const b of batches) {
