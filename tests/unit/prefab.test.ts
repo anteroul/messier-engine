@@ -246,4 +246,9 @@ setPrefab('enemy', 'Enemy', enemyData);
   const p = readPrefab(oldPrefab) as any;
   eq('prefabs are upgraded too, and objects without ids get one', [p.root.material, p.root.id, p.root.children.map((c: any) => c.id)],
     [{ baseColorTexture: { asset: 'wood', index: 0 } }, '~0', ['~0.0', 'x']]);
+  const v2 = { format: 'messier-scene', version: 2, settings: { exposure: 1.2, shadowExtent: 16 }, objects: [] };
+  eq('version 2: the shadow extent becomes a shadow distance', (upgradeSceneData(v2) as any).settings, { exposure: 1.2, shadowDistance: 48 });
+  const loaded = newScene();
+  applySceneData(loaded, v2, res);
+  eq('and loads as one', [loaded.shadowDistance, loaded.shadowCascades], [48, 4]);
 }

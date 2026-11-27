@@ -762,7 +762,9 @@ writeFileSync(`${OUT}/frame.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 1
   checker.gpu = checkerTex;
 
   const s = new Scene();
-  s.shadowExtent = 4;
+  // One cascade, so each caster is drawn into the shadow map once.
+  s.shadowDistance = 12;
+  s.shadowCascades = 1;
   const ground = new GameObject('Ground');
   ground.mesh = createPlane(12);
   ground.material = new Material('ground', { baseColor: [0.8, 0.8, 0.8, 1], roughness: 0.9 });
@@ -845,7 +847,8 @@ writeFileSync(`${OUT}/frame.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 1
   const { Material, Light, createCube, createPlane } = engine;
   const device = renderer.device;
   const s = new Scene();
-  s.shadowExtent = 8;
+  s.shadowDistance = 20;
+  s.shadowCascades = 1;
   s.background = [0, 0, 0];
   const ground = new GameObject('Ground');
   ground.mesh = createPlane(30);
@@ -869,7 +872,7 @@ writeFileSync(`${OUT}/frame.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 1
   };
   const xs = [-3, -1.5, 0, 1.5, 3];
   xs.forEach((x, i) => cube(`Seen ${i}`, x, 0));
-  cube('Behind', 0, 30); // behind the camera, inside the shadow map's depth range but outside its extent
+  cube('Behind', 0, 30); // behind the camera, outside the cascade's box
   cube('Left', -60, 0);
   cube('Right', 60, 0);
   const red = cube('Red', 0, -2.5);
@@ -983,11 +986,101 @@ writeFileSync(`${OUT}/frame.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 1
   check('the scene\'s order doesn\'t change a blended frame', differing === 0, `${differing} differing bytes`);
   const overWall = rgb(a, [-1.5, 1.2, 0]), overBoth = rgb(a, [-0.5, 0.5, 0]), overNothing = rgb(a, [2.4, 2.4, 0]);
   const redOverWall = rgb(a, [-2.2, -1.2, 0]), glow = rgb(a, [-1.5, 0, 2]);
-  check('a half-transparent pane lets the wall behind it through', redOverWall[0] > 250 && redOverWall[1] > 120 && redOverWall[1] < 230 && redOverWall[1] === redOverWall[2],
+  // Unlit colors are tone mapped like everything else: linear 1 shows as about 231, 0.5 as about 205.
+  check('a half-transparent pane lets the wall behind it through', redOverWall[0] > 220 && redOverWall[1] > 120 && redOverWall[1] < redOverWall[0] - 10 && redOverWall[1] === redOverWall[2],
     redOverWall.join());
   check('the nearer pane is blended last', overBoth[1] > overBoth[0] && overBoth[0] > 60, overBoth.join());
-  check('over nothing, a pane blends with the background', overNothing[0] > 150 && overNothing[1] < 5 && overNothing[2] > 100 && overNothing[2] < 160, overNothing.join());
+  check('over nothing, a pane blends with the background', overNothing[0] > 100 && overNothing[1] < 5 && overNothing[2] > 100 && overNothing[2] < 160, overNothing.join());
   check('additive materials only add light', glow[1] > overWall[1] - 1 && glow[0] >= redOverWall[0] - 1, `${glow.join()} over ${overWall.join()}`);
+}
+
+// ---- cascaded shadows: posts at growing distances under a slanted sun each cast a shadow toward the camera's side,
+// one post per cascade; past the shadow distance there are none. Saved as cascades.png.
+{
+  const { Material, Light, createCube, createPlane } = engine;
+  const device = renderer.device;
+  const s = new Scene();
+  s.background = [0, 0, 0];
+  s.ambientIntensity = 0.05;
+  s.shadowDistance = 70;
+  const ground = new GameObject('Ground');
+  ground.mesh = createPlane(300);
+  ground.material = new Material('ground', { baseColor: [0.6, 0.6, 0.6, 1], roughness: 1 });
+  ground.castShadows = false;
+  s.add(ground);
+  const sun = new GameObject('Sun');
+  sun.light = new Light('directional', [1, 1, 1], 3);
+  sun.light.castShadows = true;
+  // Travelling toward -x and down: a post 2 m tall shades the ground up to 1 m past its -x side.
+  sun.transform.rotation = quat.lookRotation(vec3.normalize([-0.5, -1, 0]));
+  s.add(sun);
+  const post = createCube(1);
+  // View depths of about 3.6, 7.6, 16.5 and 27 m: one per cascade (they end near 4.6, 10, 21 and 70 m).
+  const distances = [1, 5, 14, 25];
+  distances.forEach((d, i) => {
+    const o = new GameObject(`Post ${i}`);
+    o.mesh = post;
+    o.material = new Material('post', { baseColor: [0.6, 0.6, 0.6, 1] });
+    o.transform.position = [0, 1, 8 - d];
+    o.transform.scale = [1, 2, 1];
+    s.add(o);
+  });
+  s.updateMatrices();
+  // Low, wide and off to the shaded side, so the nearest shadow is in view and no post hides another's.
+  const cam = new Camera();
+  cam.position = [-4, 3, 10];
+  cam.target = [0, 0, -20];
+  cam.fovDeg = 90;
+  cam.aspect = W / H;
+  const bpr = Math.ceil((W * 4) / 256) * 256;
+  const px = new Uint8Array(bpr * H);
+  const readInto = async (into: Uint8Array) => {
+    const out = device.createBuffer({ size: bpr * H, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const e = device.createCommandEncoder();
+    e.copyTextureToBuffer({ texture: current! }, { buffer: out, bytesPerRow: bpr }, [W, H]);
+    device.queue.submit([e.finish()]);
+    await out.mapAsync(GPUMapMode.READ);
+    into.set(new Uint8Array(out.getMappedRange()));
+    out.destroy();
+  };
+  device.pushErrorScope('validation');
+  const stats = { ...renderer.render(s, cam, { time: 0 }) };
+  await readInto(px);
+  const err = await device.popErrorScope();
+  const lum = (p: [number, number, number]) => {
+    const [x, y] = cam.worldToScreen(p, W, H)!;
+    if (x < 0 || y < 0 || x >= W || y >= H) return -1;
+    const o = Math.round(y) * bpr + Math.round(x) * 4;
+    return px[o] + px[o + 1] + px[o + 2];
+  };
+  const bgra = (fakeContext as any).format === 'bgra8unorm';
+  const raw = Buffer.alloc((W * 4 + 1) * H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const o = y * bpr + x * 4, d = y * (W * 4 + 1) + 1 + x * 4;
+      raw[d] = px[o + (bgra ? 2 : 0)];
+      raw[d + 1] = px[o + 1];
+      raw[d + 2] = px[o + (bgra ? 0 : 2)];
+      raw[d + 3] = 255;
+    }
+  }
+  writeFileSync(`${OUT}/cascades.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]));
+  // Per post: the ground in its shadow, half a metre past its -x side, and the lit ground a metre and a half behind.
+  const shading = () => distances.map((d) => [lum([-1, 0, 8 - d]), lum([-1, 0, 6.5 - d])]);
+  const pairs = shading();
+  check('cascaded shadows render', !err && stats.shadowCasters >= 4, err?.message ?? JSON.stringify(stats));
+  check('every post within the shadow distance casts a shadow, in each cascade',
+    pairs.every(([shade, lit]) => shade >= 0 && shade < lit * 0.6), pairs.map((p) => p.join('/')).join(' '));
+  s.shadowDistance = 10;
+  renderer.render(s, cam, { time: 0 });
+  await readInto(px);
+  const near = shading();
+  check('past the shadow distance there are none', near[1][0] < near[1][1] * 0.6 && near[2][0] > near[2][1] * 0.9 && near[3][0] > near[3][1] * 0.9,
+    near.map((p) => p.join('/')).join(' '));
+  s.shadowDistance = 70;
+  s.shadowCascades = 1;
+  const one = { ...renderer.render(s, cam, { time: 0 }) };
+  check('fewer cascades, fewer shadow casters drawn', one.shadowCasters < stats.shadowCasters, `${one.shadowCasters} < ${stats.shadowCasters}`);
 }
 
 // ---- profiler: CPU sections from the renderer, and GPU time per frame graph pass where the device can time them
@@ -1011,7 +1104,7 @@ writeFileSync(`${OUT}/frame.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 1
     profErr?.message ?? `${names.join()} ${profiler.cpuMs.toFixed(2)} ms`);
   const gpuNames = profiler.gpu.map((g: any) => g.name).join();
   if (profiler.gpuSupported) {
-    check('profiler: GPU time per pass', gpuNames === 'shadow,main,tonemap,overlay' && profiler.gpu.every((g: any) => g.ms >= 0) && profiler.gpuMs > 0,
+    check('profiler: GPU time per pass', gpuNames === 'shadow 0,shadow 1,shadow 2,shadow 3,main,tonemap,overlay' && profiler.gpu.every((g: any) => g.ms >= 0) && profiler.gpuMs > 0,
       profiler.gpu.map((g: any) => `${g.name} ${g.ms.toFixed(3)} ms`).join(', '));
   } else {
     console.log('SKIP profiler: GPU time per pass (no timestamp-query on this device)');

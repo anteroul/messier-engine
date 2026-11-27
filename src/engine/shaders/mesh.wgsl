@@ -1,11 +1,11 @@
-// Forward PBR shader (metallic-roughness, GGX) with N dynamic lights and a
-// PCF-filtered shadow map for one directional light. Material textures follow
+// Forward PBR shader (metallic-roughness, GGX) with N dynamic lights and
+// PCF-filtered cascaded shadow maps for one directional light. Material textures follow
 // glTF: base color and emissive are sRGB; normal, metallic-roughness (G, B) and
 // occlusion (R) are linear. Meshes carry no tangents, so normal maps use a
 // tangent frame built per pixel from screen-space derivatives of position and UV.
 
 @group(0) @binding(1) var<storage, read> lights: array<Light>;
-@group(0) @binding(2) var shadowMap: texture_depth_2d;
+@group(0) @binding(2) var shadowMap: texture_depth_2d_array;
 @group(0) @binding(3) var shadowSampler: sampler_comparison;
 
 @group(1) @binding(0) var<uniform> material: Material;
@@ -62,25 +62,53 @@ fn fresnelSchlick(cosTheta: f32, F0: vec3f) -> vec3f {
   return F0 + (vec3f(1.0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
-fn shadowFactor(worldPos: vec3f, N: vec3f, L: vec3f) -> f32 {
-  let NdotL = clamp(dot(N, L), 0.0, 1.0);
-  // Normal offset reduces acne on surfaces at grazing angles.
-  let offsetPos = worldPos + N * (0.02 + 0.04 * (1.0 - NdotL));
-  let lp = frame.lightViewProj * vec4f(offsetPos, 1.0);
+// PCF over a 3×3 texel area of cascade `c`; 1 where the point is outside it.
+fn cascadeShadow(c: i32, worldPos: vec3f, N: vec3f, NdotL: f32) -> f32 {
+  // Normal offset (in texels of this cascade, which grow with distance) reduces acne at grazing angles.
+  let offsetPos = worldPos + N * frame.cascadeTexel[c] * (1.3 + 2.6 * (1.0 - NdotL));
+  let lp = frame.cascades[c] * vec4f(offsetPos, 1.0);
   let ndc = lp.xyz / lp.w;
   let uv = vec2f(ndc.x * 0.5 + 0.5, -ndc.y * 0.5 + 0.5);
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || ndc.z > 1.0) {
     return 1.0;
   }
-  let depth = ndc.z - 0.0008;
+  let depth = ndc.z - frame.cascadeBias[c];
   var sum = 0.0;
   for (var y = -1; y <= 1; y++) {
     for (var x = -1; x <= 1; x++) {
       let o = vec2f(f32(x), f32(y)) * frame.shadowTexel;
-      sum += textureSampleCompareLevel(shadowMap, shadowSampler, uv + o, depth);
+      sum += textureSampleCompareLevel(shadowMap, shadowSampler, uv + o, c, depth);
     }
   }
   return sum / 9.0;
+}
+
+// Picks the cascade by view depth. Over the last tenth of a cascade it blends into the next one, so the change in
+// sharpness has no visible seam, and the last one fades out toward the shadow distance.
+fn shadowFactor(worldPos: vec3f, N: vec3f, L: vec3f) -> f32 {
+  let count = i32(frame.cameraForward.w);
+  let z = dot(worldPos - frame.cameraPos.xyz, frame.cameraForward.xyz);
+  var c = 0;
+  while (c < count - 1 && z > frame.cascadeFar[c]) {
+    c++;
+  }
+  if (count == 0 || z > frame.cascadeFar[c]) {
+    return 1.0;
+  }
+  let far = frame.cascadeFar[c];
+  let NdotL = clamp(dot(N, L), 0.0, 1.0);
+  let s = cascadeShadow(c, worldPos, N, NdotL);
+  let start = select(0.0, frame.cascadeFar[max(c - 1, 0)], c > 0);
+  let band = (far - start) * 0.1;
+  let t = smoothstep(far - band, far, z);
+  if (t <= 0.0) {
+    return s;
+  }
+  var next = 1.0;
+  if (c + 1 < count) {
+    next = cascadeShadow(c + 1, worldPos, N, NdotL);
+  }
+  return mix(s, next, t);
 }
 
 // Applies a tangent-space normal `n` to N. dp* and duv* are the screen-space derivatives of the world position and the

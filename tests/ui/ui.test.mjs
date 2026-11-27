@@ -966,7 +966,7 @@ const made = await state(async () => {
     icon: !!document.querySelector('.asset-row .icon-prefab'),
   };
 });
-check('dragging an object onto Assets makes a prefab file', !!made.id && made.linked && made.meta && made.file === 'messier-prefab:2:Crate 1:string' && made.row && made.icon,
+check('dragging an object onto Assets makes a prefab file', !!made.id && made.linked && made.meta && made.file === 'messier-prefab:3:Crate 1:string' && made.row && made.icon,
   JSON.stringify(made));
 
 await state(() => {
@@ -1016,7 +1016,7 @@ const outside = await page.evaluate(async (id) => {
     version: main.version,
   };
 }, made.id);
-check('a prefab file edited outside reaches its instances; scenes save links', outside.metallic.join() === '1,1' && outside.saved === 2 && outside.version === 2,
+check('a prefab file edited outside reaches its instances; scenes save links', outside.metallic.join() === '1,1' && outside.saved === 2 && outside.version === 3,
   JSON.stringify(outside));
 
 // Export to Folder writes a copy (script types included) and the editor stays with its project.

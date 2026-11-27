@@ -590,7 +590,7 @@ export function buildDemoGame(scene: Scene): void {
   scene.background = [0.02, 0.025, 0.05];
   scene.ambientColor = [0.4, 0.5, 0.8];
   scene.ambientIntensity = 0.3;
-  scene.shadowExtent = 14;
+  scene.shadowDistance = 42;
 
   const game = new GameObject('Game');
   game.attachComponent(script('GameManager'));

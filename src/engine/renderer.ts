@@ -24,13 +24,17 @@ import { FrameGraph, type RenderTarget } from './frameGraph';
 import { DrawList, OBJECT_FLOATS, type MeshBatch } from './batching';
 import { GpuTimer } from './gpuTimer';
 import { profiler } from './profiler';
+import { MAX_SHADOW_CASCADES, computeCascades } from './shadows';
 import { MeshPipelines, allMeshVariantKeys, meshVariantKey, type MeshPass, type MeshVariantKey } from './pipelines';
 
 export const MAX_LIGHTS = 128;
+/** Texels across each cascade's layer of the shadow map. */
 const SHADOW_MAP_SIZE = 2048;
+/** Each cascade's light matrix sits at its own offset of the shadow frame buffer (uniform offsets align to 256). */
+const SHADOW_SLOT_SIZE = 256;
 /** One instance in the object storage buffer (model + normal matrix). */
 const OBJECT_SIZE = OBJECT_FLOATS * 4;
-const FRAME_UNIFORM_SIZE = 336;
+const FRAME_UNIFORM_SIZE = 592;
 const MATERIAL_UNIFORM_SIZE = 64;
 const LIGHT_FLOATS = 16;
 /** Main pass uses reversed-Z: clear to 0, 'greater' passes nearer fragments. */
@@ -66,7 +70,7 @@ export interface RenderStats {
   /** Mesh renderers skipped because they're outside the view. */
   culled: number;
   lights: number;
-  /** Mesh instances drawn into the shadow map. */
+  /** Mesh instances drawn into the shadow map, over all its cascades. */
   shadowCasters: number;
   /** Shape2D/Text2D components drawn. */
   elements2D: number;
@@ -82,7 +86,7 @@ const ALPHA_BLEND: GPUBlendState = {
 };
 
 /**
- * Forward renderer: a shadow pass (one directional light), a 4x MSAA HDR main pass (lit meshes, the sky), a tonemap
+ * Forward renderer: shadow passes (a cascade each, for one directional light), a 4x MSAA HDR main pass (lit meshes, the sky), a tonemap
  * pass, then the display-space overlay pass (editor grid, 2D, overlay helpers) resolved into the canvas. Each frame
  * declares its passes on a FrameGraph, which orders them and owns their transient textures.
  */
@@ -94,7 +98,7 @@ export class Renderer {
   width = 0;
   height = 0;
   readonly stats: RenderStats = { drawCalls: 0, triangles: 0, instances: 0, culled: 0, lights: 0, shadowCasters: 0, elements2D: 0, pipelineBuilds: 0 };
-  /** Skip meshes outside the camera's view (and, in the shadow pass, outside the shadow map). */
+  /** Skip meshes outside the camera's view (and, in the shadow passes, outside their cascade). */
   frustumCulling = true;
 
   private readonly context: GPUCanvasContext;
@@ -135,7 +139,8 @@ export class Renderer {
   private frameSky: Texture | null = null;
   private readonly shadowSampler: GPUSampler;
   private readonly skySampler: GPUSampler;
-  private readonly shadowFrameBindGroup: GPUBindGroup;
+  /** One per cascade: its light matrix. */
+  private readonly shadowFrameBindGroups: GPUBindGroup[];
   private readonly textureSampler: GPUSampler;
   private readonly mipSampler: GPUSampler;
   private readonly whiteTextureView: GPUTextureView;
@@ -201,7 +206,7 @@ export class Renderer {
       entries: [
         { binding: 0, visibility: VS | FS, buffer: { type: 'uniform' } },
         { binding: 1, visibility: FS, buffer: { type: 'read-only-storage' } },
-        { binding: 2, visibility: FS, texture: { sampleType: 'depth' } },
+        { binding: 2, visibility: FS, texture: { sampleType: 'depth', viewDimension: '2d-array' } },
         { binding: 3, visibility: FS, sampler: { type: 'comparison' } },
         { binding: 4, visibility: FS, texture: { sampleType: 'float' } },
         { binding: 5, visibility: FS, sampler: { type: 'filtering' } },
@@ -358,14 +363,19 @@ export class Renderer {
     // --- Static resources ---------------------------------------------------
     this.frameBuffer = device.createBuffer({ label: 'frame', size: FRAME_UNIFORM_SIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.lightBuffer = device.createBuffer({ label: 'lights', size: MAX_LIGHTS * LIGHT_FLOATS * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-    this.shadowFrameBuffer = device.createBuffer({ label: 'shadow-frame', size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.shadowFrameBuffer = device.createBuffer({
+      label: 'shadow-frame',
+      size: MAX_SHADOW_CASCADES * SHADOW_SLOT_SIZE,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    // A layer per cascade.
     this.shadowMap = device.createTexture({
       label: 'shadow-map',
-      size: [SHADOW_MAP_SIZE, SHADOW_MAP_SIZE],
+      size: [SHADOW_MAP_SIZE, SHADOW_MAP_SIZE, MAX_SHADOW_CASCADES],
       format: SHADOW_FORMAT,
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
-    this.shadowMapView = this.shadowMap.createView();
+    this.shadowMapView = this.shadowMap.createView({ dimension: '2d-array' });
     this.shadowSampler = device.createSampler({ compare: 'less', magFilter: 'linear', minFilter: 'linear' });
     // Equirectangular: wraps around horizontally, not over the poles.
     this.skySampler = device.createSampler({
@@ -416,11 +426,12 @@ export class Renderer {
     this.view2DGroups = [worldGroup, screenGroup];
 
     this.frameBindGroup = this.makeFrameBindGroup(null);
-    this.shadowFrameBindGroup = device.createBindGroup({
-      label: 'shadow-frame',
-      layout: this.shadowFrameLayout,
-      entries: [{ binding: 0, resource: { buffer: this.shadowFrameBuffer } }],
-    });
+    this.shadowFrameBindGroups = Array.from({ length: MAX_SHADOW_CASCADES }, (_, i) =>
+      device.createBindGroup({
+        label: `shadow-frame ${i}`,
+        layout: this.shadowFrameLayout,
+        entries: [{ binding: 0, resource: { buffer: this.shadowFrameBuffer, offset: i * SHADOW_SLOT_SIZE, size: 64 } }],
+      }));
   }
 
   // -------------------------------------------------------------------------
@@ -655,22 +666,6 @@ export class Renderer {
     return [worldFloats / VERTEX2D_FLOATS, screenFloats / VERTEX2D_FLOATS];
   }
 
-  private computeShadowMatrix(dir: Vec3, focus: Vec3, extent: number): Mat4 {
-    const up: Vec3 = Math.abs(dir[1]) > 0.99 ? [1, 0, 0] : [0, 1, 0];
-    // Snap the focus point to shadow-map texels to avoid shimmering when the camera moves.
-    const texel = (extent * 2) / SHADOW_MAP_SIZE;
-    const lightView0 = mat4.lookAt([0, 0, 0], dir, up);
-    const ls = vec3.transformPoint(lightView0, focus);
-    ls[0] = Math.round(ls[0] / texel) * texel;
-    ls[1] = Math.round(ls[1] / texel) * texel;
-    const inv = mat4.invert(lightView0) ?? mat4.create();
-    const snapped = vec3.transformPoint(inv, ls);
-    const eye = vec3.addScaled(snapped, dir, -extent * 3);
-    const view = mat4.lookAt(eye, snapped, up);
-    const proj = mat4.ortho(-extent, extent, -extent, extent, 0.1, extent * 6);
-    return mat4.multiply(proj, view);
-  }
-
   /** Renders one frame. World matrices must be up to date (Scene.updateMatrices). */
   render(scene: Scene, camera: Camera, options: RenderOptions = {}): RenderStats {
     profiler.begin('prepare');
@@ -719,8 +714,8 @@ export class Renderer {
     if (lightObjects.length > 0) device.queue.writeBuffer(this.lightBuffer, 0, ld, 0, lightObjects.length * LIGHT_FLOATS);
     stats.lights = lightObjects.length;
 
-    const lightViewProj = shadowIndex >= 0 ? this.computeShadowMatrix(shadowDir, camera.target, scene.shadowExtent) : mat4.create();
-    if (shadowIndex >= 0) device.queue.writeBuffer(this.shadowFrameBuffer, 0, lightViewProj);
+    const cascades = shadowIndex >= 0 ? computeCascades(camera, shadowDir, scene.shadowDistance, scene.shadowCascades, SHADOW_MAP_SIZE) : [];
+    cascades.forEach((c, i) => device.queue.writeBuffer(this.shadowFrameBuffer, i * SHADOW_SLOT_SIZE, c.viewProj));
 
     // Frame uniforms (layout: shaders/common.wgsl).
     const fv = new Float32Array(this.frameData);
@@ -728,37 +723,46 @@ export class Renderer {
     const fu = new Uint32Array(this.frameData);
     const viewProj = camera.viewProjection();
     fv.set(viewProj, 0);
-    fv.set(lightViewProj, 16);
-    fv.set([camera.position[0], camera.position[1], camera.position[2], 1], 32);
+    fv.set([camera.position[0], camera.position[1], camera.position[2], 1], 16);
     const amb = vec3.scale(scene.ambientColor, scene.ambientIntensity);
-    fv.set([amb[0], amb[1], amb[2], scene.exposure], 36);
-    fu[40] = lightObjects.length;
-    fi[41] = shadowIndex;
-    fv[42] = options.time ?? 0;
-    fv[43] = 1 / SHADOW_MAP_SIZE;
+    fv.set([amb[0], amb[1], amb[2], scene.exposure], 20);
+    fu[24] = lightObjects.length;
+    fi[25] = shadowIndex;
+    fv[26] = options.time ?? 0;
+    fv[27] = 1 / SHADOW_MAP_SIZE;
     const sky = scene.sky;
     const skyMode = sky.effectiveMode;
     const skyTexture = skyMode === 'image' ? sky.texture : null;
     if (skyTexture !== this.frameSky) this.frameBindGroup = this.makeFrameBindGroup(skyTexture);
-    fv.set(mat4.invert(viewProj) ?? mat4.create(), 44);
-    fv.set([sky.top[0], sky.top[1], sky.top[2], sky.intensity], 60);
-    fv.set([sky.horizon[0], sky.horizon[1], sky.horizon[2], 0], 64);
-    fv.set([sky.ground[0], sky.ground[1], sky.ground[2], 0], 68);
+    fv.set(mat4.invert(viewProj) ?? mat4.create(), 28);
+    fv.set([sky.top[0], sky.top[1], sky.top[2], sky.intensity], 44);
+    fv.set([sky.horizon[0], sky.horizon[1], sky.horizon[2], 0], 48);
+    fv.set([sky.ground[0], sky.ground[1], sky.ground[2], 0], 52);
     // Assigned in the forEach above, which TypeScript's narrowing doesn't follow.
     const sunLight = sun as Light | null;
     const sunRadius = (Math.max(0, sky.sunSize) * Math.PI) / 360;
-    fv.set([-sunDir[0], -sunDir[1], -sunDir[2], sunLight && sky.sunSize > 0 ? Math.cos(sunRadius) : 2], 72);
+    fv.set([-sunDir[0], -sunDir[1], -sunDir[2], sunLight && sky.sunSize > 0 ? Math.cos(sunRadius) : 2], 56);
     const sunColor = sunLight ? vec3.scale(sunLight.color, sunLight.intensity) : [0, 0, 0];
-    fv.set([sunColor[0], sunColor[1], sunColor[2], sunLight ? sky.sunGlow : 0], 76);
+    fv.set([sunColor[0], sunColor[1], sunColor[2], sunLight ? sky.sunGlow : 0], 60);
     const mips = skyTexture?.gpu?.mipLevelCount ?? 1;
-    fv.set([SKY_MODE_INDEX[skyMode], sky.lighting, (sky.rotation * Math.PI) / 180, mips], 80);
+    fv.set([SKY_MODE_INDEX[skyMode], sky.lighting, (sky.rotation * Math.PI) / 180, mips], 64);
+    // Cascades: where each ends, its texel size and a depth bias of about two texels, both turned into its depth range.
+    const forward = vec3.normalize(vec3.sub(camera.target, camera.position));
+    fv.set([forward[0], forward[1], forward[2], cascades.length], 68);
+    for (let i = 0; i < MAX_SHADOW_CASCADES; i++) {
+      const c = cascades[i];
+      fv[72 + i] = c ? c.far : 0;
+      fv[76 + i] = c ? c.texel : 0;
+      fv[80 + i] = c ? (c.texel * 2) / c.depthRange : 0;
+      if (c) fv.set(c.viewProj, 84 + i * 16);
+    }
     device.queue.writeBuffer(this.frameBuffer, 0, this.frameData);
 
     // Cull against the view and the shadow map, batch what's left into instanced draws, and upload every instance's
     // matrices into one storage buffer.
     profiler.begin('cull + batch');
     const list = this.drawList;
-    list.build(draws, viewProj, camera.position, shadowIndex >= 0 ? [lightViewProj] : [], this.frustumCulling);
+    list.build(draws, viewProj, camera.position, cascades.map((c) => c.viewProj), this.frustumCulling);
     profiler.end();
     stats.culled = list.culled;
     this.ensureObjectCapacity(list.objectCount);
@@ -777,18 +781,19 @@ export class Renderer {
     const [world2DCount, screen2DCount] = this.prepare2D(scene, camera, viewProj, options);
     profiler.end();
 
-    // The frame: a shadow pass into the persistent shadow map (when a directional light casts shadows), the main pass
-    // (meshes and sky as linear radiance into a multisampled HDR target), the tonemap pass (into the multisampled
-    // display target), then the display-space overlay pass (grid, 2D, editor helpers), resolved into the canvas.
+    // The frame: a shadow pass per cascade into its layer of the persistent shadow map (when a directional light casts
+    // shadows), the main pass (meshes and sky as linear radiance into a multisampled HDR target), the tonemap pass (into
+    // the multisampled display target), then the display-space overlay pass (grid, 2D, editor helpers), resolved into
+    // the canvas.
     const g = this.graph;
     const shadowMap = g.importTexture('shadow map', this.shadowMap);
     const output = g.importTexture('canvas', this.context.getCurrentTexture());
-    if (shadowIndex >= 0) {
-      g.addRenderPass('shadow', (pass) => {
-        pass.depthAttachment(shadowMap, { depthClearValue: 1, depthLoadOp: 'clear' });
-        return (encoder, res) => this.drawShadowCasters(encoder, list.shadows[0], materialGroups, res.target!);
+    cascades.forEach((_, i) => {
+      g.addRenderPass(`shadow ${i}`, (pass) => {
+        pass.depthAttachment(shadowMap, { depthClearValue: 1, depthLoadOp: 'clear', layer: i });
+        return (encoder, res) => this.drawShadowCasters(encoder, i, list.shadows[i], materialGroups, res.target!);
       });
-    }
+    });
     const hdr = g.createTexture('hdr color', { format: HDR_FORMAT, sampleCount: this.sampleCount });
     const depth = g.createTexture('main depth', { format: DEPTH_FORMAT, sampleCount: this.sampleCount });
     const display = g.createTexture('display color', { format: this.format, sampleCount: this.sampleCount });
@@ -854,9 +859,15 @@ export class Renderer {
    * The shadow pass: depth only, on its own group 0 (the frame group holds the shadow map it's drawing into). The
    * alpha-tested variant reads the material from group 2.
    */
-  private drawShadowCasters(pass: GPURenderPassEncoder, batches: MeshBatch[], materialGroups: Map<Material, GPUBindGroup>, target: RenderTarget): void {
+  private drawShadowCasters(
+    pass: GPURenderPassEncoder,
+    cascade: number,
+    batches: MeshBatch[],
+    materialGroups: Map<Material, GPUBindGroup>,
+    target: RenderTarget,
+  ): void {
     const stats = this.stats;
-    pass.setBindGroup(0, this.shadowFrameBindGroup);
+    pass.setBindGroup(0, this.shadowFrameBindGroups[cascade]);
     if (batches.length > 0) pass.setBindGroup(1, this.objectBindGroup!);
     let currentPipeline: GPURenderPipeline | null = null;
     for (const b of batches) {

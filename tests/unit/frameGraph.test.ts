@@ -12,7 +12,7 @@ interface FakeTexture {
   sampleCount: number;
   destroyed: boolean;
   destroy(): void;
-  createView(): { texture: FakeTexture };
+  createView(desc?: GPUTextureViewDescriptor): { texture: FakeTexture; desc?: GPUTextureViewDescriptor };
 }
 
 let nextTexture = 1;
@@ -32,7 +32,7 @@ function fakeTexture(desc: any): FakeTexture {
     destroy() {
       t.destroyed = true;
     },
-    createView: () => ({ texture: t }),
+    createView: (desc?: GPUTextureViewDescriptor) => ({ texture: t, desc }),
   };
   return t;
 }
@@ -244,6 +244,19 @@ const chain = (sameSize: boolean) => {
     ['clear', { r: 0, g: 0, b: 0, a: 1 }, 'clear']);
   const depthTex = main.depthStencilAttachment.view.texture as FakeTexture;
   eq('a multisampled depth texture: sample count, attachment-only usage', [depthTex.sampleCount, depthTex.usage], [4, 0x10]);
+}
+
+// ---- layers: one pass per layer of an array texture (shadow cascades), all before the pass that samples them
+{
+  reset();
+  ran.length = 0;
+  const out = g.importTexture('canvas', imported('canvas'));
+  const cascades = g.importTexture('cascades', imported('cascades', 'depth32float'));
+  g.addRenderPass('main', (p) => (p.read(cascades), p.colorAttachment(out), exec('main')));
+  for (let i = 0; i < 3; i++) g.addRenderPass(`cascade ${i}`, (p) => (p.depthAttachment(cascades, { layer: i }), exec(`cascade ${i}`)));
+  eq('every layer\'s pass runs before the reader, in declaration order', g.execute().passes, ['cascade 0', 'cascade 1', 'cascade 2', 'main']);
+  eq('each attaches a single-layer view of its layer', [0, 1, 2].map((i) => passDescs.get(`cascade ${i}`).depthStencilAttachment.view.desc),
+    [0, 1, 2].map((i) => ({ dimension: '2d', baseArrayLayer: i, arrayLayerCount: 1 })));
 }
 
 // ---- compute passes and loads

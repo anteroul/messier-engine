@@ -512,8 +512,10 @@ export class Scene {
   /** Backdrop and, unless it's a flat color, environment lighting. */
   readonly sky = new Sky();
   exposure = 1;
-  /** Half extent (world units) of the directional shadow frustum. */
-  shadowExtent = 16;
+  /** How far from the camera (world units, along its view) the directional light's shadows reach. */
+  shadowDistance = 50;
+  /** Shadow map cascades over that distance (1–4): more keeps near shadows sharper the farther it reaches. */
+  shadowCascades = 4;
   readonly physics = new PhysicsWorld();
   /** TypeScript behaviour scripts available to this scene's objects (shared with clones). */
   readonly scripts: ScriptLibrary;
@@ -556,7 +558,8 @@ export class Scene {
     s.background = [...this.background];
     s.sky.copyFrom(this.sky);
     s.exposure = this.exposure;
-    s.shadowExtent = this.shadowExtent;
+    s.shadowDistance = this.shadowDistance;
+    s.shadowCascades = this.shadowCascades;
     s.physics.gravity = [...this.physics.gravity];
     s.physics.iterations = this.physics.iterations;
     s.prefabs = this.prefabs;

@@ -23,7 +23,7 @@ export class Light extends Component {
   innerAngle = 20;
   /** Spot: cut-off cone half-angle in degrees. */
   outerAngle = 30;
-  /** Directional only: renders a shadow map (the first such light is used). */
+  /** Directional only: renders cascaded shadow maps (the first such light is used; see Scene.shadowDistance). */
   castShadows = false;
 
   constructor(type: LightType = 'point', color: Vec3 = [1, 1, 1], intensity?: number) {

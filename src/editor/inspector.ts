@@ -115,10 +115,11 @@ export class InspectorPanel {
     this.add(projectName.binding, sceneName.binding);
     const env = section('Environment');
     const exposure = sliderRow('Exposure', () => scene.exposure, (v) => (scene.exposure = v), 0.1, 4, 0.05);
-    const shadow = numberRow('Shadow extent', () => scene.shadowExtent, (v) => (scene.shadowExtent = v), { step: 1, min: 2, max: 200 });
+    const shadow = numberRow('Shadows to', () => scene.shadowDistance, (v) => (scene.shadowDistance = v), { step: 5, min: 1, max: 2000 });
+    const cascades = sliderRow('Cascades', () => scene.shadowCascades, (v) => (scene.shadowCascades = v), 1, 4, 1);
     const grid = checkboxRow('Show grid', () => engine.showGrid, (v) => (engine.showGrid = v));
-    env.body.append(exposure.row, shadow.row, grid.row);
-    this.add(exposure.binding, shadow.binding, grid.binding);
+    env.body.append(exposure.row, shadow.row, cascades.row, grid.row);
+    this.add(exposure.binding, shadow.binding, cascades.binding, grid.binding);
     const skySection = this.buildSky();
 
     const physics = section('Physics');

@@ -3,13 +3,13 @@
 
 struct Frame {
   viewProj: mat4x4f,
-  lightViewProj: mat4x4f,
   cameraPos: vec4f,
   // rgb = ambient color (linear), w = exposure (unused here: the tonemap pass applies it)
   ambient: vec4f,
   lightCount: u32,
   shadowIndex: i32,
   time: f32,
+  // 1 / shadow map size: a texel in the shadow map's UV space
   shadowTexel: f32,
   invViewProj: mat4x4f,
   // Gradient sky colors (linear). skyTop.w = image sky intensity.
@@ -22,6 +22,14 @@ struct Frame {
   sunColor: vec4f,
   // x = mode (0 color, 1 gradient, 2 image), y = lighting strength, z = image rotation (radians), w = image mip count
   sky: vec4f,
+  // xyz = camera forward, w = cascade count (0: no shadows)
+  cameraForward: vec4f,
+  // Per cascade (x, y, z, w = cascades 0..3): view depth where it ends, world size of a texel, depth bias.
+  cascadeFar: vec4f,
+  cascadeTexel: vec4f,
+  cascadeBias: vec4f,
+  // World to each cascade's shadow map clip space (normal Z).
+  cascades: array<mat4x4f, 4>,
 };
 
 // 64 bytes per light, see Renderer.writeLights().

@@ -417,7 +417,7 @@ export function buildStarfall(scene: Scene): void {
   scene.background = SPACE;
   scene.ambientColor = [0.35, 0.45, 0.8];
   scene.ambientIntensity = 0.12;
-  scene.shadowExtent = 16;
+  scene.shadowDistance = 48;
 
   const game = new GameObject('Game');
   game.attachComponent(script('Starfall'));

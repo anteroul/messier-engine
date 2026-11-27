@@ -404,7 +404,7 @@ export function buildNeonRun(scene: Scene): void {
   scene.background = SKY;
   scene.ambientColor = [0.55, 0.3, 0.9];
   scene.ambientIntensity = 0.2;
-  scene.shadowExtent = 22;
+  scene.shadowDistance = 66;
 
   const game = new GameObject('Game');
   game.attachComponent(script('NeonRun'));

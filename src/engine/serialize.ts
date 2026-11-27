@@ -28,7 +28,7 @@ import {
 
 export { SCENE_FORMAT, SCENE_VERSION, PREFAB_FORMAT } from './sceneFormat';
 
-const SCENE_SETTINGS = ['ambientColor', 'ambientIntensity', 'background', 'exposure', 'shadowExtent'] as const;
+const SCENE_SETTINGS = ['ambientColor', 'ambientIntensity', 'background', 'exposure', 'shadowDistance', 'shadowCascades'] as const;
 const MAX_DEPTH = 256;
 
 export type BehaviourData =

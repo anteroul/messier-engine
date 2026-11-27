@@ -16,6 +16,16 @@ Add a line under **Unreleased** with every user-visible change.
   `alpha` (glass, smoke: mixes by the base color's alpha, set with the new **Opacity** row) or `additive` (fire,
   beams: adds light). Blended meshes are drawn after the opaque ones, sorted back to front, don't write depth and
   cast no shadows. glTF materials with `alphaMode: BLEND` load as `alpha`.
+- **Cascaded shadows:** the sun's shadows now follow the camera out to the scene's **Shadows to** distance
+  (`scene.shadowDistance`, default 50 m), split into up to four **Cascades** (`scene.shadowCascades`) that keep
+  near shadows sharp and still reach far, with soft transitions between them and a fade at the end. Shadow edges no
+  longer shimmer as the camera moves or turns.
+
+### Changed
+
+- `scene.shadowExtent` (a box around the camera's target) is replaced by `scene.shadowDistance` (how far from the
+  camera shadows reach). **Scene format 3**: older scenes are upgraded on load, with three times their extent as the
+  distance. Scripts that set `shadowExtent` need to set `shadowDistance` instead.
 
 ## [0.7.0] - 2026-11-23
 

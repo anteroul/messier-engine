@@ -118,7 +118,7 @@ export class CameraComponent extends Component {
 
   /**
    * Points `view` through this camera, placed by its owner's world matrix.
-   * `target` is put `focusDistance` ahead (the renderer centers the shadow map on it).
+   * `target` is put `focusDistance` ahead.
    */
   applyTo(view: Camera, world: Mat4, focusDistance = 10): Camera {
     const pos: Vec3 = [world[12], world[13], world[14]];
