@@ -62,7 +62,7 @@ item to its design doc in `docs/design/` when it has one.
 
 ## Phase 6: Platform
 
-- [?] WebGL2 fallback: current answer is skip (WebGPU-only).
+- [ ] WebGL2 fallback
 - [ ] Mobile quality tiers
 - [ ] Plugin / package system
 - [ ] Networking: WebSocket, WebRTC
