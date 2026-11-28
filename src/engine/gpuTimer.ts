@@ -31,7 +31,7 @@ export class GpuTimer implements PassTimer {
   constructor(
     private readonly device: GPUDevice,
     /** Passes timed per frame; later ones go untimed. */
-    readonly maxPasses = 16,
+    readonly maxPasses = 32,
   ) {
     this.querySet = device.createQuerySet({ label: 'pass times', type: 'timestamp', count: maxPasses * 2 });
     this.resolveBuffer = device.createBuffer({ label: 'pass times', size: maxPasses * 16, usage: QUERY_RESOLVE | COPY_SRC });

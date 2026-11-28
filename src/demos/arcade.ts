@@ -227,7 +227,7 @@ function buildStand(game: (typeof GAMES)[number], x: number): GameObject {
   stand.add(meshObject('Pedestal', createCylinder(1.05, 0.5, 48), dark, [0, 0.25, 0]));
   stand.add(meshObject('Trim', createTorus(1.07, 0.03, 8, 96), neon(`${name} Trim`, color, 0.95), [0, 0.5, 0]));
   stand.add(meshObject('Base Trim', createTorus(1.2, 0.02, 8, 96), neon(`${name} Trim`, color, 0.95), [0, 0.02, 0]));
-  // The light pool on the floor: flat discs, since the engine has no bloom.
+  // The light pool on the floor: flat discs (bloom only spreads light past its threshold).
   const pool = glow('Pool', color, 6.5, 0.022, -5, 12);
   pool.transform.position = [0, 0.012, 0];
   pool.transform.setEulerDeg(-90, 0, 0);

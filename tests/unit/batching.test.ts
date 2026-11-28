@@ -141,8 +141,14 @@ const at = (x: number, y: number, z: number, scale = 1, rotation = quat.identity
   check('look-alikes share one material', list.materials.size === 3 && list.materials.has(red) && list.materials.has(leaf));
   const cube1 = renderers.find((r) => r.gameObject.name === 'cube 1')!;
   eq('an instance holds its model and normal matrix',
-    [[...list.objects.subarray(OBJECT_FLOATS, OBJECT_FLOATS + 16)], [...list.objects.subarray(OBJECT_FLOATS + 16, OBJECT_FLOATS * 2)]],
+    [[...list.objects.subarray(OBJECT_FLOATS, OBJECT_FLOATS + 16)], [...list.objects.subarray(OBJECT_FLOATS + 16, OBJECT_FLOATS + 32)]],
     [[...cube1.transform.worldMatrix], [...cube1.transform.normalMatrix]]);
+  eq('without a previous pose, it didn\'t move', [...list.objects.subarray(OBJECT_FLOATS + 32, OBJECT_FLOATS * 2)], [...cube1.transform.worldMatrix]);
+  const before = at(0, 3, 0);
+  list.previousWorld = (r) => (r === cube1 ? before : null);
+  list.build(renderers, camera().viewProjection(), eye, [lightViewProj]);
+  eq('…and with one, the previous model matrix follows', [...list.objects.subarray(OBJECT_FLOATS + 32, OBJECT_FLOATS * 2)], [...before]);
+  list.previousWorld = null;
 
   list.build(renderers, camera().viewProjection(), eye, [lightViewProj], false);
   eq('with culling off everything is drawn', [list.mainInstances, list.shadowInstances, list.culled, list.main[0].count], [7, 6, 0, 4]);

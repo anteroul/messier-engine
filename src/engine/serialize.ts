@@ -9,6 +9,7 @@ import { ANCHORS_2D, SHAPE2D_FIELDS, SHAPE_KINDS_2D, Shape2D, SPACES_2D, Text2D,
 import { TEXT_ALIGNS, TEXT_BASELINES } from './font';
 import { AUDIO_SOURCE_FIELDS, AudioSource } from './audioSource';
 import { Sky, SKY_FIELDS, SKY_MODES } from './sky';
+import { ANTIALIASING_MODES, POST_FIELDS, PostProcessing } from './postProcessing';
 import type { AudioClip, ClipRef } from './audioClip';
 import type { Mesh, ResourceRef } from './mesh';
 import { quat, type Quat, type Vec3 } from './math';
@@ -62,7 +63,7 @@ export interface ObjectData {
 export interface SceneData {
   format: typeof SCENE_FORMAT;
   version: number;
-  /** Environment (ambient, background, exposure, shadow extent), `sky` (Sky fields plus `texture`, a ref) and `physics` ({ gravity, iterations }). */
+  /** Environment (ambient, background, exposure, shadow distance), `sky` (Sky fields plus `texture`, a ref), `post` (PostProcessing fields) and `physics` ({ gravity, iterations }). */
   settings: Json;
   objects: NodeData[];
 }
@@ -159,6 +160,7 @@ export function serializeScene(scene: Scene, warnings: string[] = []): SceneData
     settings: {
       ...pickData(scene, SCENE_SETTINGS),
       sky: skyToData(scene.sky, warnings),
+      post: pickData(scene.post, POST_FIELDS),
       physics: { gravity: [...scene.physics.gravity], iterations: scene.physics.iterations },
     },
     objects: scene.root.children.map((c) => objectToData(c, ctx)),
@@ -416,6 +418,12 @@ export function applySceneData(scene: Scene, data: unknown, resources: SceneReso
     sky.texture = isResourceRef(skyTexture) ? resources.texture(skyTexture) : null;
     if (!sky.texture) warnings.push('Sky: image not found');
   }
+  // Like the sky: a scene saved before post-processing existed gets the defaults.
+  const post = assignKnown(scene.post.copyFrom(new PostProcessing()), settings.post, POST_FIELDS);
+  if (!ANTIALIASING_MODES.includes(post.antialiasing)) post.antialiasing = 'msaa';
+  post.bloom = Math.max(0, post.bloom);
+  post.bloomThreshold = Math.max(0, post.bloomThreshold);
+  post.bloomScatter = Math.min(1, Math.max(0, post.bloomScatter));
   assignKnown(scene.physics, settings.physics, ['gravity', 'iterations']);
   scene.physics.iterations = Math.max(1, Math.round(scene.physics.iterations));
   const objects = Array.isArray(doc.objects) ? doc.objects : [];

@@ -12,6 +12,7 @@ import { PhysicsWorld, RigidBody } from './physics';
 import { ScriptLibrary } from './scripting';
 import { Signal } from './signal';
 import { Sky } from './sky';
+import { PostProcessing } from './postProcessing';
 import { profiler } from './profiler';
 import type { Json } from './data';
 import type { PrefabLibrary } from './prefab';
@@ -511,6 +512,8 @@ export class Scene {
   background: Vec3 = [0.06, 0.062, 0.065];
   /** Backdrop and, unless it's a flat color, environment lighting. */
   readonly sky = new Sky();
+  /** Antialiasing and bloom. */
+  readonly post = new PostProcessing();
   exposure = 1;
   /** How far from the camera (world units, along its view) the directional light's shadows reach. */
   shadowDistance = 50;
@@ -557,6 +560,7 @@ export class Scene {
     s.ambientIntensity = this.ambientIntensity;
     s.background = [...this.background];
     s.sky.copyFrom(this.sky);
+    s.post.copyFrom(this.post);
     s.exposure = this.exposure;
     s.shadowDistance = this.shadowDistance;
     s.shadowCascades = this.shadowCascades;

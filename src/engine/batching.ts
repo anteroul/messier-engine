@@ -10,8 +10,9 @@
 // from the eye to the center of their bounds), so only neighbours in that order that share a mesh and a look merge
 // into a batch. They cast no shadows.
 //
-// Every instance's Object (model + normal matrix) is written into `objects`, a batch's instances next to each
-// other; the shaders index that array with the instance index, which starts at the batch's `first`.
+// Every instance's Object (model, normal matrix, and the model matrix of the previous frame for motion vectors) is
+// written into `objects`, a batch's instances next to each other; the shaders index that array with the instance
+// index, which starts at the batch's `first`.
 //
 // No GPU here: tests/unit/batching.test.ts runs it under Node.
 
@@ -21,8 +22,8 @@ import { materialHash, materialsEqual, type Material } from './material';
 import type { MeshRenderer } from './meshRenderer';
 import { boxOutsideFrustum, frustumPlanes } from './culling';
 
-/** Floats per instance: the Object struct of meshData.wgsl (model, normal matrix). */
-export const OBJECT_FLOATS = 32;
+/** Floats per instance: the Object struct of meshData.wgsl (model, normal matrix, previous model). */
+export const OBJECT_FLOATS = 48;
 
 /** One instanced draw. */
 export interface MeshBatch {
@@ -56,6 +57,11 @@ export class DrawList {
   culled = 0;
   /** The distinct materials of the batches (the ones that need their uniforms uploaded). */
   readonly materials = new Set<Material>();
+  /**
+   * A renderer's world matrix in the previous frame, for motion vectors (temporal antialiasing). Null, or no
+   * function: it didn't move.
+   */
+  previousWorld: ((r: MeshRenderer) => Readonly<Mat4> | null) | null = null;
 
   private readonly viewPlanes = new Float32Array(24);
   private readonly lightPlanes = new Float32Array(24);
@@ -179,8 +185,10 @@ export class DrawList {
       b.count = b.items.length;
       for (const i of b.items) {
         const t = renderers[i].transform;
-        data.set(t.worldMatrix, this.objectCount * OBJECT_FLOATS);
-        data.set(t.normalMatrix, this.objectCount * OBJECT_FLOATS + 16);
+        const o = this.objectCount * OBJECT_FLOATS;
+        data.set(t.worldMatrix, o);
+        data.set(t.normalMatrix, o + 16);
+        data.set(this.previousWorld?.(renderers[i]) ?? t.worldMatrix, o + 32);
         this.objectCount++;
       }
       this.materials.add(b.material);

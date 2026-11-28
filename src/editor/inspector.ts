@@ -29,6 +29,8 @@ import {
   RAD2DEG,
   Script,
   SKY_MODES,
+  ANTIALIASING_MODES,
+  type Antialiasing,
   type SkyMode,
   createBehaviour,
   fitCollider,
@@ -121,6 +123,7 @@ export class InspectorPanel {
     env.body.append(exposure.row, shadow.row, cascades.row, grid.row);
     this.add(exposure.binding, shadow.binding, cascades.binding, grid.binding);
     const skySection = this.buildSky();
+    const postSection = this.buildPost();
 
     const physics = section('Physics');
     const gravity = vec3Row('Gravity', () => scene.physics.gravity, (v) => (scene.physics.gravity = v), { step: 0.1 });
@@ -139,10 +142,31 @@ export class InspectorPanel {
       el('p', { class: 'hint', text: `${objects} objects, ${lights} lights, ${cameras} camera${cameras === 1 ? '' : 's'}.` }),
       el('p', { class: 'hint', text: 'Select an object in the viewport or hierarchy to edit it. Drop .glb / .gltf / .obj files onto the viewport to import.' }),
     );
-    return [project.root, skySection, env.root, physics.root, info.root];
+    return [project.root, skySection, env.root, postSection, physics.root, info.root];
   }
 
   /** Sky and ambient light: the rows depend on the sky mode. */
+  private buildPost(): HTMLElement {
+    const post = this.editor.scene.post;
+    const s = section('Post processing');
+    const items = [
+      selectRow('Antialiasing', [...ANTIALIASING_MODES], () => post.antialiasing, (v) => (post.antialiasing = v as Antialiasing)),
+      sliderRow('Bloom', () => post.bloom, (v) => (post.bloom = v), 0, 2, 0.01),
+      sliderRow('Threshold', () => post.bloomThreshold, (v) => (post.bloomThreshold = v), 0, 4, 0.05),
+      sliderRow('Scatter', () => post.bloomScatter, (v) => (post.bloomScatter = v), 0, 1, 0.01),
+    ];
+    items[0].row.querySelector('select')?.classList.add('post-antialiasing');
+    for (const r of items) {
+      s.body.append(r.row);
+      this.add(r.binding);
+    }
+    s.body.append(el('p', {
+      class: 'hint',
+      text: 'MSAA keeps edges sharp; TAA also smooths shimmering highlights and textures, a little softer. Bloom makes light brighter than the threshold glow.',
+    }));
+    return s.root;
+  }
+
   private buildSky(): HTMLElement {
     const ed = this.editor;
     const sky = ed.scene.sky;

@@ -1339,6 +1339,133 @@ writeFileSync(`${OUT}/frame.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 1
   writeFileSync(`${OUT}/ibl.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]));
 }
 
+// ---- post-processing: bloom spreads light brighter than its threshold; TAA antialiases over frames, stays stable on
+// a still view and doesn't leave trails behind moving objects. Saved as bloom.png, taa.png and taa-motion.png.
+{
+  const { Material, createSphere, createCube } = engine;
+  const device = renderer.device;
+  const bpr = Math.ceil((W * 4) / 256) * 256;
+  const bgra = (fakeContext as any).format === 'bgra8unorm';
+  const readFrame = async () => {
+    const out = device.createBuffer({ size: bpr * H, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const e = device.createCommandEncoder();
+    e.copyTextureToBuffer({ texture: current! }, { buffer: out, bytesPerRow: bpr }, [W, H]);
+    device.queue.submit([e.finish()]);
+    await out.mapAsync(GPUMapMode.READ);
+    const px = new Uint8Array(out.getMappedRange()).slice();
+    out.destroy();
+    return px;
+  };
+  const savePNG = (px: Uint8Array, name: string) => {
+    const raw = Buffer.alloc((W * 4 + 1) * H);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const o = y * bpr + x * 4, d = y * (W * 4 + 1) + 1 + x * 4;
+        raw[d] = px[o + (bgra ? 2 : 0)];
+        raw[d + 1] = px[o + 1];
+        raw[d + 2] = px[o + (bgra ? 0 : 2)];
+        raw[d + 3] = 255;
+      }
+    }
+    writeFileSync(`${OUT}/${name}`, Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]));
+  };
+  const cam = new Camera();
+  cam.position = [0, 0, 10];
+  cam.target = [0, 0, 0];
+  const green = (px: Uint8Array, p: [number, number, number]) => {
+    const [x, y] = cam.worldToScreen(p, W, H)!;
+    return px[Math.round(y) * bpr + Math.round(x) * 4 + 1];
+  };
+  const brightness = (px: Uint8Array, x: number, y: number) => px[y * bpr + x * 4 + 1];
+
+  // Bloom: a small, very bright sphere on black.
+  const s = new Scene();
+  s.background = [0, 0, 0];
+  const orb = new GameObject('Orb');
+  orb.mesh = createSphere(0.5);
+  orb.material = new Material('orb', { baseColor: [0, 0, 0, 1], unlit: true, emissive: [1, 0.8, 0.4], emissiveStrength: 20 });
+  s.add(orb);
+  const dim = new GameObject('Dim');
+  dim.mesh = createSphere(0.5);
+  dim.material = new Material('dim', { baseColor: [0.4, 0.4, 0.4, 1], unlit: true });
+  dim.transform.position = [-4, 0, 0];
+  s.add(dim);
+  s.updateMatrices();
+  device.pushErrorScope('validation');
+  renderer.render(s, cam, { time: 0 });
+  const plain = await readFrame();
+  s.post.bloom = 1;
+  const bloomStats = { ...renderer.render(s, cam, { time: 0 }) };
+  const bloomed = await readFrame();
+  s.post.bloomThreshold = 50;
+  renderer.render(s, cam, { time: 0 });
+  const high = await readFrame();
+  s.post.bloomThreshold = 1;
+  s.post.antialiasing = 'taa';
+  renderer.render(s, cam, { time: 0 });
+  const bloomErr = await device.popErrorScope();
+  check('bloom renders, with MSAA and with TAA', !bloomErr && bloomStats.drawCalls === 2, bloomErr?.message ?? JSON.stringify(bloomStats));
+  const near: [number, number, number] = [1.1, 0, 0], beside: [number, number, number] = [-4, 1, 0];
+  check('without bloom, the space around a bright light is dark', green(plain, near) < 3, String(green(plain, near)));
+  check('with bloom, it glows over its surroundings', green(bloomed, near) > 25 && green(bloomed, [2.5, 0, 0]) > green(plain, [2.5, 0, 0]),
+    `${green(bloomed, near)} near, ${green(bloomed, [2.5, 0, 0])} farther`);
+  // Beside the dim sphere there's only the bright one's glow: as much as on the other side, as far from it.
+  const mirror: [number, number, number] = [4, 1, 0];
+  check('surfaces below the threshold don\'t glow', Math.abs(green(bloomed, beside) - green(bloomed, mirror)) < 3 && Math.abs(green(plain, [-4, 0, 0]) - green(bloomed, [-4, 0, 0])) < 8,
+    `${green(bloomed, beside)} beside it, ${green(bloomed, mirror)} opposite`);
+  check('a threshold above everything leaves the frame as it was', green(high, near) < 3, String(green(high, near)));
+  savePNG(bloomed, 'bloom.png');
+
+  // TAA on a still view: a white box turned on its corner, unlit on black, so every edge is slanted.
+  const t = new Scene();
+  t.background = [0, 0, 0];
+  const box = new GameObject('Box');
+  box.mesh = createCube(3);
+  box.material = new Material('white', { baseColor: [1, 1, 1, 1], unlit: true });
+  box.transform.setEulerDeg(0, 0, 33);
+  t.add(box);
+  t.updateMatrices();
+  // Pixels between black and white along the edges: antialiasing.
+  const partial = (px: Uint8Array) => {
+    let n = 0;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (brightness(px, x, y) > 40 && brightness(px, x, y) < 190) n++;
+    return n;
+  };
+  device.pushErrorScope('validation');
+  renderer.render(t, cam, { time: 0 });
+  const msaa = await readFrame();
+  t.post.antialiasing = 'taa';
+  renderer.render(t, cam, { time: 0 });
+  const firstFrame = await readFrame();
+  for (let i = 0; i < 24; i++) renderer.render(t, cam, { time: 0 });
+  const settled = await readFrame();
+  renderer.render(t, cam, { time: 0 });
+  const next = await readFrame();
+  let diff = 0;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) diff += Math.abs(brightness(settled, x, y) - brightness(next, x, y));
+  check('the first TAA frame is aliased (nothing to blend with yet)', partial(firstFrame) < partial(msaa) * 0.4, `${partial(firstFrame)} vs ${partial(msaa)} with MSAA`);
+  check('after a few frames its edges are antialiased', partial(settled) > partial(msaa) * 0.6, `${partial(settled)} vs ${partial(msaa)} with MSAA`);
+  check('and a still view stays still', diff / (W * H) < 0.5, `${(diff / (W * H)).toFixed(3)} mean change per pixel`);
+  check('the inside of a flat surface keeps its color', brightness(settled, W >> 1, H >> 1) === brightness(msaa, W >> 1, H >> 1),
+    `${brightness(settled, W >> 1, H >> 1)} vs ${brightness(msaa, W >> 1, H >> 1)}`);
+  savePNG(settled, 'taa.png');
+
+  // TAA with motion: the box slides right; no trail where it was.
+  box.transform.position = [-3, 0, 0];
+  box.transform.scale = [0.5, 0.5, 0.5];
+  for (let i = 0; i <= 20; i++) {
+    box.transform.position = [-3 + i * 0.3, 0, 0];
+    t.updateMatrices();
+    renderer.render(t, cam, { time: i / 60 });
+  }
+  const moved = await readFrame();
+  const taaErr = await device.popErrorScope();
+  check('TAA renders without errors', !taaErr, taaErr?.message ?? '');
+  check('a moving object leaves no trail and stays solid', green(moved, [-3, 0, 0]) < 5 && green(moved, [1.5, 0, 0]) < 5 && green(moved, [3, 0, 0]) > 200,
+    `start ${green(moved, [-3, 0, 0])}, behind ${green(moved, [1.5, 0, 0])}, at ${green(moved, [3, 0, 0])}`);
+  savePNG(moved, 'taa-motion.png');
+}
+
 // ---- profiler: CPU sections from the renderer, and GPU time per frame graph pass where the device can time them
 {
   const { profiler } = engine;
@@ -1360,7 +1487,8 @@ writeFileSync(`${OUT}/frame.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 1
     profErr?.message ?? `${names.join()} ${profiler.cpuMs.toFixed(2)} ms`);
   const gpuNames = profiler.gpu.map((g: any) => g.name).join();
   if (profiler.gpuSupported) {
-    check('profiler: GPU time per pass', gpuNames === 'shadow 0,shadow 1,shadow 2,shadow 3,light shadow 0,main,tonemap,overlay' && profiler.gpu.every((g: any) => g.ms >= 0) && profiler.gpuMs > 0,
+    check('profiler: GPU time per pass', gpuNames === 'shadow 0,shadow 1,shadow 2,shadow 3,light shadow 0,main,bloom prefilter,' +
+      'bloom down 1,bloom down 2,bloom down 3,bloom down 4,bloom down 5,bloom up 4,bloom up 3,bloom up 2,bloom up 1,bloom up 0,tonemap,overlay' && profiler.gpu.every((g: any) => g.ms >= 0) && profiler.gpuMs > 0,
       profiler.gpu.map((g: any) => `${g.name} ${g.ms.toFixed(3)} ms`).join(', '));
   } else {
     console.log('SKIP profiler: GPU time per pass (no timestamp-query on this device)');

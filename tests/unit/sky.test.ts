@@ -72,3 +72,25 @@ image.ref = { asset: 'pano', index: 0 };
   sky.texture = image;
   eq('draws the image once there is one', sky.effectiveMode, 'image');
 }
+
+// ---- post-processing saves with the scene's settings too
+{
+  const scene = new Scene();
+  Object.assign(scene.post, { antialiasing: 'taa', bloom: 0.8, bloomThreshold: 2, bloomScatter: 0.4 });
+  const data = serializeScene(scene);
+  eq('post-processing is saved', data.settings.post, { antialiasing: 'taa', bloom: 0.8, bloomThreshold: 2, bloomScatter: 0.4 });
+  const loaded = new Scene();
+  applySceneData(loaded, JSON.parse(JSON.stringify(data)), new ProjectResources(new Project()));
+  eq('and loaded', [loaded.post.antialiasing, loaded.post.bloom, loaded.post.bloomThreshold, loaded.post.bloomScatter], ['taa', 0.8, 2, 0.4]);
+  check('clones copy it', scene.clone().post.antialiasing === 'taa' && scene.clone().post !== scene.post);
+
+  const old = serializeScene(new Scene());
+  delete (old.settings as Record<string, unknown>).post;
+  applySceneData(loaded, old, new ProjectResources(new Project()));
+  eq('a scene saved before it existed gets the defaults, not the last scene\'s', [loaded.post.antialiasing, loaded.post.bloom], ['msaa', 0]);
+
+  const bad = serializeScene(new Scene());
+  (bad.settings as Record<string, unknown>).post = { antialiasing: 'fxaa', bloom: -1, bloomScatter: 3 };
+  applySceneData(loaded, bad, new ProjectResources(new Project()));
+  eq('bad values fall back or are clamped', [loaded.post.antialiasing, loaded.post.bloom, loaded.post.bloomScatter], ['msaa', 0, 1]);
+}

@@ -10,6 +10,16 @@ Add a line under **Unreleased** with every user-visible change.
 
 ## [Unreleased]
 
+### Added
+
+- **Bloom:** light brighter than a threshold glows over its surroundings. The scene inspector's new **Post processing**
+  section sets its strength (**Bloom**, 0 is off and the default), **Threshold** and **Scatter** (how far it spreads);
+  scripts use `scene.post`. The demo's glowing orb blooms.
+- **Temporal antialiasing:** **Antialiasing** in the same section switches the scene from 4× MSAA to TAA, which
+  renders one jittered sample per pixel and blends it with the previous frames, following each object's motion. It
+  also smooths shimmering highlights, thin lines and fine textures that MSAA leaves aliased, at the cost of a slightly
+  softer image. The editor's grid, gizmos and 2D stay multisampled either way.
+
 ### Changed
 
 - **Image-based lighting:** gradient and image skies now light the scene properly. When the sky changes it's baked

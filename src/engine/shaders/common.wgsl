@@ -30,6 +30,11 @@ struct Frame {
   cascadeBias: vec4f,
   // World to each cascade's shadow map clip space (normal Z).
   cascades: array<mat4x4f, 4>,
+  // The previous frame's viewProj, for motion vectors (temporal antialiasing).
+  prevViewProj: mat4x4f,
+  // xy = this frame's subpixel offset in NDC, added to mesh clip positions (0 without temporal antialiasing). viewProj
+  // itself isn't jittered, so the overlay pass's helpers drawn after the resolve stay put.
+  jitter: vec4f,
 };
 
 // 64 bytes per light, see Renderer.writeLights().

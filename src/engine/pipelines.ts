@@ -27,6 +27,11 @@ export interface MeshVariantKey {
   blend: BlendMode;
   /** Null for depth-only passes. */
   colorFormat: GPUTextureFormat | null;
+  /**
+   * Main pass with temporal antialiasing: the second color target, where opaque surfaces write their screen-space
+   * motion (fs_velocity). Null otherwise.
+   */
+  velocityFormat: GPUTextureFormat | null;
   sampleCount: number;
   depthFormat: GPUTextureFormat;
   /** Reversed-Z 'greater' for the main pass, 'less' for shadow maps. */
@@ -34,7 +39,7 @@ export interface MeshVariantKey {
 }
 
 /** The key's fields in a fixed order, for its string form. Add new fields here too. */
-const KEY_FIELDS = ['pass', 'cull', 'alphaTest', 'blend', 'colorFormat', 'sampleCount', 'depthFormat', 'depthCompare'] as const satisfies readonly (keyof MeshVariantKey)[];
+const KEY_FIELDS = ['pass', 'cull', 'alphaTest', 'blend', 'colorFormat', 'velocityFormat', 'sampleCount', 'depthFormat', 'depthCompare'] as const satisfies readonly (keyof MeshVariantKey)[];
 
 export function variantKeyString(key: MeshVariantKey): string {
   return KEY_FIELDS.map((f) => `${f}=${String(key[f])}`).join(';');
@@ -59,19 +64,26 @@ export function meshVariantKey(
     alphaTest: shadow && material.alphaCutoff > 0,
     blend: shadow ? 'opaque' : material.blend,
     colorFormat: target.colorFormats[0] ?? null,
+    velocityFormat: shadow ? null : (target.colorFormats[1] ?? null),
     sampleCount: target.sampleCount,
     depthFormat: target.depthFormat,
     depthCompare: shadow ? 'less' : 'greater',
   };
 }
 
-/** Every valid key for these targets: the variants a project can need. Tests build them all. */
-export function allMeshVariantKeys(targets: Record<MeshPass, RenderTarget>): MeshVariantKey[] {
+/**
+ * Every valid key for these targets (a pass may draw into several: the main pass's MSAA and TAA targets): the variants
+ * a project can need. Tests build them all.
+ */
+export function allMeshVariantKeys(targets: Record<MeshPass, RenderTarget | readonly RenderTarget[]>): MeshVariantKey[] {
   const out: MeshVariantKey[] = [];
   for (const pass of ['main', 'shadow'] as const) {
-    for (const doubleSided of [false, true]) {
-      for (const alphaCutoff of [0, 0.5]) {
-        for (const blend of BLEND_MODES) out.push(meshVariantKey(pass, { doubleSided, alphaCutoff, blend }, null, targets[pass]));
+    const list = targets[pass];
+    for (const target of 'depthFormat' in list ? [list] : list) {
+      for (const doubleSided of [false, true]) {
+        for (const alphaCutoff of [0, 0.5]) {
+          for (const blend of BLEND_MODES) out.push(meshVariantKey(pass, { doubleSided, alphaCutoff, blend }, null, target));
+        }
       }
     }
   }
@@ -208,6 +220,9 @@ export class MeshPipelines {
     if (key.pass === 'main') {
       const module = this.module('mesh');
       const blend = BLEND_STATES[key.blend];
+      const targets: GPUColorTargetState[] = key.colorFormat ? [{ format: key.colorFormat, ...(blend ? { blend } : {}) }] : [];
+      // Blended surfaces leave the motion of what's behind them (writeMask 0): history is reprojected by that.
+      if (key.velocityFormat) targets.push({ format: key.velocityFormat, writeMask: blend ? 0 : 0xf });
       return {
         label,
         layout,
@@ -223,7 +238,7 @@ export class MeshPipelines {
             ],
           }],
         },
-        fragment: { module, entryPoint: 'fs_main', targets: key.colorFormat ? [{ format: key.colorFormat, ...(blend ? { blend } : {}) }] : [] },
+        fragment: { module, entryPoint: key.velocityFormat ? 'fs_velocity' : 'fs_main', targets },
         primitive,
         // Blended surfaces don't hide what's behind them: they're drawn sorted, after everything that writes depth.
         depthStencil: { format: key.depthFormat, depthWriteEnabled: !blend, depthCompare: key.depthCompare },

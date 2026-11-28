@@ -4,8 +4,9 @@ A browser-based 3D engine written in TypeScript on **WebGPU**, with a built-in
 real-time scene editor. What changed in each version: [CHANGELOG.md](CHANGELOG.md).
 
 - **Forward PBR renderer**: metallic-roughness GGX shading, ACES tone mapping,
-  4× MSAA, reversed-Z depth, base color, normal, metallic-roughness, occlusion and
-  emissive textures with GPU-generated mipmaps (normal maps need no stored tangents).
+  4× MSAA or temporal antialiasing (TAA), bloom, reversed-Z depth, base color, normal,
+  metallic-roughness, occlusion and emissive textures with GPU-generated mipmaps
+  (normal maps need no stored tangents).
 - **Dynamic lights and shadows**: up to 128 directional, point and spot
   lights, all updated every frame from the scene graph. The first
   shadow-casting directional light gets up to four cascaded shadow maps that
@@ -226,6 +227,11 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
 - **Environment:** with nothing selected, the inspector edits the sky,
   exposure, how far the sun's shadows reach (*Shadows to*) and in how many
   *Cascades*, and the grid.
+- **Post processing:** the scene's *Post processing* section picks the
+  *Antialiasing* (*msaa*: sharp geometry edges; *taa*: also smooths shimmering
+  highlights and fine textures, slightly softer) and sets *Bloom* (0 is off), its
+  *Threshold* (how bright light must be to glow) and *Scatter* (how far it spreads).
+  The demo's glowing orb uses bloom.
 - **Sky:** the *Sky* section picks a flat *color* (with the ambient light
   color), a *gradient* (top, horizon and ground colors and a sun that sits
   opposite the shadow-casting directional light), or an *image*: an
@@ -475,10 +481,10 @@ src/engine/             The engine (no DOM dependencies except the canvas)
   audio.ts              Web Audio output (voices, listener, mute); the host calls audio.resume() on a gesture
   audioSource.ts        AudioSource component and its per-frame lifecycle; audioClip.ts: AudioClip (+ ClipRef)
   sfx.ts                Sound-effect synthesizer (SfxParams, SFX_PRESETS, renderSfx)
-  sky.ts                Sky settings (color / gradient / image) of a scene
+  sky.ts                Sky settings (color / gradient / image) of a scene; postProcessing.ts: antialiasing, bloom
   scripting.ts          Script component, ScriptAsset (compile, diagnostics, in-place hot reload)
   typescript.ts         Tokenizer + position-preserving TypeScript type stripper
-  renderer.ts           WebGPU device, pipelines, the frame's passes (shadows, main HDR, tonemap, overlay), uploads
+  renderer.ts           WebGPU device, pipelines, the frame's passes (shadows, main HDR, TAA, bloom, tonemap, overlay), uploads
   environment.ts        The sky baked for image-based lighting (specular and irradiance cubes, BRDF table)
   shadows.ts            Shadow cascades and point/spot light shadow views
   frameGraph.ts         Frame graph: pass ordering and culling, pooled transient textures, store ops
@@ -486,7 +492,8 @@ src/engine/             The engine (no DOM dependencies except the canvas)
   culling.ts            Frustum planes and box tests; batching.ts: culled, instanced draw lists (DrawList)
   profiler.ts           Frame profiler: nested CPU sections, GPU pass times; gpuTimer.ts: timestamp queries per pass
   shaders/*.wgsl        common (frame structs, sky lookup), meshData (material, object), mesh (PBR), sky, tonemap
-                        (exposure + ACES), shadow (opaque and alpha-tested), grid, overlay, mipmap, shape2d (2D + SDF text)
+                        (bloom + exposure + ACES), taa (temporal resolve), bloom (prefilter, down/upsample), shadow (opaque
+                        and alpha-tested), grid, overlay, mipmap, shape2d (2D + SDF text)
   scene.ts              GameObject (components, groups, destroy/instantiate), Scene (registry, lifecycle)
   transform.ts          Transform: hierarchy, cached local/world matrices, world-space helpers
   component.ts          Component base class; meshRenderer.ts: MeshRenderer

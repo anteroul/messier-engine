@@ -156,25 +156,32 @@ Engine.step(dt)                         src/engine/engine.ts
   frame, including its fixed steps), and `setPlaying` resets it.
 - **Frame graph** (`frameGraph.ts`): `Renderer.render()` prepares uniforms and buffers, then declares the frame on a
   `FrameGraph`: the shadow map (persistent, owned by the renderer, a layer per cascade) and the canvas texture are *imported*; the
-  multisampled `hdr color` (`rgba16float`), `main depth` and `display color` (canvas format) are *transient*
+  `hdr color` (`rgba16float`), `main depth` (both multisampled with MSAA, one sample with TAA) and the multisampled
+  `display color` (canvas format) are *transient*
   (`createTexture`, sized from the output size that `resizeIfNeeded()` sets). The passes: `shadow 0`… (one per cascade, each attaching its `layer`), `light shadow 0`… (one per point/spot layer,
   into `local shadow map`), `environment capture` and `environment filter` (compute, only in frames whose sky
   changed); `main` (meshes
-  and sky as linear radiance into `hdr color`, cleared to alpha 0 so the tonemap knows where nothing was drawn);
-  `tonemap` (per-sample exposure + ACES + gamma 2.2 into `display color`, the display-space background where alpha
-  is 0, see `tonemap.wgsl`); `overlay` (loads `display color` and `main depth`; grid, world 2D, overlay, HUD;
-  resolves into the canvas). Tone mapping per sample, before the resolve, keeps MSAA edges as they were when the
-  scene shaders tone mapped; resolving HDR first would alias bright edges.
+  and sky as linear radiance into `hdr color`, cleared to alpha 0 so the tonemap knows where nothing was drawn; with
+  TAA also `velocity`, `rg16float`); `taa` (TAA only: resolves `hdr color` into one of two persistent, imported
+  history textures, reading the other); `bloom prefilter`, `bloom down 1`…, `bloom up …0` (only while
+  `scene.post.bloom > 0`: transients of half, quarter… resolution, see `bloom.wgsl`); `tonemap` (bloom + exposure +
+  ACES + gamma 2.2 into `display color`, the display-space background where alpha is 0, see `tonemap.wgsl`; per
+  sample with MSAA, per pixel with TAA, which also copies the scene's depth into the multisampled `display depth`);
+  `overlay` (loads `display color` and `main depth` or `display depth`; grid, world 2D, overlay, HUD; resolves into
+  the canvas). The overlay pass is multisampled in both modes, so 2D and editor helpers stay smooth. Tone mapping per
+  sample, before the resolve, keeps MSAA edges as they were when the scene shaders tone mapped; resolving HDR first
+  would alias bright edges.
   `addRenderPass(name, setup)` / `addComputePass` declare what a pass reads (`read`, `readStorage`) and writes
   (attachments, `writeStorage`) and return its execute function; the draw code lives in private methods
-  (`drawShadowCasters`, `drawScene`, `drawTonemap`, `drawDisplay`). `execute()` orders passes by those dependencies (declaration order otherwise),
+  (`drawShadowCasters`, `drawScene`, `drawTaa`, `addBloom`, `drawTonemap`, `drawDisplay`); their bind groups over
+  transients go through `Renderer.bindGroup()`, which remakes one when the pool hands out other textures. `execute()` orders passes by those dependencies (declaration order otherwise),
   culls passes nothing reads (unless they write an imported texture or are `sideEffect`), allocates transients from a
   pool (aliasing non-overlapping lifetimes, reused across frames, freed after 3 idle frames or a resize), infers
   usage flags, stores attachments only when a later pass reads them (imported ones always), and records one
   encoder with a debug group per pass. It doesn't import the renderer or touch the DOM: `tests/unit/frameGraph.test.ts`
   runs it on a fake device. Mipmap generation happens at upload, outside the graph.
 - **Shader variants** (`pipelines.ts`): mesh and shadow pipelines aren't built by hand. A `MeshVariantKey` holds
-  everything that changes one (pass, cull, alpha test, color format, sample count, depth format and compare);
+  everything that changes one (pass, cull, alpha test, blend, color format, velocity format for TAA, sample count, depth format and compare);
   `meshVariantKey(pass, material, mesh, target)` derives it, with the formats from the frame graph's attachments
   (`FrameResources.target`), and is the only place that decides mesh pipelines. `Renderer.meshPipelines`
   (`MeshPipelines`) caches pipelines by `variantKeyString(key)` (shader modules and pipeline layouts cached apart):
@@ -309,7 +316,8 @@ Engine.step(dt)                         src/engine/engine.ts
 - **Lights shine along local −Z.** Use `quat.lookRotation(dir)` to aim one.
 - **Uniform layouts are mirrored by hand** between TS and WGSL. When you
   change one side, change the other:
-  - `Frame` (592 B, with the inverse view-projection, the sky and the shadow cascades): `shaders/common.wgsl` ↔
+  - `Frame` (672 B, with the inverse view-projection, the sky, the shadow cascades, the previous view-projection and
+    the TAA jitter): `shaders/common.wgsl` ↔
     `Renderer.render()` (the `fv`/`fu`/`fi` offsets). Sky mode codes come from `SKY_MODE_INDEX`.
   - `Light` (64 B, 16 floats): `common.wgsl` ↔ the light packing loop in
     `Renderer.render()` (and the local shadow assignment after it, which fills `params.zw`). Type codes come from
@@ -319,14 +327,25 @@ Engine.step(dt)                         src/engine/engine.ts
     (`Texture.gpuLinear`), the others as sRGB (`Texture.gpu`).
   - 2D vertex (40 B: position 3, uv 2, color 4, threshold 1; threshold < 0 = solid): `shape2d.wgsl` ↔
     `VERTEX2D_FLOATS` / `Batch2D.vertex()` and the 2D pipeline's attributes.
-  - `Object` (model + normal matrix, 128 B, `OBJECT_FLOATS`): one per drawn instance in a storage buffer
+  - `Object` (model, normal matrix and previous model, 192 B, `OBJECT_FLOATS`): one per drawn instance in a storage buffer
     (`array<Object>`, indexed by the instance index), shared by the mesh and shadow pipelines (declared in
     `meshData.wgsl`) ↔ `DrawList.emit()`.
+- **Post-processing** (`postProcessing.ts`, `shaders/taa.wgsl`, `shaders/bloom.wgsl`): `scene.post` holds the
+  antialiasing mode and the bloom settings (saved in `settings.post`). TAA jitters the main pass by a Halton (2, 3)
+  subpixel offset per frame, added to mesh clip positions from `frame.jitter` (`frame.viewProj` itself stays unjittered,
+  so the overlay pass's helpers don't shake), and the mesh shader's `fs_velocity` writes each opaque surface's motion
+  from `frame.prevViewProj` and the instance's `prevModel` (the renderer keeps each `MeshRenderer`'s last drawn world
+  matrix, `DrawList.previousWorld`). The resolve reprojects the history by the velocity of the nearest surface around
+  each pixel (the camera's motion where only sky was drawn), clips it to the neighbourhood's color spread and blends
+  in a tenth of the new frame. The history starts over on a resize, a new scene or a different `Camera` object
+  (`Renderer.resetHistory()` for cuts). Bloom thresholds after exposure, with a soft knee and a Karis average against
+  fireflies, and the tonemap pass adds it before the curve (over the background, in display space).
 - **Shaders:** `common.wgsl` is *prepended* to `mesh`, `grid`, `overlay`, `sky` and `envCapture` (after it, `cube`).
   It declares `@group(0) @binding(0) frame`, the sky texture and sampler, `PI` and `skyRadiance()`,
   so don't redeclare them. `meshData.wgsl` (the `Material` and `Object` structs) is prepended to `mesh` (after
   `common`) and `shadow`. `mesh` and `sky` output linear radiance with alpha 1; only `tonemap.wgsl` tone maps.
-  `mipmap.wgsl`, `shape2d.wgsl` and `tonemap.wgsl` are standalone; `environment.wgsl` gets only `cube.wgsl`. The
+  `mipmap.wgsl`, `shape2d.wgsl`, `tonemap.wgsl`, `taa.wgsl` and `bloom.wgsl` are standalone (fullscreen passes with
+  `layout: 'auto'`, a binding number per entry point's own inputs); `environment.wgsl` gets only `cube.wgsl`. The
   environment compute pipelines use `layout: 'auto'`, one entry point per group-0 binding set. Shaders load with Vite
   `?raw` imports, and `tests/render/run.mjs` emulates that with an esbuild plugin.
 - **Bind groups:** group 0 = frame (uniform, lights storage, shadow map,
@@ -459,8 +478,8 @@ Update the help table in `index.html` and the README controls table.
 in `src/demos/` (listed in `DEMO_GAMES`; `shared.ts` has the helpers) and Gem Rush in `src/demoGame.ts`. A game's
 rules are script source strings, which `tsc` never checks, so play it in `tests/unit/demos.test.ts` (that's what
 catches typos) and avoid backticks and `${}` inside them. Builders only lay out objects (pools are inactive
-children the script hands out), so scenes round-trip through `serialize.ts`. The engine has no bloom: halos are
-stacked translucent `Shape2D` discs (`glow()`). Keep `ambientIntensity` low (0.1 to 0.3) or metals wash out (with a gradient or image sky,
+children the script hands out), so scenes round-trip through `serialize.ts`. Halos are stacked translucent `Shape2D`
+discs (`glow()`): bloom (`scene.post`) only spreads light past its threshold, so it doesn't replace them. Keep `ambientIntensity` low (0.1 to 0.3) or metals wash out (with a gradient or image sky,
 `sky.lighting` takes its place: a daylight sky is much dimmer than the sun, see the `Sky` defaults), and
 unlit emissive strengths near 1. The menu scene must be named `ARCADE_SCENE`, and its stands are named after the
 scenes they load. `test:ui` writes `ui-<game>.png` and `ui-game-<game>.png`: **look at them**.

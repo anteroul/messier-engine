@@ -39,6 +39,9 @@ struct VSOut {
   @location(0) worldPos: vec3f,
   @location(1) normal: vec3f,
   @location(2) uv: vec2f,
+  // Unjittered clip positions now and in the previous frame (fs_velocity's motion vector).
+  @location(3) current: vec4f,
+  @location(4) previous: vec4f,
 };
 
 @vertex
@@ -49,7 +52,10 @@ fn vs_main(in: VSIn, @builtin(instance_index) instance: u32) -> VSOut {
   out.worldPos = world.xyz;
   out.normal = (object.normal * vec4f(in.normal, 0.0)).xyz;
   out.uv = in.uv;
-  out.clip = frame.viewProj * world;
+  out.current = frame.viewProj * world;
+  out.previous = frame.prevViewProj * (object.prevModel * vec4f(in.position, 1.0));
+  out.clip = out.current;
+  out.clip = vec4f(out.clip.xy + frame.jitter.xy * out.clip.w, out.clip.zw);
   return out;
 }
 
@@ -178,6 +184,27 @@ fn perturbNormal(N: vec3f, dp1: vec3f, dp2: vec3f, duv1: vec2f, duv2: vec2f, n: 
 
 @fragment
 fn fs_main(in: VSOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4f {
+  return shade(in, frontFacing);
+}
+
+struct VelocityOut {
+  @location(0) color: vec4f,
+  // How far the surface moved on screen since the previous frame, in UV units (the TAA pass reprojects by it).
+  @location(1) velocity: vec2f,
+};
+
+// The main pass with temporal antialiasing: also writes the motion vector.
+@fragment
+fn fs_velocity(in: VSOut, @builtin(front_facing) frontFacing: bool) -> VelocityOut {
+  var out: VelocityOut;
+  out.color = shade(in, frontFacing);
+  let now = in.current.xy / in.current.w;
+  let before = in.previous.xy / max(in.previous.w, 1e-6);
+  out.velocity = (now - before) * vec2f(0.5, -0.5);
+  return out;
+}
+
+fn shade(in: VSOut, frontFacing: bool) -> vec4f {
   // Samples and derivatives need uniform control flow, so they all come before any branch.
   let tex = textureSample(baseColorTex, baseSampler, in.uv);
   let normalSample = textureSample(normalTex, baseSampler, in.uv).xyz;

@@ -766,6 +766,21 @@ check('switch back to first scene', (await state(() => window.engine.scene.findB
   await sleep(50);
 }
 
+// --- Post processing: TAA from the inspector, with bloom; the editor keeps drawing its helpers over it
+{
+  await state(() => window.editor.select(null));
+  await sleep(100);
+  await page.select('.post-antialiasing', 'taa');
+  await state(() => (window.engine.scene.post.bloom = 1));
+  await sleep(500);
+  const post = await state(() => ({ ...window.engine.scene.post }));
+  await page.screenshot({ path: `${OUT}/ui-taa.png` });
+  check('inspector switches the scene to TAA, with bloom', post.antialiasing === 'taa' && post.bloom === 1, JSON.stringify(post));
+  await page.select('.post-antialiasing', 'msaa');
+  await state(() => (window.engine.scene.post.bloom = 0.35));
+  await sleep(100);
+}
+
 // --- Sky: a gradient from the inspector, then a dropped 2:1 image becomes the sky (and saves with the project)
 {
   await state(() => window.editor.select(null));
