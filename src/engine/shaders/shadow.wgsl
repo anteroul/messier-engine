@@ -1,4 +1,4 @@
-// Depth-only pass for the directional shadow map. meshData.wgsl (Material, Object) is prepended.
+// Depth-only pass for one cascade of the directional shadow map. meshData.wgsl (Material, Object) is prepended.
 
 struct ShadowFrame {
   lightViewProj: mat4x4f,

@@ -256,7 +256,7 @@ export function buildTopple(scene: Scene): void {
   // half, so its warm, sunlit color only shows in reflections, where it keeps the gold golden.
   Object.assign(scene.sky, { mode: 'gradient', top: [0.04, 0.14, 0.52], horizon: [0.24, 0.43, 0.78], ground: [0.32, 0.25, 0.15], sunGlow: 0.5 });
   scene.background = SKY;
-  scene.shadowExtent = 17;
+  scene.shadowDistance = 51;
 
   const game = new GameObject('Game');
   game.attachComponent(script('Topple'));

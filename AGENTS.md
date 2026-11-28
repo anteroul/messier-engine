@@ -48,7 +48,7 @@ Engine.step(dt)                         src/engine/engine.ts
             scene.updateBehaviours → scene.lateUpdate
   input.endFrame(); scene.updateMatrices()
   overlay.begin(); beforeRender hooks   editor builds gizmo/icons into OverlayBuilder
-  renderer.render(scene, camera, …)     uploads, then a frame graph: shadow → main (meshes, sky; HDR MSAA) → tonemap →
+  renderer.render(scene, camera, …)     uploads, then a frame graph: shadow cascades, light shadows → main (meshes, sky; HDR MSAA) → tonemap →
                                         overlay (grid, world 2D, overlay, HUD), compiled and executed in one encoder
   afterRender hooks                     editor reads RenderStats
   draw2d.clear(); scene.processDestroyed()  immediate 2D layer reset; deferred destroys (onDisable → onDestroy → detach)
@@ -119,11 +119,16 @@ Engine.step(dt)                         src/engine/engine.ts
   `gradient` or `image`). `color` is the old flat clear color, and the mesh shader's old hemispheric ambient and fake
   reflection gradient. Otherwise the sky pass draws a fullscreen triangle at depth 0 after the opaque meshes
   (`greater-equal`, so it only fills cleared pixels) and before the grid, reconstructing view rays from
-  `frame.invViewProj`; and the mesh shader takes ambient diffuse from `skyRadiance(N, 0.85)` and reflections from
-  `skyRadiance(R, roughness)`, times `sky.lighting`. Image skies are equirectangular `rgba8unorm-srgb` textures whose
-  ordinary mip chain stands in for prefiltering (`textureSampleLevel`, so it's fine in non-uniform control flow). The
-  gradient's sun follows the shadow-casting (or first) directional light; its disc is drawn only unblurred, since
-  lit surfaces already get the light's specular highlight. Saved in `settings.sky`, with `texture` as an image
+  `frame.invViewProj`; and the mesh shader lights with it by image-based lighting (split sum, `environment.ts`):
+  when the frame's sky values (`common.wgsl` offsets 44–67, minus `sky.lighting`, which applies when read) or the
+  sky image change, two compute passes (`environment capture`, `environment filter`) bake the sky into a 128² cube
+  with averaged mips, then a 6-mip specular cube (roughness `mip / 5`, GGX importance sampling that reads the mip
+  matching each sample's solid angle) and a 32² irradiance cube (cosine-weighted average radiance); the 64² BRDF
+  table (scale and bias to F0) is made once. `cube.wgsl` maps cube texels to directions in WebGPU's face order, and
+  `tests/render` checks it against what's sampled. `SPECULAR_LEVELS` is mirrored by hand in `mesh.wgsl`. Image skies
+  are equirectangular `rgba8unorm-srgb` textures; the capture reads the mip with about one texel per cube texel. The
+  gradient's sun follows the shadow-casting (or first) directional light; the capture leaves its disc out
+  (`skyRadiance(d, level, 0)`), since lit surfaces already get the light's specular highlight. Saved in `settings.sky`, with `texture` as an image
   asset ref; `sceneAssetIds()` (not `collectAssetIds()`) counts it.
 - **2D** (`shapes2d.ts`, `draw2d.ts`, `font.ts`): `Shape2D` and `Text2D` extend the abstract `Renderer2D`
   component. Each frame the renderer queries them, tessellates them on the CPU into a `Batch2D` through
@@ -150,24 +155,33 @@ Engine.step(dt)                         src/engine/engine.ts
   `input.endFrame()` after the update phases (so `pressed`/`released` last one
   frame, including its fixed steps), and `setPlaying` resets it.
 - **Frame graph** (`frameGraph.ts`): `Renderer.render()` prepares uniforms and buffers, then declares the frame on a
-  `FrameGraph`: the shadow map (persistent, owned by the renderer) and the canvas texture are *imported*; the
-  multisampled `hdr color` (`rgba16float`), `main depth` and `display color` (canvas format) are *transient*
-  (`createTexture`, sized from the output size that `resizeIfNeeded()` sets). The passes: `shadow`; `main` (meshes
-  and sky as linear radiance into `hdr color`, cleared to alpha 0 so the tonemap knows where nothing was drawn);
-  `tonemap` (per-sample exposure + ACES + gamma 2.2 into `display color`, the display-space background where alpha
-  is 0, see `tonemap.wgsl`); `overlay` (loads `display color` and `main depth`; grid, world 2D, overlay, HUD;
-  resolves into the canvas). Tone mapping per sample, before the resolve, keeps MSAA edges as they were when the
-  scene shaders tone mapped; resolving HDR first would alias bright edges.
+  `FrameGraph`: the shadow map (persistent, owned by the renderer, a layer per cascade) and the canvas texture are *imported*; the
+  `hdr color` (`rgba16float`), `main depth` (both multisampled with MSAA, one sample with TAA) and the multisampled
+  `display color` (canvas format) are *transient*
+  (`createTexture`, sized from the output size that `resizeIfNeeded()` sets). The passes: `shadow 0`… (one per cascade, each attaching its `layer`), `light shadow 0`… (one per point/spot layer,
+  into `local shadow map`), `environment capture` and `environment filter` (compute, only in frames whose sky
+  changed); `main` (meshes
+  and sky as linear radiance into `hdr color`, cleared to alpha 0 so the tonemap knows where nothing was drawn; with
+  TAA also `velocity`, `rg16float`); `taa` (TAA only: resolves `hdr color` into one of two persistent, imported
+  history textures, reading the other); `bloom prefilter`, `bloom down 1`…, `bloom up …0` (only while
+  `scene.post.bloom > 0`: transients of half, quarter… resolution, see `bloom.wgsl`); `tonemap` (bloom + exposure +
+  ACES + gamma 2.2 into `display color`, the display-space background where alpha is 0, see `tonemap.wgsl`; per
+  sample with MSAA, per pixel with TAA, which also copies the scene's depth into the multisampled `display depth`);
+  `overlay` (loads `display color` and `main depth` or `display depth`; grid, world 2D, overlay, HUD; resolves into
+  the canvas). The overlay pass is multisampled in both modes, so 2D and editor helpers stay smooth. Tone mapping per
+  sample, before the resolve, keeps MSAA edges as they were when the scene shaders tone mapped; resolving HDR first
+  would alias bright edges.
   `addRenderPass(name, setup)` / `addComputePass` declare what a pass reads (`read`, `readStorage`) and writes
   (attachments, `writeStorage`) and return its execute function; the draw code lives in private methods
-  (`drawShadowCasters`, `drawScene`, `drawTonemap`, `drawDisplay`). `execute()` orders passes by those dependencies (declaration order otherwise),
+  (`drawShadowCasters`, `drawScene`, `drawTaa`, `addBloom`, `drawTonemap`, `drawDisplay`); their bind groups over
+  transients go through `Renderer.bindGroup()`, which remakes one when the pool hands out other textures. `execute()` orders passes by those dependencies (declaration order otherwise),
   culls passes nothing reads (unless they write an imported texture or are `sideEffect`), allocates transients from a
   pool (aliasing non-overlapping lifetimes, reused across frames, freed after 3 idle frames or a resize), infers
   usage flags, stores attachments only when a later pass reads them (imported ones always), and records one
   encoder with a debug group per pass. It doesn't import the renderer or touch the DOM: `tests/unit/frameGraph.test.ts`
   runs it on a fake device. Mipmap generation happens at upload, outside the graph.
 - **Shader variants** (`pipelines.ts`): mesh and shadow pipelines aren't built by hand. A `MeshVariantKey` holds
-  everything that changes one (pass, cull, alpha test, color format, sample count, depth format and compare);
+  everything that changes one (pass, cull, alpha test, blend, color format, velocity format for TAA, sample count, depth format and compare);
   `meshVariantKey(pass, material, mesh, target)` derives it, with the formats from the frame graph's attachments
   (`FrameResources.target`), and is the only place that decides mesh pipelines. `Renderer.meshPipelines`
   (`MeshPipelines`) caches pipelines by `variantKeyString(key)` (shader modules and pipeline layouts cached apart):
@@ -178,7 +192,7 @@ Engine.step(dt)                         src/engine/engine.ts
   branches in `mesh.wgsl`, not variants. The grid, overlay, sky, tonemap, mipmap and 2D pipelines are hand-built.
 - **Culling and instancing** (`culling.ts`, `batching.ts`): each frame `Renderer.render()` hands the live
   `MeshRenderer`s to its `DrawList`, which tests every mesh's bounds (as a box under the world matrix) against the
-  camera's frustum and, for casters, the shadow map's (`frustumPlanes()` works on any view-projection here), then
+  camera's frustum and, for casters, each shadow cascade's (`frustumPlanes()` works on any view-projection here), then
   groups what's left into `MeshBatch`es: same mesh and a material that looks the same (`materialsEqual()`, found
   through `materialHash()`; `MeshRenderer.clone()` copies the material, so duplicates rarely share one object). Shadow
   batches ignore the material unless it's alpha tested. Every instance's `Object` goes into one storage buffer, a
@@ -186,7 +200,22 @@ Engine.step(dt)                         src/engine/engine.ts
   shaders read `objects[instance_index]`. Batches keep the order of first appearance. `renderer.frustumCulling`
   turns the culling off; `RenderStats` counts `instances` and `culled`. Neither file touches the GPU
   (`tests/unit/batching.test.ts`). A new `Material` field that changes the look must go into both `materialHash()`
-  and `materialsEqual()`, or look-alikes that aren't get merged.
+  and `materialsEqual()`, or look-alikes that aren't get merged. Blended materials (`material.blend` not `opaque`)
+  go into `DrawList.transparent` instead, sorted back to front by their bounds' center, merged only with look-alike
+  neighbours in that order, drawn after the sky without depth writes, and cast no shadows.
+- **Shadows** (`shadows.ts`): the first shadow-casting directional light gets cascaded shadow maps.
+  `computeCascades()` splits the camera's view from its near plane to `scene.shadowDistance` into
+  `scene.shadowCascades` (1–4) slices (between uniform and logarithmic spacing) and fits each an ortho box around the
+  slice's bounding sphere, so the box never changes size as the camera turns, snapped to whole texels so edges don't
+  shimmer as it moves. Each cascade is a layer of the `2d-array` shadow map. `mesh.wgsl` picks one by view depth
+  (`frame.cameraForward`), blends into the next over the last tenth of each and fades out at the last one's end;
+  normal offset and depth bias scale with the cascade's texel size. Point and spot lights with `castShadows` share a
+  second `2d-array` map (`MAX_LOCAL_SHADOW_LAYERS` layers of 1024²): `assignLocalShadows()` gives layers to the lights
+  whose range reaches into the view, nearest first (a spot light one, a point light six, its cube faces in
+  `+x −x +y −y +z −z` order, slightly wider than 90° for filtering), skipping lights that don't fit. Their matrices
+  go to the main pass in a storage buffer; a light's `params.z` is its first layer (−1: none) and `params.w` its texel
+  size per unit of distance, and `localShadow()` in `mesh.wgsl` picks the face by major axis and offsets the point
+  toward the light instead of biasing the nonlinear depth. No GPU in `shadows.ts` (`tests/unit/shadows.test.ts`).
 - **Profiling** (`profiler.ts`, `gpuTimer.ts`, `src/editor/profilerPanel.ts`): the `profiler` singleton collects
   nested CPU sections (`begin(name)` / `end()`; a single branch while `profiler.enabled` is off) that `Engine.step`,
   `Scene.fixedUpdate` and `Renderer.render()` open around their phases, and `endFrame()` publishes them (tree order,
@@ -282,34 +311,50 @@ Engine.step(dt)                         src/engine/engine.ts
 - **Reversed-Z** for the main camera: `mat4.perspectiveReversedZ`, a
   `depth32float` buffer (the frame graph's `main depth` transient) cleared to **0**, and `depthCompare: 'greater'`
   (overlay uses `greater-equal`). `Camera.screenRay` unprojects NDC z = 1 as
-  near and z = 0 as far. The **shadow map uses normal Z** (`ortho`, clear 1,
+  near and z = 0 as far. The **shadow map's cascades use normal Z** (`ortho`, clear 1,
   `less`). Don't mix them up.
 - **Lights shine along local −Z.** Use `quat.lookRotation(dir)` to aim one.
 - **Uniform layouts are mirrored by hand** between TS and WGSL. When you
   change one side, change the other:
-  - `Frame` (336 B, with the inverse view-projection and the sky): `shaders/common.wgsl` ↔ `Renderer.render()` (the
-    `fv`/`fu`/`fi` offsets). Sky mode codes come from `SKY_MODE_INDEX`.
+  - `Frame` (672 B, with the inverse view-projection, the sky, the shadow cascades, the previous view-projection and
+    the TAA jitter): `shaders/common.wgsl` ↔
+    `Renderer.render()` (the `fv`/`fu`/`fi` offsets). Sky mode codes come from `SKY_MODE_INDEX`.
   - `Light` (64 B, 16 floats): `common.wgsl` ↔ the light packing loop in
-    `Renderer.render()`. Type codes come from `LIGHT_TYPE_INDEX`.
+    `Renderer.render()` (and the local shadow assignment after it, which fills `params.zw`). Type codes come from
+    `LIGHT_TYPE_INDEX`.
   - `Material` (64 B): `meshData.wgsl` ↔ `Renderer.prepareMaterial()`. Its textures are bound in `TEXTURE_SLOTS` order
     (binding 1 base color, 2 the sampler, 3… the rest); `LINEAR_TEXTURE_SLOTS` are uploaded as `rgba8unorm`
     (`Texture.gpuLinear`), the others as sRGB (`Texture.gpu`).
   - 2D vertex (40 B: position 3, uv 2, color 4, threshold 1; threshold < 0 = solid): `shape2d.wgsl` ↔
     `VERTEX2D_FLOATS` / `Batch2D.vertex()` and the 2D pipeline's attributes.
-  - `Object` (model + normal matrix, 128 B, `OBJECT_FLOATS`): one per drawn instance in a storage buffer
+  - `Object` (model, normal matrix and previous model, 192 B, `OBJECT_FLOATS`): one per drawn instance in a storage buffer
     (`array<Object>`, indexed by the instance index), shared by the mesh and shadow pipelines (declared in
     `meshData.wgsl`) ↔ `DrawList.emit()`.
-- **Shaders:** `common.wgsl` is *prepended* to `mesh`, `grid`, `overlay` and `sky`.
+- **Post-processing** (`postProcessing.ts`, `shaders/taa.wgsl`, `shaders/bloom.wgsl`): `scene.post` holds the
+  antialiasing mode and the bloom settings (saved in `settings.post`). TAA jitters the main pass by a Halton (2, 3)
+  subpixel offset per frame, added to mesh clip positions from `frame.jitter` (`frame.viewProj` itself stays unjittered,
+  so the overlay pass's helpers don't shake), and the mesh shader's `fs_velocity` writes each opaque surface's motion
+  from `frame.prevViewProj` and the instance's `prevModel` (the renderer keeps each `MeshRenderer`'s last drawn world
+  matrix, `DrawList.previousWorld`). The resolve reprojects the history by the velocity of the nearest surface around
+  each pixel (the camera's motion where only sky was drawn), clips it to the neighbourhood's color spread and blends
+  in a tenth of the new frame. The history starts over on a resize, a new scene or a different `Camera` object
+  (`Renderer.resetHistory()` for cuts). Bloom thresholds after exposure, with a soft knee and a Karis average against
+  fireflies, and the tonemap pass adds it before the curve (over the background, in display space).
+- **Shaders:** `common.wgsl` is *prepended* to `mesh`, `grid`, `overlay`, `sky` and `envCapture` (after it, `cube`).
   It declares `@group(0) @binding(0) frame`, the sky texture and sampler, `PI` and `skyRadiance()`,
   so don't redeclare them. `meshData.wgsl` (the `Material` and `Object` structs) is prepended to `mesh` (after
   `common`) and `shadow`. `mesh` and `sky` output linear radiance with alpha 1; only `tonemap.wgsl` tone maps.
-  `mipmap.wgsl`, `shape2d.wgsl` and `tonemap.wgsl` are standalone. Shaders load with Vite
+  `mipmap.wgsl`, `shape2d.wgsl`, `tonemap.wgsl`, `taa.wgsl` and `bloom.wgsl` are standalone (fullscreen passes with
+  `layout: 'auto'`, a binding number per entry point's own inputs); `environment.wgsl` gets only `cube.wgsl`. The
+  environment compute pipelines use `layout: 'auto'`, one entry point per group-0 binding set. Shaders load with Vite
   `?raw` imports, and `tests/render/run.mjs` emulates that with an esbuild plugin.
 - **Bind groups:** group 0 = frame (uniform, lights storage, shadow map,
-  comparison sampler, sky texture, sky sampler), group 1 = material, group 2 = objects (the instance array, read-only storage). The frame
+  comparison sampler, sky texture, sky sampler, point/spot shadow map, its matrices storage, irradiance cube,
+  specular cube, BRDF table, their sampler), group 1 = material, group 2 = objects (the instance array, read-only storage). The frame
   group is rebuilt when the sky image changes (a 1×1 white placeholder otherwise).
-  The shadow pass never binds the frame group (the shadow map would be in a usage conflict): its group 0 is its own
-  (the light's view-projection), group 1 the object, and the alpha-tested shadow variant binds the material (the
+  The shadow passes never bind the frame group (the shadow map would be in a usage conflict): their group 0 is their
+  own (the view's matrix: one bind group per shadow view, cascades then point/spot layers, over 256-byte slots of
+  one buffer), group 1 the object, and the alpha-tested shadow variant binds the material (the
   same bind group as the main pass's group 1) as group 2. The 2D pipelines have their own group 0 too (view matrix,
   font atlas, sampler), so rebind the frame group before drawing anything that uses it after them.
 - **Color spaces:** material and light colors are **linear**. Textures are
@@ -433,8 +478,8 @@ Update the help table in `index.html` and the README controls table.
 in `src/demos/` (listed in `DEMO_GAMES`; `shared.ts` has the helpers) and Gem Rush in `src/demoGame.ts`. A game's
 rules are script source strings, which `tsc` never checks, so play it in `tests/unit/demos.test.ts` (that's what
 catches typos) and avoid backticks and `${}` inside them. Builders only lay out objects (pools are inactive
-children the script hands out), so scenes round-trip through `serialize.ts`. The engine has no bloom: halos are
-stacked translucent `Shape2D` discs (`glow()`). Keep `ambientIntensity` low (0.1 to 0.3) or metals wash out (with a gradient or image sky,
+children the script hands out), so scenes round-trip through `serialize.ts`. Halos are stacked translucent `Shape2D`
+discs (`glow()`): bloom (`scene.post`) only spreads light past its threshold, so it doesn't replace them. Keep `ambientIntensity` low (0.1 to 0.3) or metals wash out (with a gradient or image sky,
 `sky.lighting` takes its place: a daylight sky is much dimmer than the sun, see the `Sky` defaults), and
 unlit emissive strengths near 1. The menu scene must be named `ARCADE_SCENE`, and its stands are named after the
 scenes they load. `test:ui` writes `ui-<game>.png` and `ui-game-<game>.png`: **look at them**.
@@ -456,7 +501,17 @@ material maps. Its textured meshes and materials all come from `public/models/ma
 procedural (`scripts/generate-material-glb.mjs`, `npm run generate:materials-glb`); the builders only lay them out. After
 changing either, or the engine's public API, run `npm run generate:materials` and commit in `examples/MaterialLab/`.
 `tests/unit/material-lab.test.ts` plays both scenes, checks every map resolves after a folder round trip and fails
-while the folder is stale. Both example generators share `scripts/example-project.mjs`.
+while the folder is stale. The example generators share `scripts/example-project.mjs`.
+
+**Change the Twilight Heist example.** `buildTwilightHeistProject()` (`src/twilightHeist/`, engine-only, all
+primitives) builds `examples/TwilightHeist/` (its own git repository), a stealth game that shows shadows and blended
+materials. Its `Heist` script detects the thief by the same rule the renderer shadows by: a ray from each tower lamp
+blocked by anything that casts a shadow (opaque and `castShadows`), so keep lamp housings `castShadows = false` and
+keep the shadow-casting lights within the point/spot shadow budget (four spots and one point light now). Walls are
+the boxes of leaf meshes under `Solid` that stand on the ground. After changing the builder, its scripts or the
+engine's public API, run `npm run generate:heist` and commit in `examples/TwilightHeist/`;
+`tests/unit/twilight-heist.test.ts` plays it (walking, coins, being seen, hiding in a shadow, getting caught,
+escaping) and fails while the folder is stale.
 
 **Make an edit undoable.** Push a `Command` with `undo`/`redo` closures to
 `editor.history` *after* applying the change. For transform edits, use

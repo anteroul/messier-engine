@@ -96,8 +96,9 @@ export function shapeObject(name: string, shape: Shape2D, position: Vec3 = [0, 0
 }
 
 /**
- * A soft glow: a few translucent discs of growing size on the object's XY plane (facing +Z). The engine has no bloom,
- * so this is how lamps, engines and suns get their halo.
+ * A soft glow: a few translucent discs of growing size on the object's XY plane (facing +Z). Bloom
+ * (`scene.post.bloom`) only spreads light that's brighter than its threshold; this gives lamps, engines and suns a
+ * halo of their own color and size, whatever the exposure.
  */
 export function glow(name: string, color: Vec3, size: number, alpha = 0.16, order = 0, layers = 4): GameObject {
   const o = new GameObject(name);

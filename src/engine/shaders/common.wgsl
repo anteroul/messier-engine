@@ -3,13 +3,13 @@
 
 struct Frame {
   viewProj: mat4x4f,
-  lightViewProj: mat4x4f,
   cameraPos: vec4f,
   // rgb = ambient color (linear), w = exposure (unused here: the tonemap pass applies it)
   ambient: vec4f,
   lightCount: u32,
   shadowIndex: i32,
   time: f32,
+  // 1 / shadow map size: a texel in the shadow map's UV space
   shadowTexel: f32,
   invViewProj: mat4x4f,
   // Gradient sky colors (linear). skyTop.w = image sky intensity.
@@ -22,6 +22,19 @@ struct Frame {
   sunColor: vec4f,
   // x = mode (0 color, 1 gradient, 2 image), y = lighting strength, z = image rotation (radians), w = image mip count
   sky: vec4f,
+  // xyz = camera forward, w = cascade count (0: no shadows)
+  cameraForward: vec4f,
+  // Per cascade (x, y, z, w = cascades 0..3): view depth where it ends, world size of a texel, depth bias.
+  cascadeFar: vec4f,
+  cascadeTexel: vec4f,
+  cascadeBias: vec4f,
+  // World to each cascade's shadow map clip space (normal Z).
+  cascades: array<mat4x4f, 4>,
+  // The previous frame's viewProj, for motion vectors (temporal antialiasing).
+  prevViewProj: mat4x4f,
+  // xy = this frame's subpixel offset in NDC, added to mesh clip positions (0 without temporal antialiasing). viewProj
+  // itself isn't jittered, so the overlay pass's helpers drawn after the resolve stay put.
+  jitter: vec4f,
 };
 
 // 64 bytes per light, see Renderer.writeLights().
@@ -32,7 +45,8 @@ struct Light {
   direction: vec4f,
   // rgb = linear color, a = intensity
   color: vec4f,
-  // x = cos(inner angle), y = cos(outer angle)
+  // x = cos(inner angle), y = cos(outer angle), z = first point/spot shadow layer (-1: no shadow),
+  // w = shadow texel size per unit of distance from the light
   params: vec4f,
 };
 
@@ -42,27 +56,23 @@ struct Light {
 
 const PI = 3.14159265359;
 
-// Linear radiance of the sky toward unit direction d. `blur` (0 sharp … 1 diffuse) widens it for rough reflections
-// and ambient light: the image sky reads a smaller mip, the gradient eases toward its average. The sun disc only
-// shows unblurred, because lit surfaces already get the sun's highlight from its light.
-fn skyRadiance(d: vec3f, blur: f32) -> vec3f {
+// Linear radiance of the sky toward unit direction d. `level` is the image sky's mip to read (the environment capture
+// reads a smaller one than the screen, so the panorama doesn't alias); `sunDisc` (0 or 1) includes the gradient sky's
+// sun disc, which the environment capture leaves out: lit surfaces already get the sun's highlight from its light.
+fn skyRadiance(d: vec3f, level: f32, sunDisc: f32) -> vec3f {
   if (frame.sky.x > 1.5) {
     let u = atan2(d.x, -d.z) / (2.0 * PI) + 0.5 + frame.sky.z / (2.0 * PI);
     let v = acos(clamp(d.y, -1.0, 1.0)) / PI;
-    let level = blur * max(frame.sky.w - 1.0, 0.0);
     return textureSampleLevel(skyTex, skySampler, vec2f(u, v), level).rgb * frame.skyTop.w;
   }
-  let w = 0.015 + blur * 0.5;
-  let up = mix(frame.skyHorizon.rgb, frame.skyTop.rgb, pow(clamp(d.y, 0.0, 1.0), mix(0.5, 1.0, blur)));
-  let down = mix(frame.skyHorizon.rgb, frame.skyGround.rgb, pow(clamp(-d.y, 0.0, 1.0), mix(0.35, 1.0, blur)));
-  var c = mix(down, up, smoothstep(-w, w, d.y));
-  let average = (frame.skyTop.rgb + 2.0 * frame.skyHorizon.rgb + frame.skyGround.rgb) * 0.25;
-  c = mix(c, average, blur * blur * 0.6);
+  let up = mix(frame.skyHorizon.rgb, frame.skyTop.rgb, pow(clamp(d.y, 0.0, 1.0), 0.5));
+  let down = mix(frame.skyHorizon.rgb, frame.skyGround.rgb, pow(clamp(-d.y, 0.0, 1.0), 0.35));
+  var c = mix(down, up, smoothstep(-0.015, 0.015, d.y));
   if (frame.sunDir.w < 1.0) {
     let cosA = dot(d, frame.sunDir.xyz);
     let edge = 1.0 - frame.sunDir.w;
-    let disc = smoothstep(frame.sunDir.w - edge * 0.3, frame.sunDir.w + edge * 0.05, cosA) * (1.0 - smoothstep(0.0, 0.02, blur));
-    let glow = pow(max(cosA, 0.0), mix(48.0, 3.0, blur)) * frame.sunColor.w;
+    let disc = smoothstep(frame.sunDir.w - edge * 0.3, frame.sunDir.w + edge * 0.05, cosA) * sunDisc;
+    let glow = pow(max(cosA, 0.0), 48.0) * frame.sunColor.w;
     c += frame.sunColor.rgb * (disc * 25.0 + glow * 0.3);
   }
   return c;

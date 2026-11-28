@@ -21,5 +21,5 @@ fn fs_main(in: VSOut) -> @location(0) vec4f {
   let a = frame.invViewProj * vec4f(in.ndc, 1.0, 1.0);
   let b = frame.invViewProj * vec4f(in.ndc, 0.5, 1.0);
   let d = normalize(b.xyz / b.w - a.xyz / a.w);
-  return vec4f(skyRadiance(d, 0.0), 1.0);
+  return vec4f(skyRadiance(d, 0.0, 1.0), 1.0);
 }

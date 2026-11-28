@@ -10,6 +10,56 @@ Add a line under **Unreleased** with every user-visible change.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-28
+
+### Added
+
+- **Bloom:** light brighter than a threshold glows over its surroundings. The scene inspector's new **Post processing**
+  section sets its strength (**Bloom**, 0 is off and the default), **Threshold** and **Scatter** (how far it spreads);
+  scripts use `scene.post`. The demo's glowing orb blooms.
+- **Temporal antialiasing:** **Antialiasing** in the same section switches the scene from 4× MSAA to TAA, which
+  renders one jittered sample per pixel and blends it with the previous frames, following each object's motion. It
+  also smooths shimmering highlights, thin lines and fine textures that MSAA leaves aliased, at the cost of a slightly
+  softer image. The editor's grid, gizmos and 2D stay multisampled either way.
+
+### Changed
+
+- **Image-based lighting:** gradient and image skies now light the scene properly. When the sky changes it's baked
+  into a prefiltered reflection map (one blur per roughness) and an irradiance map, so rough metals show a smoothly
+  blurred sky instead of a resampled one, ambient light comes from the whole sky around a surface, and reflections
+  dim at grazing angles as they should (split-sum BRDF). Mirror-like surfaces no longer show the sun twice (its disc
+  in the sky reflection and its light's highlight).
+
+## [0.8.0] - 2026-11-27
+
+### Added
+
+- **Transparent materials:** a material's new **Blend** setting (inspector, `material.blend`) is `opaque` (as before),
+  `alpha` (glass, smoke: mixes by the base color's alpha, set with the new **Opacity** row) or `additive` (fire,
+  beams: adds light). Blended meshes are drawn after the opaque ones, sorted back to front, don't write depth and
+  cast no shadows. glTF materials with `alphaMode: BLEND` load as `alpha`.
+- **Cascaded shadows:** the sun's shadows now follow the camera out to the scene's **Shadows to** distance
+  (`scene.shadowDistance`, default 50 m), split into up to four **Cascades** (`scene.shadowCascades`) that keep
+  near shadows sharp and still reach far, with soft transitions between them and a fade at the end. Shadow edges no
+  longer shimmer as the camera moves or turns.
+- **Point and spot light shadows:** **Cast shadows** now works on point and spot lights too. Up to twelve spot
+  lights or two point lights (or a mix) cast shadows at once; the ones nearest to the view get them first. The demo's
+  spot light casts them now.
+- **Twilight Heist**, a new example project (`examples/TwilightHeist/`, `npm run generate:heist`): a stealth game in a
+  castle garden at dusk. Sneak past sweeping watchtower lamps to take six coins; whatever a lamp lights sees you, so
+  the shadows of hedges and statues are where you hide. It shows cascaded, spot and point light shadows, alpha-blended
+  stained glass and water, and additive flames, halos and fireflies.
+
+### Changed
+
+- `scene.shadowExtent` (a box around the camera's target) is replaced by `scene.shadowDistance` (how far from the
+  camera shadows reach). **Scene format 3**: older scenes are upgraded on load, with three times their extent as the
+  distance. Scripts that set `shadowExtent` need to set `shadowDistance` instead.
+
+### Removed
+
+- Neon Run's engine drone.
+
 ## [0.7.0] - 2026-11-23
 
 ### Added
@@ -160,7 +210,9 @@ First version.
 
 - The script editor's caret drifted from the highlighted text.
 
-[Unreleased]: https://github.com/anteroul/messier-engine/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/anteroul/messier-engine/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/anteroul/messier-engine/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/anteroul/messier-engine/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/anteroul/messier-engine/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/anteroul/messier-engine/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/anteroul/messier-engine/compare/v0.4.0...v0.5.0

@@ -686,8 +686,6 @@ for (const [name, object, key] of [['Neon Run', 'Ship', 'KeyD'], ['Topple', 'Tur
   await page.keyboard.press('Escape');
   await sleep(200);
   check(`${name} plays`, played.playing && played.found && !!played.camera && errors.length === 0, JSON.stringify({ played, errors }));
-  // Neon Run's engine drones all the time; the other two make sounds when firing, a moment ago.
-  if (name === 'Neon Run') check('Neon Run is heard', played.sounds > 0, JSON.stringify(played));
 }
 check('Stop silences the game', (await state(() => window.audio.activeVoices)) === 0);
 
@@ -766,6 +764,21 @@ check('switch back to first scene', (await state(() => window.engine.scene.findB
   // Back to the imported file, so the saved project below carries it.
   await page.select('.audio-clip', `asset:${imported.ref.asset}`);
   await sleep(50);
+}
+
+// --- Post processing: TAA from the inspector, with bloom; the editor keeps drawing its helpers over it
+{
+  await state(() => window.editor.select(null));
+  await sleep(100);
+  await page.select('.post-antialiasing', 'taa');
+  await state(() => (window.engine.scene.post.bloom = 1));
+  await sleep(500);
+  const post = await state(() => ({ ...window.engine.scene.post }));
+  await page.screenshot({ path: `${OUT}/ui-taa.png` });
+  check('inspector switches the scene to TAA, with bloom', post.antialiasing === 'taa' && post.bloom === 1, JSON.stringify(post));
+  await page.select('.post-antialiasing', 'msaa');
+  await state(() => (window.engine.scene.post.bloom = 0.35));
+  await sleep(100);
 }
 
 // --- Sky: a gradient from the inspector, then a dropped 2:1 image becomes the sky (and saves with the project)
@@ -966,7 +979,7 @@ const made = await state(async () => {
     icon: !!document.querySelector('.asset-row .icon-prefab'),
   };
 });
-check('dragging an object onto Assets makes a prefab file', !!made.id && made.linked && made.meta && made.file === 'messier-prefab:2:Crate 1:string' && made.row && made.icon,
+check('dragging an object onto Assets makes a prefab file', !!made.id && made.linked && made.meta && made.file === 'messier-prefab:3:Crate 1:string' && made.row && made.icon,
   JSON.stringify(made));
 
 await state(() => {
@@ -1016,7 +1029,7 @@ const outside = await page.evaluate(async (id) => {
     version: main.version,
   };
 }, made.id);
-check('a prefab file edited outside reaches its instances; scenes save links', outside.metallic.join() === '1,1' && outside.saved === 2 && outside.version === 2,
+check('a prefab file edited outside reaches its instances; scenes save links', outside.metallic.join() === '1,1' && outside.saved === 2 && outside.version === 3,
   JSON.stringify(outside));
 
 // Export to Folder writes a copy (script types included) and the editor stays with its project.

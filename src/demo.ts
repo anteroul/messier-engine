@@ -121,6 +121,9 @@ function lightObject(name: string, light: Light, position: Vec3, eulerDeg?: Vec3
 
 /** Demo content showing PBR materials, shadows and animated dynamic lights. */
 export function buildDemoScene(scene: Scene): void {
+  // The glow orb and the lights' bright spots bloom; everything else stays below the threshold.
+  scene.post.bloom = 0.35;
+  scene.post.bloomThreshold = 1.5;
   const floorMat = new Material('Floor', { baseColor: [0.22, 0.23, 0.25, 1], roughness: 0.8 });
   const floor = meshObject('Floor', createPlane(30, 1), floorMat, [0, 0, 0]);
   scene.add(addBody(floor, 'static'));
@@ -227,6 +230,7 @@ export function buildDemoScene(scene: Scene): void {
   spot.range = 14;
   spot.innerAngle = 14;
   spot.outerAngle = 24;
+  spot.castShadows = true;
   const spotObj = lightObject('Spot Light', spot, [-4, 5, 4], [-50, -40, 0]);
   scene.add(spotObj);
 }

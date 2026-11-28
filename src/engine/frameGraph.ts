@@ -45,6 +45,8 @@ export interface ColorAttachment {
   clearValue?: GPUColor;
   /** A single-sample texture the (multisampled) attachment resolves into. */
   resolveTarget?: TextureHandle;
+  /** The array layer drawn into (default 0). Passes writing different layers still count as writing the texture. */
+  layer?: number;
 }
 
 /** Depth only: the stencil aspect isn't handled yet. */
@@ -52,6 +54,8 @@ export interface DepthAttachment {
   /** Default 'clear'; 'load' also counts as reading the texture. */
   depthLoadOp?: GPULoadOp;
   depthClearValue?: number;
+  /** The array layer drawn into (default 0), as for color attachments. */
+  layer?: number;
 }
 
 /** Formats and sample count of a render pass's attachments, for choosing pipelines that match them. */
@@ -131,8 +135,8 @@ interface Pass {
   sideEffect: boolean;
   reads: Set<Resource>;
   writes: Set<Resource>;
-  colors: { res: Resource; loadOp: GPULoadOp; clearValue?: GPUColor; resolve: Resource | null }[];
-  depth: { res: Resource; depthLoadOp: GPULoadOp; depthClearValue?: number } | null;
+  colors: { res: Resource; loadOp: GPULoadOp; clearValue?: GPUColor; resolve: Resource | null; layer: number }[];
+  depth: { res: Resource; depthLoadOp: GPULoadOp; depthClearValue?: number; layer: number } | null;
   execute: RenderPassExecute | ComputePassExecute | null;
 }
 
@@ -189,7 +193,7 @@ export class FrameGraph {
         const res = this.resource(h);
         const resolve = o.resolveTarget ? this.resource(o.resolveTarget) : null;
         const loadOp = o.loadOp ?? 'clear';
-        pass.colors.push({ res, loadOp, clearValue: o.clearValue, resolve });
+        pass.colors.push({ res, loadOp, clearValue: o.clearValue, resolve, layer: o.layer ?? 0 });
         this.attach(pass, res, loadOp);
         if (resolve) this.attach(pass, resolve, 'clear');
       },
@@ -197,7 +201,7 @@ export class FrameGraph {
         if (pass.depth) throw new Error(`Frame graph: pass "${name}" has two depth attachments`);
         const res = this.resource(h);
         const depthLoadOp = o.depthLoadOp ?? 'clear';
-        pass.depth = { res, depthLoadOp, depthClearValue: o.depthClearValue };
+        pass.depth = { res, depthLoadOp, depthClearValue: o.depthClearValue, layer: o.layer ?? 0 };
         this.attach(pass, res, depthLoadOp);
       },
     };
@@ -379,7 +383,7 @@ export class FrameGraph {
     const desc: GPURenderPassDescriptor = {
       label: pass.name,
       colorAttachments: pass.colors.map((c) => ({
-        view: this.gpuTexture(c.res).createView(),
+        view: this.attachmentView(c.res, c.layer),
         ...(c.resolve ? { resolveTarget: this.gpuTexture(c.resolve).createView() } : {}),
         ...(c.clearValue !== undefined ? { clearValue: c.clearValue } : {}),
         loadOp: c.loadOp,
@@ -389,13 +393,18 @@ export class FrameGraph {
     if (pass.depth) {
       const d = pass.depth;
       desc.depthStencilAttachment = {
-        view: this.gpuTexture(d.res).createView(),
+        view: this.attachmentView(d.res, d.layer),
         ...(d.depthClearValue !== undefined ? { depthClearValue: d.depthClearValue } : {}),
         depthLoadOp: d.depthLoadOp,
         depthStoreOp: storeOp(d.res),
       };
     }
     return desc;
+  }
+
+  /** A single layer of the texture: an array texture's default view would be all its layers. */
+  private attachmentView(r: Resource, layer: number): GPUTextureView {
+    return this.gpuTexture(r).createView({ dimension: '2d', baseArrayLayer: layer, arrayLayerCount: 1 });
   }
 
   private renderTarget(pass: Pass): RenderTarget {

@@ -19,14 +19,14 @@ item to its design doc in `docs/design/` when it has one.
 - [x] GPU + CPU profiling in the editor (0.7.0)
 - [x] Frustum culling + instancing (0.7.0)
 
-## Phase 1: Render quality
+## Phase 1: Render quality (done)
 
 - [x] Full PBR texture set: normal, metallic-roughness, occlusion, emissive (0.6.0; tangents derived per pixel)
-- [ ] Prefiltered IBL (split-sum)
+- [x] Prefiltered IBL (split-sum) (0.9.0)
 - [x] HDR render target + tonemap pass (0.6.0)
-- [ ] Post stack: bloom, TAA
-- [ ] Cascaded shadows, spot and point shadows
-- [ ] Transparency sorting
+- [x] Post stack: bloom, TAA (0.9.0)
+- [x] Cascaded shadows, spot and point shadows
+- [x] Transparency sorting (blend modes, back-to-front batches)
 
 ## Phase 2: Animation
 

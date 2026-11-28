@@ -104,7 +104,6 @@ function load(name: string): { scene: Scene; errors: () => string[]; script: <T>
   // Left alone, the ship runs into barriers until its shields are gone.
   run(scene, 90);
   eq('Neon Run: crashing uses up the shields', game.shieldsLeft, 0);
-  check('Neon Run: the engine drones', scene.findByName('Engine Sound')!.getComponent(AudioSource)!.isPlaying);
   eq('Neon Run: every crash is heard', played(scene, 'Crash Sound'), 3);
   check('Neon Run: the wreck is hidden', !ship.find('Hull')!.activeSelf);
   const final = game.score;

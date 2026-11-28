@@ -8,7 +8,7 @@ import { isObject, type Json } from './data';
 export const SCENE_FORMAT = 'messier-scene';
 export const PREFAB_FORMAT = 'messier-prefab';
 /** Version of scene and prefab files. Bump it, with a migration, for changes that old readers would misread. */
-export const SCENE_VERSION = 2;
+export const SCENE_VERSION = 3;
 
 /**
  * Upgrades, in order: MIGRATIONS[i] turns a version i + 1 document (a scene or a prefab, as parsed JSON) into
@@ -26,6 +26,14 @@ const MIGRATIONS: ((doc: Json) => void)[] = [
       if (!('baseColorTexture' in m)) m.baseColorTexture = m.texture;
       delete m.texture;
     }),
+  // 3: shadows are cascaded and reach `shadowDistance` from the camera, instead of a box `shadowExtent` across each
+  // way around the camera's target. Three times the extent covers about what the box did from a typical view.
+  (doc) => {
+    const s = doc.settings;
+    if (!isObject(s) || !('shadowExtent' in s)) return;
+    if (typeof s.shadowExtent === 'number' && !('shadowDistance' in s)) s.shadowDistance = s.shadowExtent * 3;
+    delete s.shadowExtent;
+  },
 ];
 
 /** Calls `fn` for every object of a scene or prefab document: top-level ones, children, objects added to instances. */

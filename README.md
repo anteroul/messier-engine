@@ -4,11 +4,16 @@ A browser-based 3D engine written in TypeScript on **WebGPU**, with a built-in
 real-time scene editor. What changed in each version: [CHANGELOG.md](CHANGELOG.md).
 
 - **Forward PBR renderer**: metallic-roughness GGX shading, ACES tone mapping,
-  4× MSAA, reversed-Z depth, base color, normal, metallic-roughness, occlusion and
-  emissive textures with GPU-generated mipmaps (normal maps need no stored tangents).
-- **Dynamic lights**: up to 128 directional, point and spot lights, all
-  updated every frame from the scene graph. The first shadow-casting
-  directional light gets a 2048² PCF shadow map.
+  4× MSAA or temporal antialiasing (TAA), bloom, reversed-Z depth, base color, normal,
+  metallic-roughness, occlusion and emissive textures with GPU-generated mipmaps
+  (normal maps need no stored tangents).
+- **Dynamic lights and shadows**: up to 128 directional, point and spot
+  lights, all updated every frame from the scene graph. The first
+  shadow-casting directional light gets up to four cascaded shadow maps that
+  follow the camera; point and spot lights cast shadows too (twelve spot
+  lights or two point lights at once, nearest first).
+- **Transparency**: alpha-blended (glass, water) and additive (fire, glows)
+  materials, sorted back to front.
 - **2D shapes and text**: rectangles (optionally rounded), ellipses, regular
   polygons and arbitrary paths, filled and outlined, plus signed-distance-field
   text that stays sharp at any size, with outlines, alignment and wrapping.
@@ -25,8 +30,9 @@ real-time scene editor. What changed in each version: [CHANGELOG.md](CHANGELOG.m
   colliders, dynamic / static / kinematic bodies, friction, restitution,
   damping and sleeping, solved with fixed-step sequential impulses.
 - **Skies**: a gradient sky with a sun that follows the scene's directional
-  light, or an equirectangular panorama image. The sky also lights the scene:
-  metals reflect it, blurrier the rougher they are.
+  light, or an equirectangular panorama image. The sky also lights the scene
+  by prefiltered image-based lighting (split sum): metals reflect it, blurrier
+  the rougher they are, and it gives soft ambient light.
 - **Audio**: an `AudioSource` component plays imported sound files (`.wav`,
   `.mp3`, `.ogg`…, saved inside the project) or sound effects from a built-in
   synthesizer (lasers, coins, explosions, from a few parameters, no files), in
@@ -43,10 +49,10 @@ real-time scene editor. What changed in each version: [CHANGELOG.md](CHANGELOG.m
 - **Game builds**: the **Build** button next to Play (or **☰ → Build…**) picks and orders the scenes (Unity-style
   build settings) and downloads the game as a `.zip` holding one self-contained
   `index.html` that runs anywhere WebGPU does, even straight from disk.
-- **No runtime dependencies**: the math, loaders, renderer and UI are all in2
+- **No runtime dependencies**: the math, loaders, renderer and UI are all in
   this repo. The only npm packages are build tools (Vite, TypeScript, WebGPU types).
 
-![Editor overview: the Material Lab gallery in the viewport, the hierarchy, and the inspector showing a material with base color, metal/rough, normal, occlusion and emissive maps](docs/screenshot.png)
+![Editor overview: the Twilight Heist example's castle garden at dusk in the viewport, watchtower lamps casting hedge and statue shadows under a low sun, and the inspector showing a shadow-casting spot light and its Searchlight script](docs/screenshot.png)
 
 ## Running on NixOS (flake)
 
@@ -219,7 +225,13 @@ If WebGPU isn't available, the viewport shows an explanation instead of the scen
   going to scripts. Script errors go to the browser console. The settings
   and the game title are saved with the project.
 - **Environment:** with nothing selected, the inspector edits the sky,
-  exposure, shadow extent and the grid.
+  exposure, how far the sun's shadows reach (*Shadows to*) and in how many
+  *Cascades*, and the grid.
+- **Post processing:** the scene's *Post processing* section picks the
+  *Antialiasing* (*msaa*: sharp geometry edges; *taa*: also smooths shimmering
+  highlights and fine textures, slightly softer) and sets *Bloom* (0 is off), its
+  *Threshold* (how bright light must be to glow) and *Scatter* (how far it spreads).
+  The demo's glowing orb uses bloom.
 - **Sky:** the *Sky* section picks a flat *color* (with the ambient light
   color), a *gradient* (top, horizon and ground colors and a sun that sits
   opposite the shadow-casting directional light), or an *image*: an
@@ -469,16 +481,19 @@ src/engine/             The engine (no DOM dependencies except the canvas)
   audio.ts              Web Audio output (voices, listener, mute); the host calls audio.resume() on a gesture
   audioSource.ts        AudioSource component and its per-frame lifecycle; audioClip.ts: AudioClip (+ ClipRef)
   sfx.ts                Sound-effect synthesizer (SfxParams, SFX_PRESETS, renderSfx)
-  sky.ts                Sky settings (color / gradient / image) of a scene
+  sky.ts                Sky settings (color / gradient / image) of a scene; postProcessing.ts: antialiasing, bloom
   scripting.ts          Script component, ScriptAsset (compile, diagnostics, in-place hot reload)
   typescript.ts         Tokenizer + position-preserving TypeScript type stripper
-  renderer.ts           WebGPU device, pipelines, the frame's passes (shadow, main HDR, tonemap, overlay), uploads
+  renderer.ts           WebGPU device, pipelines, the frame's passes (shadows, main HDR, TAA, bloom, tonemap, overlay), uploads
+  environment.ts        The sky baked for image-based lighting (specular and irradiance cubes, BRDF table)
+  shadows.ts            Shadow cascades and point/spot light shadow views
   frameGraph.ts         Frame graph: pass ordering and culling, pooled transient textures, store ops
   pipelines.ts          Mesh pipeline variants: key from pass, material, mesh and target; cache; prewarming
   culling.ts            Frustum planes and box tests; batching.ts: culled, instanced draw lists (DrawList)
   profiler.ts           Frame profiler: nested CPU sections, GPU pass times; gpuTimer.ts: timestamp queries per pass
   shaders/*.wgsl        common (frame structs, sky lookup), meshData (material, object), mesh (PBR), sky, tonemap
-                        (exposure + ACES), shadow (opaque and alpha-tested), grid, overlay, mipmap, shape2d (2D + SDF text)
+                        (bloom + exposure + ACES), taa (temporal resolve), bloom (prefilter, down/upsample), shadow (opaque
+                        and alpha-tested), grid, overlay, mipmap, shape2d (2D + SDF text)
   scene.ts              GameObject (components, groups, destroy/instantiate), Scene (registry, lifecycle)
   transform.ts          Transform: hierarchy, cached local/world matrices, world-space helpers
   component.ts          Component base class; meshRenderer.ts: MeshRenderer
@@ -515,11 +530,13 @@ public/models/          Sample assets (lantern.glb, icosahedron.obj/.mtl, materi
 src/materialLab/        The Material Lab example project's scenes and scripts
 examples/Demo/          The demo project as a project folder, its own git repository (npm run generate:demo; ignored)
 examples/MaterialLab/   The Material Lab project folder, its own git repository (npm run generate:materials; ignored)
+src/twilightHeist/      The Twilight Heist example project (a stealth game showing shadows and transparency)
+examples/TwilightHeist/ The Twilight Heist project folder, its own git repository (npm run generate:heist; ignored)
 CHANGELOG.md            Changes per version; npm run release -- <patch|minor|major> cuts a version
 scripts/                messier-types.mjs + types-plugin.mjs (messier.d.ts for project folders),
                         generate-sample-glb.mjs (regenerates lantern.glb), generate-material-glb.mjs
                         (material-lab.glb), glb.mjs (their PNG/GLB writer), release.mjs, generate-demo-project.mjs
-                        and generate-material-lab.mjs (regenerate examples/Demo/ and examples/MaterialLab/, through
+                        generate-material-lab.mjs and generate-twilight-heist.mjs (regenerate the examples/ folders, through
                         example-project.mjs), mangle-props.mjs (release build),
                         player-plugin.mjs (bundles src/player.ts into messier-player.js for builds)
 tests/                  Unit tests and optional GPU smoke tests (separate package.json)
@@ -574,10 +591,12 @@ The tests need a working Vulkan driver. On NixOS that means
   allowed), `o`/`g`/`usemtl` groups, `Kd`, `Ke`, `Ns`, `d`/`Tr`, `Pm`/`Pr`,
   `map_Kd`, `map_Ke` and normal maps (`norm`, or `map_Bump`/`bump` as Blender writes
   them, with `-bm` as the scale).
-- **Rendering:** opaque only. Alpha *blend* materials render opaque; alpha
-  *mask* works. One directional shadow map, no point or spot shadows.
-  Environment lighting is a sky/ground gradient approximation, not
-  image-based lighting.
+- **Rendering:** blended materials are sorted per object, not per triangle, so
+  intersecting or self-overlapping transparent meshes can draw in the wrong
+  order, and they cast no shadows. Shadows from one directional light, and from
+  at most twelve spot lights or two point lights at a time. Image-based lighting
+  comes from the sky only: reflections don't show other objects, and a flat
+  *color* sky lights with a simple gradient instead.
 - **2D:** text uses the browser's fonts through an `OffscreenCanvas`, without
   kerning or right-to-left shaping. 2D shapes aren't lit, don't cast shadows
   and don't collide. Text outlines reach about 0.15 × the font size.

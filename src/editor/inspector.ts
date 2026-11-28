@@ -22,11 +22,15 @@ import {
   type TextAlign,
   type TextBaseline,
   type TextureSlot,
+  BLEND_MODES,
+  type BlendMode,
   DEG2RAD,
   PROJECTIONS,
   RAD2DEG,
   Script,
   SKY_MODES,
+  ANTIALIASING_MODES,
+  type Antialiasing,
   type SkyMode,
   createBehaviour,
   fitCollider,
@@ -113,11 +117,13 @@ export class InspectorPanel {
     this.add(projectName.binding, sceneName.binding);
     const env = section('Environment');
     const exposure = sliderRow('Exposure', () => scene.exposure, (v) => (scene.exposure = v), 0.1, 4, 0.05);
-    const shadow = numberRow('Shadow extent', () => scene.shadowExtent, (v) => (scene.shadowExtent = v), { step: 1, min: 2, max: 200 });
+    const shadow = numberRow('Shadows to', () => scene.shadowDistance, (v) => (scene.shadowDistance = v), { step: 5, min: 1, max: 2000 });
+    const cascades = sliderRow('Cascades', () => scene.shadowCascades, (v) => (scene.shadowCascades = v), 1, 4, 1);
     const grid = checkboxRow('Show grid', () => engine.showGrid, (v) => (engine.showGrid = v));
-    env.body.append(exposure.row, shadow.row, grid.row);
-    this.add(exposure.binding, shadow.binding, grid.binding);
+    env.body.append(exposure.row, shadow.row, cascades.row, grid.row);
+    this.add(exposure.binding, shadow.binding, cascades.binding, grid.binding);
     const skySection = this.buildSky();
+    const postSection = this.buildPost();
 
     const physics = section('Physics');
     const gravity = vec3Row('Gravity', () => scene.physics.gravity, (v) => (scene.physics.gravity = v), { step: 0.1 });
@@ -136,10 +142,31 @@ export class InspectorPanel {
       el('p', { class: 'hint', text: `${objects} objects, ${lights} lights, ${cameras} camera${cameras === 1 ? '' : 's'}.` }),
       el('p', { class: 'hint', text: 'Select an object in the viewport or hierarchy to edit it. Drop .glb / .gltf / .obj files onto the viewport to import.' }),
     );
-    return [project.root, skySection, env.root, physics.root, info.root];
+    return [project.root, skySection, env.root, postSection, physics.root, info.root];
   }
 
   /** Sky and ambient light: the rows depend on the sky mode. */
+  private buildPost(): HTMLElement {
+    const post = this.editor.scene.post;
+    const s = section('Post processing');
+    const items = [
+      selectRow('Antialiasing', [...ANTIALIASING_MODES], () => post.antialiasing, (v) => (post.antialiasing = v as Antialiasing)),
+      sliderRow('Bloom', () => post.bloom, (v) => (post.bloom = v), 0, 2, 0.01),
+      sliderRow('Threshold', () => post.bloomThreshold, (v) => (post.bloomThreshold = v), 0, 4, 0.05),
+      sliderRow('Scatter', () => post.bloomScatter, (v) => (post.bloomScatter = v), 0, 1, 0.01),
+    ];
+    items[0].row.querySelector('select')?.classList.add('post-antialiasing');
+    for (const r of items) {
+      s.body.append(r.row);
+      this.add(r.binding);
+    }
+    s.body.append(el('p', {
+      class: 'hint',
+      text: 'MSAA keeps edges sharp; TAA also smooths shimmering highlights and textures, a little softer. Bloom makes light brighter than the threshold glow.',
+    }));
+    return s.root;
+  }
+
   private buildSky(): HTMLElement {
     const ed = this.editor;
     const sky = ed.scene.sky;
@@ -268,6 +295,10 @@ export class InspectorPanel {
       const emissiveStrength = numberRow('Emissive ×', () => mat.emissiveStrength, (v) => (mat.emissiveStrength = v), { step: 0.1, min: 0, max: 100 });
       const unlit = checkboxRow('Unlit', () => mat.unlit, (v) => (mat.unlit = v));
       const doubleSided = checkboxRow('Double sided', () => mat.doubleSided, (v) => (mat.doubleSided = v));
+      const blend = selectRow('Blend', [...BLEND_MODES], () => mat.blend, (v) => {
+        mat.blend = v as BlendMode;
+        this.refresh();
+      });
 
       // Each texture slot: Load… imports an image as a project asset (so the scene saves with it); setTexture rebuilds the panel.
       const texRow = (label: string, slot: TextureSlot) => {
@@ -302,8 +333,14 @@ export class InspectorPanel {
         s.body.append(occlusionStrength.row);
         this.add(occlusionStrength.binding);
       }
-      s.body.append(emissive.row, emissiveStrength.row, texRow('Emissive map', 'emissiveTexture'), unlit.row, doubleSided.row);
-      this.add(color.binding, metallic.binding, roughness.binding, emissive.binding, emissiveStrength.binding, unlit.binding, doubleSided.binding);
+      s.body.append(emissive.row, emissiveStrength.row, texRow('Emissive map', 'emissiveTexture'), unlit.row, doubleSided.row, blend.row);
+      this.add(color.binding, metallic.binding, roughness.binding, emissive.binding, emissiveStrength.binding, unlit.binding, doubleSided.binding, blend.binding);
+      // The base color's alpha only matters to blended materials (and alpha-tested ones, which keep their texture's).
+      if (mat.blend !== 'opaque') {
+        const opacity = sliderRow('Opacity', () => mat.baseColor[3], (v) => (mat.baseColor = [mat.baseColor[0], mat.baseColor[1], mat.baseColor[2], v]), 0, 1, 0.01);
+        s.body.append(opacity.row);
+        this.add(opacity.binding);
+      }
       out.push(s.root);
     }
 
@@ -330,13 +367,17 @@ export class InspectorPanel {
         s.body.append(inner.row, outer.row);
         this.add(inner.binding, outer.binding);
       }
-      if (light.type === 'directional') {
-        const shadows = checkboxRow('Cast shadows', () => light.castShadows, (v) => (light.castShadows = v));
-        s.body.append(shadows.row, el('p', { class: 'hint', text: 'Only the first shadow-casting directional light renders shadows. Rotate the object to aim it.' }));
-        this.add(shadows.binding);
-      } else if (light.type === 'spot') {
-        s.body.append(el('p', { class: 'hint', text: 'Spot lights shine along the object’s local −Z axis.' }));
-      }
+      const shadows = checkboxRow('Cast shadows', () => light.castShadows, (v) => (light.castShadows = v));
+      s.body.append(shadows.row);
+      this.add(shadows.binding);
+      const hint = {
+        directional: 'Only the first shadow-casting directional light renders shadows. Rotate the object to aim it.',
+        spot: 'Spot lights shine along the object’s local −Z axis. Up to twelve spot lights (or two point lights) cast ' +
+          'shadows at once, the nearest first; a mesh around the light, like a lamp shade, blocks it unless it casts no shadows.',
+        point: 'Up to two point lights (or twelve spot lights) cast shadows at once, the nearest first; a mesh around ' +
+          'the light, like a lantern, blocks it unless it casts no shadows.',
+      }[light.type];
+      s.body.append(el('p', { class: 'hint', text: hint }));
       out.push(s.root);
     }
 

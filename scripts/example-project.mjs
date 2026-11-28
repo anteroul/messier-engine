@@ -1,5 +1,5 @@
 // Shared by the scripts that write the example project folders (generate-demo-project.mjs → examples/Demo/,
-// generate-material-lab.mjs → examples/MaterialLab/): runs engine-only TypeScript under Node and writes a Project
+// generate-material-lab.mjs → examples/MaterialLab/, generate-twilight-heist.mjs → examples/TwilightHeist/): runs engine-only TypeScript under Node and writes a Project
 // the way Export to Folder does, script types for code editors included.
 import * as esbuild from 'esbuild'; // comes with Vite
 import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';

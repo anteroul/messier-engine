@@ -11,7 +11,7 @@
 // pass's alpha test is one (UVs in, a fragment stage the opaque variant doesn't have). Shader modules and pipeline layouts are cached apart from
 // pipelines, since many variants share them.
 
-import type { Material } from './material';
+import { BLEND_MODES, type BlendMode, type Material } from './material';
 import type { Mesh } from './mesh';
 import type { RenderTarget } from './frameGraph';
 
@@ -23,8 +23,15 @@ export interface MeshVariantKey {
   cull: GPUCullMode;
   /** Discard below the material's alpha cutoff. Only the shadow pass uses it; the main pass branches at runtime. */
   alphaTest: boolean;
+  /** Main pass: how the color is blended in. Blended variants test depth without writing it. */
+  blend: BlendMode;
   /** Null for depth-only passes. */
   colorFormat: GPUTextureFormat | null;
+  /**
+   * Main pass with temporal antialiasing: the second color target, where opaque surfaces write their screen-space
+   * motion (fs_velocity). Null otherwise.
+   */
+  velocityFormat: GPUTextureFormat | null;
   sampleCount: number;
   depthFormat: GPUTextureFormat;
   /** Reversed-Z 'greater' for the main pass, 'less' for shadow maps. */
@@ -32,7 +39,7 @@ export interface MeshVariantKey {
 }
 
 /** The key's fields in a fixed order, for its string form. Add new fields here too. */
-const KEY_FIELDS = ['pass', 'cull', 'alphaTest', 'colorFormat', 'sampleCount', 'depthFormat', 'depthCompare'] as const satisfies readonly (keyof MeshVariantKey)[];
+const KEY_FIELDS = ['pass', 'cull', 'alphaTest', 'blend', 'colorFormat', 'velocityFormat', 'sampleCount', 'depthFormat', 'depthCompare'] as const satisfies readonly (keyof MeshVariantKey)[];
 
 export function variantKeyString(key: MeshVariantKey): string {
   return KEY_FIELDS.map((f) => `${f}=${String(key[f])}`).join(';');
@@ -44,7 +51,7 @@ export function variantKeyString(key: MeshVariantKey): string {
  */
 export function meshVariantKey(
   pass: MeshPass,
-  material: Pick<Material, 'doubleSided' | 'alphaCutoff'>,
+  material: Pick<Material, 'doubleSided' | 'alphaCutoff' | 'blend'>,
   _mesh: Mesh | null,
   target: RenderTarget,
 ): MeshVariantKey {
@@ -55,19 +62,29 @@ export function meshVariantKey(
     // Shadow maps draw both faces, so thin and open meshes cast shadows from either side.
     cull: shadow || material.doubleSided ? 'none' : 'back',
     alphaTest: shadow && material.alphaCutoff > 0,
+    blend: shadow ? 'opaque' : material.blend,
     colorFormat: target.colorFormats[0] ?? null,
+    velocityFormat: shadow ? null : (target.colorFormats[1] ?? null),
     sampleCount: target.sampleCount,
     depthFormat: target.depthFormat,
     depthCompare: shadow ? 'less' : 'greater',
   };
 }
 
-/** Every valid key for these targets: the variants a project can need. Tests build them all. */
-export function allMeshVariantKeys(targets: Record<MeshPass, RenderTarget>): MeshVariantKey[] {
+/**
+ * Every valid key for these targets (a pass may draw into several: the main pass's MSAA and TAA targets): the variants
+ * a project can need. Tests build them all.
+ */
+export function allMeshVariantKeys(targets: Record<MeshPass, RenderTarget | readonly RenderTarget[]>): MeshVariantKey[] {
   const out: MeshVariantKey[] = [];
   for (const pass of ['main', 'shadow'] as const) {
-    for (const doubleSided of [false, true]) {
-      for (const alphaCutoff of [0, 0.5]) out.push(meshVariantKey(pass, { doubleSided, alphaCutoff }, null, targets[pass]));
+    const list = targets[pass];
+    for (const target of 'depthFormat' in list ? [list] : list) {
+      for (const doubleSided of [false, true]) {
+        for (const alphaCutoff of [0, 0.5]) {
+          for (const blend of BLEND_MODES) out.push(meshVariantKey(pass, { doubleSided, alphaCutoff, blend }, null, target));
+        }
+      }
     }
   }
   const seen = new Set<string>();
@@ -76,6 +93,22 @@ export function allMeshVariantKeys(targets: Record<MeshPass, RenderTarget>): Mes
     return !seen.has(s) && !!seen.add(s);
   });
 }
+
+/**
+ * The shader writes straight (not premultiplied) color with the opacity in alpha. The target's alpha is coverage (0
+ * where nothing was drawn, which the tonemap pass fills with the background), so blending keeps it up to date.
+ */
+const BLEND_STATES: Record<BlendMode, GPUBlendState | null> = {
+  opaque: null,
+  alpha: {
+    color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+    alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+  },
+  additive: {
+    color: { srcFactor: 'src-alpha', dstFactor: 'one', operation: 'add' },
+    alpha: { srcFactor: 'one-minus-dst-alpha', dstFactor: 'one', operation: 'add' },
+  },
+};
 
 /** What the variants are made of: the WGSL pieces and the bind group layouts the renderer owns. */
 export interface MeshPipelineSources {
@@ -186,6 +219,10 @@ export class MeshPipelines {
     const multisample: GPUMultisampleState = { count: key.sampleCount };
     if (key.pass === 'main') {
       const module = this.module('mesh');
+      const blend = BLEND_STATES[key.blend];
+      const targets: GPUColorTargetState[] = key.colorFormat ? [{ format: key.colorFormat, ...(blend ? { blend } : {}) }] : [];
+      // Blended surfaces leave the motion of what's behind them (writeMask 0): history is reprojected by that.
+      if (key.velocityFormat) targets.push({ format: key.velocityFormat, writeMask: blend ? 0 : 0xf });
       return {
         label,
         layout,
@@ -201,9 +238,10 @@ export class MeshPipelines {
             ],
           }],
         },
-        fragment: { module, entryPoint: 'fs_main', targets: key.colorFormat ? [{ format: key.colorFormat }] : [] },
+        fragment: { module, entryPoint: key.velocityFormat ? 'fs_velocity' : 'fs_main', targets },
         primitive,
-        depthStencil: { format: key.depthFormat, depthWriteEnabled: true, depthCompare: key.depthCompare },
+        // Blended surfaces don't hide what's behind them: they're drawn sorted, after everything that writes depth.
+        depthStencil: { format: key.depthFormat, depthWriteEnabled: !blend, depthCompare: key.depthCompare },
         multisample,
       };
     }

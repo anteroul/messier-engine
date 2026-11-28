@@ -762,7 +762,9 @@ writeFileSync(`${OUT}/frame.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 1
   checker.gpu = checkerTex;
 
   const s = new Scene();
-  s.shadowExtent = 4;
+  // One cascade, so each caster is drawn into the shadow map once.
+  s.shadowDistance = 12;
+  s.shadowCascades = 1;
   const ground = new GameObject('Ground');
   ground.mesh = createPlane(12);
   ground.material = new Material('ground', { baseColor: [0.8, 0.8, 0.8, 1], roughness: 0.9 });
@@ -845,7 +847,8 @@ writeFileSync(`${OUT}/frame.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 1
   const { Material, Light, createCube, createPlane } = engine;
   const device = renderer.device;
   const s = new Scene();
-  s.shadowExtent = 8;
+  s.shadowDistance = 20;
+  s.shadowCascades = 1;
   s.background = [0, 0, 0];
   const ground = new GameObject('Ground');
   ground.mesh = createPlane(30);
@@ -869,7 +872,7 @@ writeFileSync(`${OUT}/frame.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 1
   };
   const xs = [-3, -1.5, 0, 1.5, 3];
   xs.forEach((x, i) => cube(`Seen ${i}`, x, 0));
-  cube('Behind', 0, 30); // behind the camera, inside the shadow map's depth range but outside its extent
+  cube('Behind', 0, 30); // behind the camera, outside the cascade's box
   cube('Left', -60, 0);
   cube('Right', 60, 0);
   const red = cube('Red', 0, -2.5);
@@ -922,6 +925,547 @@ writeFileSync(`${OUT}/frame.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 1
   check('culling leaves the frame unchanged', differing === 0, `${differing} differing bytes`);
 }
 
+// ---- transparency: blended materials are drawn after the opaque ones, back to front, whatever the scene's order.
+// Unlit panes in front of a white wall and of the empty background.
+{
+  const { Material, createPlane } = engine;
+  const device = renderer.device;
+  const upright = quat.fromEulerDeg(90, 0, 0);
+  const build = (order: string[]) => {
+    const s = new Scene();
+    s.background = [0, 0, 1];
+    const make: Record<string, () => void> = {
+      wall: () => pane('Wall', new Material('wall', { baseColor: [1, 1, 1, 1], unlit: true }), -1.5, -2, 3),
+      red: () => pane('Red', new Material('red', { baseColor: [1, 0, 0, 0.5], unlit: true, blend: 'alpha' }), 0, 0, 6),
+      green: () => pane('Green', new Material('green', { baseColor: [0, 1, 0, 0.5], unlit: true, blend: 'alpha' }), 0, 1, 2),
+      glow: () => pane('Glow', new Material('glow', { baseColor: [0, 0.2, 0, 1], unlit: true, blend: 'additive' }), -1.5, 2, 1),
+    };
+    const pane = (name: string, material: any, x: number, z: number, size: number) => {
+      const o = new GameObject(name);
+      o.mesh = createPlane(size);
+      o.material = material;
+      o.material.doubleSided = true;
+      o.transform.position = [x, 0, z];
+      o.transform.rotation = upright;
+      s.add(o);
+    };
+    for (const name of order) make[name]();
+    s.updateMatrices();
+    return s;
+  };
+  const cam = new Camera();
+  cam.position = [0, 0, 10];
+  cam.target = [0, 0, 0];
+  cam.aspect = W / H;
+  const bpr = Math.ceil((W * 4) / 256) * 256;
+  const bgra = (fakeContext as any).format === 'bgra8unorm';
+  const readFrame = async () => {
+    const out = device.createBuffer({ size: bpr * H, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const e = device.createCommandEncoder();
+    e.copyTextureToBuffer({ texture: current! }, { buffer: out, bytesPerRow: bpr }, [W, H]);
+    device.queue.submit([e.finish()]);
+    await out.mapAsync(GPUMapMode.READ);
+    const px = new Uint8Array(out.getMappedRange()).slice();
+    out.destroy();
+    return px;
+  };
+  const rgb = (px: Uint8Array, p: [number, number, number]) => {
+    const [x, y] = cam.worldToScreen(p, W, H)!;
+    const o = Math.round(y) * bpr + Math.round(x) * 4;
+    return [px[o + (bgra ? 2 : 0)], px[o + 1], px[o + (bgra ? 0 : 2)]];
+  };
+  device.pushErrorScope('validation');
+  const stats = { ...renderer.render(build(['wall', 'red', 'green', 'glow']), cam, { time: 0 }) };
+  const a = await readFrame();
+  renderer.render(build(['glow', 'green', 'red', 'wall']), cam, { time: 0 });
+  const b = await readFrame();
+  const err = await device.popErrorScope();
+  check('blended meshes render', !err && stats.drawCalls === 4, err?.message ?? JSON.stringify(stats));
+  let differing = 0;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W * 4; x++) if (a[y * bpr + x] !== b[y * bpr + x]) differing++;
+  check('the scene\'s order doesn\'t change a blended frame', differing === 0, `${differing} differing bytes`);
+  const overWall = rgb(a, [-1.5, 1.2, 0]), overBoth = rgb(a, [-0.5, 0.5, 0]), overNothing = rgb(a, [2.4, 2.4, 0]);
+  const redOverWall = rgb(a, [-2.2, -1.2, 0]), glow = rgb(a, [-1.5, 0, 2]);
+  // Unlit colors are tone mapped like everything else: linear 1 shows as about 231, 0.5 as about 205.
+  check('a half-transparent pane lets the wall behind it through', redOverWall[0] > 220 && redOverWall[1] > 120 && redOverWall[1] < redOverWall[0] - 10 && redOverWall[1] === redOverWall[2],
+    redOverWall.join());
+  check('the nearer pane is blended last', overBoth[1] > overBoth[0] && overBoth[0] > 60, overBoth.join());
+  check('over nothing, a pane blends with the background', overNothing[0] > 100 && overNothing[1] < 5 && overNothing[2] > 100 && overNothing[2] < 160, overNothing.join());
+  check('additive materials only add light', glow[1] > overWall[1] - 1 && glow[0] >= redOverWall[0] - 1, `${glow.join()} over ${overWall.join()}`);
+}
+
+// ---- cascaded shadows: posts at growing distances under a slanted sun each cast a shadow toward the camera's side,
+// one post per cascade; past the shadow distance there are none. Saved as cascades.png.
+{
+  const { Material, Light, createCube, createPlane } = engine;
+  const device = renderer.device;
+  const s = new Scene();
+  s.background = [0, 0, 0];
+  s.ambientIntensity = 0.05;
+  s.shadowDistance = 70;
+  const ground = new GameObject('Ground');
+  ground.mesh = createPlane(300);
+  ground.material = new Material('ground', { baseColor: [0.6, 0.6, 0.6, 1], roughness: 1 });
+  ground.castShadows = false;
+  s.add(ground);
+  const sun = new GameObject('Sun');
+  sun.light = new Light('directional', [1, 1, 1], 3);
+  sun.light.castShadows = true;
+  // Travelling toward -x and down: a post 2 m tall shades the ground up to 1 m past its -x side.
+  sun.transform.rotation = quat.lookRotation(vec3.normalize([-0.5, -1, 0]));
+  s.add(sun);
+  const post = createCube(1);
+  // View depths of about 3.6, 7.6, 16.5 and 27 m: one per cascade (they end near 4.6, 10, 21 and 70 m).
+  const distances = [1, 5, 14, 25];
+  distances.forEach((d, i) => {
+    const o = new GameObject(`Post ${i}`);
+    o.mesh = post;
+    o.material = new Material('post', { baseColor: [0.6, 0.6, 0.6, 1] });
+    o.transform.position = [0, 1, 8 - d];
+    o.transform.scale = [1, 2, 1];
+    s.add(o);
+  });
+  s.updateMatrices();
+  // Low, wide and off to the shaded side, so the nearest shadow is in view and no post hides another's.
+  const cam = new Camera();
+  cam.position = [-4, 3, 10];
+  cam.target = [0, 0, -20];
+  cam.fovDeg = 90;
+  cam.aspect = W / H;
+  const bpr = Math.ceil((W * 4) / 256) * 256;
+  const px = new Uint8Array(bpr * H);
+  const readInto = async (into: Uint8Array) => {
+    const out = device.createBuffer({ size: bpr * H, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const e = device.createCommandEncoder();
+    e.copyTextureToBuffer({ texture: current! }, { buffer: out, bytesPerRow: bpr }, [W, H]);
+    device.queue.submit([e.finish()]);
+    await out.mapAsync(GPUMapMode.READ);
+    into.set(new Uint8Array(out.getMappedRange()));
+    out.destroy();
+  };
+  device.pushErrorScope('validation');
+  const stats = { ...renderer.render(s, cam, { time: 0 }) };
+  await readInto(px);
+  const err = await device.popErrorScope();
+  const lum = (p: [number, number, number]) => {
+    const [x, y] = cam.worldToScreen(p, W, H)!;
+    if (x < 0 || y < 0 || x >= W || y >= H) return -1;
+    const o = Math.round(y) * bpr + Math.round(x) * 4;
+    return px[o] + px[o + 1] + px[o + 2];
+  };
+  const bgra = (fakeContext as any).format === 'bgra8unorm';
+  const raw = Buffer.alloc((W * 4 + 1) * H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const o = y * bpr + x * 4, d = y * (W * 4 + 1) + 1 + x * 4;
+      raw[d] = px[o + (bgra ? 2 : 0)];
+      raw[d + 1] = px[o + 1];
+      raw[d + 2] = px[o + (bgra ? 0 : 2)];
+      raw[d + 3] = 255;
+    }
+  }
+  writeFileSync(`${OUT}/cascades.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]));
+  // Per post: the ground in its shadow, half a metre past its -x side, and the lit ground a metre and a half behind.
+  const shading = () => distances.map((d) => [lum([-1, 0, 8 - d]), lum([-1, 0, 6.5 - d])]);
+  const pairs = shading();
+  check('cascaded shadows render', !err && stats.shadowCasters >= 4, err?.message ?? JSON.stringify(stats));
+  check('every post within the shadow distance casts a shadow, in each cascade',
+    pairs.every(([shade, lit]) => shade >= 0 && shade < lit * 0.6), pairs.map((p) => p.join('/')).join(' '));
+  s.shadowDistance = 10;
+  renderer.render(s, cam, { time: 0 });
+  await readInto(px);
+  const near = shading();
+  check('past the shadow distance there are none', near[1][0] < near[1][1] * 0.6 && near[2][0] > near[2][1] * 0.9 && near[3][0] > near[3][1] * 0.9,
+    near.map((p) => p.join('/')).join(' '));
+  s.shadowDistance = 70;
+  s.shadowCascades = 1;
+  const one = { ...renderer.render(s, cam, { time: 0 }) };
+  check('fewer cascades, fewer shadow casters drawn', one.shadowCasters < stats.shadowCasters, `${one.shadowCasters} < ${stats.shadowCasters}`);
+}
+
+// ---- point and spot light shadows: a light beside a block shades the ground behind it; the ground as far from the
+// light on its other side is lit. Saved as light-shadows.png (the spot light's frame).
+{
+  const { Material, Light, createCube, createPlane } = engine;
+  const device = renderer.device;
+  const bpr = Math.ceil((W * 4) / 256) * 256;
+  const cam = new Camera();
+  cam.position = [0, 12, 9];
+  cam.target = [0, 0, 0];
+  cam.aspect = W / H;
+  const px = new Uint8Array(bpr * H);
+  const readInto = async () => {
+    const out = device.createBuffer({ size: bpr * H, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const e = device.createCommandEncoder();
+    e.copyTextureToBuffer({ texture: current! }, { buffer: out, bytesPerRow: bpr }, [W, H]);
+    device.queue.submit([e.finish()]);
+    await out.mapAsync(GPUMapMode.READ);
+    px.set(new Uint8Array(out.getMappedRange()));
+    out.destroy();
+  };
+  const lum = (p: [number, number, number]) => {
+    const [x, y] = cam.worldToScreen(p, W, H)!;
+    const o = Math.round(y) * bpr + Math.round(x) * 4;
+    return px[o] + px[o + 1] + px[o + 2];
+  };
+  // The light at x = 0, 3 m up; a block 2 m tall from x = 1 to 2 shades the ground from x = 2 to 4.
+  const build = (type: 'point' | 'spot', castShadows: boolean) => {
+    const s = new Scene();
+    s.background = [0, 0, 0];
+    s.ambientIntensity = 0;
+    const ground = new GameObject('Ground');
+    ground.mesh = createPlane(20);
+    ground.material = new Material('ground', { baseColor: [0.7, 0.7, 0.7, 1], roughness: 1 });
+    ground.castShadows = false;
+    s.add(ground);
+    const block = new GameObject('Block');
+    block.mesh = createCube(1);
+    block.material = new Material('block', { baseColor: [0.7, 0.7, 0.7, 1] });
+    block.transform.position = [1.5, 1, 0];
+    block.transform.scale = [1, 2, 1];
+    s.add(block);
+    const lamp = new GameObject('Lamp');
+    lamp.light = new Light(type, [1, 1, 1], 60);
+    lamp.light.range = 15;
+    lamp.light.outerAngle = 70;
+    lamp.light.innerAngle = 60;
+    lamp.light.castShadows = castShadows;
+    lamp.transform.position = [0, 3, 0];
+    lamp.transform.rotation = quat.lookRotation([0, -1, 0]);
+    s.add(lamp);
+    s.updateMatrices();
+    return s;
+  };
+  device.pushErrorScope('validation');
+  const results: Record<string, number[]> = {};
+  let spotStats: any = null;
+  for (const type of ['point', 'spot'] as const) {
+    for (const shadows of [true, false]) {
+      const stats = { ...renderer.render(build(type, shadows), cam, { time: 0 }) };
+      if (type === 'spot' && shadows) spotStats = stats;
+      await readInto();
+      // Behind the block, and as far from the light on the other side (toward the camera too, for good measure).
+      results[`${type} ${shadows}`] = [lum([3, 0, 0]), lum([-3, 0, 0]), lum([0, 0, 3])];
+      if (type === 'spot' && shadows) {
+        const raw = Buffer.alloc((W * 4 + 1) * H);
+        const bgra = (fakeContext as any).format === 'bgra8unorm';
+        for (let y = 0; y < H; y++) {
+          for (let x = 0; x < W; x++) {
+            const o = y * bpr + x * 4, d = y * (W * 4 + 1) + 1 + x * 4;
+            raw[d] = px[o + (bgra ? 2 : 0)];
+            raw[d + 1] = px[o + 1];
+            raw[d + 2] = px[o + (bgra ? 0 : 2)];
+            raw[d + 3] = 255;
+          }
+        }
+        writeFileSync(`${OUT}/light-shadows.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]));
+      }
+    }
+  }
+  const err = await device.popErrorScope();
+  const show = JSON.stringify(results);
+  check('point and spot light shadows render', !err && spotStats?.shadowCasters === 1, err?.message ?? JSON.stringify(spotStats));
+  for (const type of ['point', 'spot']) {
+    const [behind, other, front] = results[`${type} true`];
+    const [behindOff] = results[`${type} false`];
+    check(`a ${type} light's shadow falls behind the block`, behind < other * 0.4 && Math.abs(other - front) < other * 0.1, show);
+    check(`a ${type} light without shadows lights it`, behindOff > other * 0.9, show);
+  }
+}
+
+// ---- image-based lighting: a gradient sky is baked into the environment cubes when it changes, the brightest texel
+// of the capture looks toward the sun (so the faces are laid out as WebGPU samples them), rougher mips are smoother,
+// irradiance comes from where the sky is bright, and the BRDF table has its known corners. Saved as ibl.png: metal and
+// plastic spheres from mirror to rough.
+{
+  const { Material, Light, createSphere, createPlane } = engine;
+  const device = renderer.device;
+  const env = (renderer as any).environment;
+  const half = (h: number) => {
+    const e = (h >> 10) & 31, m = h & 1023, sgn = h & 32768 ? -1 : 1;
+    return sgn * (e === 0 ? (m / 1024) * 2 ** -14 : e === 31 ? Infinity : (1 + m / 1024) * 2 ** (e - 15));
+  };
+  /** Every texel of one mip of a 6-layer rgba16float texture, as [face][y][x] → rgb. */
+  const readCube = async (texture: GPUTexture, mip: number, size: number) => {
+    const bpr = Math.max(256, Math.ceil((size * 8) / 256) * 256);
+    const out = device.createBuffer({ size: bpr * size * 6, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const e = device.createCommandEncoder();
+    e.copyTextureToBuffer({ texture, mipLevel: mip }, { buffer: out, bytesPerRow: bpr, rowsPerImage: size }, [size, size, 6]);
+    device.queue.submit([e.finish()]);
+    await out.mapAsync(GPUMapMode.READ);
+    const u16 = new Uint16Array(out.getMappedRange().slice(0));
+    out.destroy();
+    const faces: number[][][][] = [];
+    for (let f = 0; f < 6; f++) {
+      const rows: number[][][] = [];
+      for (let y = 0; y < size; y++) {
+        const row: number[][] = [];
+        for (let x = 0; x < size; x++) {
+          const o = (f * bpr * size + y * bpr + x * 8) / 2;
+          row.push([half(u16[o]), half(u16[o + 1]), half(u16[o + 2])]);
+        }
+        rows.push(row);
+      }
+      faces.push(rows);
+    }
+    return faces;
+  };
+  // cube.wgsl's mapping, for checking it against what WebGPU samples.
+  const cubeDir = (face: number, u: number, v: number): [number, number, number] => {
+    const d: [number, number, number][] = [[1, -v, -u], [-1, -v, u], [u, 1, v], [u, -1, -v], [u, -v, 1], [-u, -v, -1]];
+    return vec3.normalize(d[face]);
+  };
+  const lum = (c: number[]) => c[0] + c[1] + c[2];
+
+  const s = new Scene();
+  Object.assign(s.sky, { mode: 'gradient', top: [0.1, 0.2, 0.6], horizon: [0.4, 0.45, 0.5], ground: [0.02, 0.02, 0.02], sunGlow: 2 });
+  const sun = new GameObject('Sun');
+  sun.light = new Light('directional', [1, 0.9, 0.8], 3);
+  s.add(sun);
+  const floor = new GameObject('Floor');
+  floor.mesh = createPlane(30);
+  floor.material = new Material('floor', { baseColor: [0.3, 0.3, 0.3, 1], roughness: 0.8 });
+  s.add(floor);
+  const sphere = createSphere(0.45, 48, 24);
+  for (let i = 0; i < 6; i++) {
+    for (const [row, metal] of [[0, 1], [1, 0]] as const) {
+      const o = new GameObject(`Ball ${i}`);
+      o.mesh = sphere;
+      o.material = new Material('ball', { baseColor: metal ? [0.95, 0.8, 0.5, 1] : [0.7, 0.1, 0.1, 1], metallic: metal, roughness: i / 5 });
+      o.transform.position = [(i - 2.5) * 1.1, 0.5, row * -1.2];
+      s.add(o);
+    }
+  }
+  const cam = new Camera();
+  cam.position = [0, 2.2, 5.5];
+  cam.target = [0, 0.4, -0.6];
+  cam.aspect = W / H;
+
+  const brightestToward = async (dir: [number, number, number]) => {
+    sun.transform.rotation = quat.lookRotation(vec3.scale(dir, -1));
+    s.updateMatrices();
+    renderer.render(s, cam, { time: 0 });
+    const faces = await readCube(env.env, 0, 128);
+    let best = -1, at: [number, number, number] = [0, 0, 0];
+    faces.forEach((rows, f) => rows.forEach((row, y) => row.forEach((c, x) => {
+      if (lum(c) > best) {
+        best = lum(c);
+        at = cubeDir(f, ((x + 0.5) / 128) * 2 - 1, ((y + 0.5) / 128) * 2 - 1);
+      }
+    })));
+    return (Math.acos(Math.min(1, vec3.dot(at, vec3.normalize(dir)))) * 180) / Math.PI;
+  };
+  device.pushErrorScope('validation');
+  const bakes0 = env.bakes;
+  const off = [await brightestToward([0.85, 0.3, 0.43]), await brightestToward([-0.3, 0.45, -0.84]), await brightestToward([0.2, 0.9, 0.1])];
+  check('the capture is brightest toward the sun, on any face', off.every((a) => a < 3), off.map((a) => a.toFixed(1) + '°').join(' '));
+  check('each sky change bakes it again', env.bakes === bakes0 + 3, `${env.bakes - bakes0}`);
+  renderer.render(s, cam, { time: 0 });
+  s.sky.lighting = 0.5;
+  renderer.render(s, cam, { time: 0 });
+  check('an unchanged sky, or only its lighting strength, is not baked again', env.bakes === bakes0 + 3, `${env.bakes - bakes0}`);
+  s.sky.lighting = 1;
+
+  const sharp = (await readCube(env.specular, 0, 128)).flat(2), rough = (await readCube(env.specular, 5, 4)).flat(2);
+  const stats = (texels: number[][]) => {
+    const l = texels.map(lum), mean = l.reduce((a, b) => a + b, 0) / l.length;
+    return { mean, spread: Math.sqrt(l.reduce((a, b) => a + (b - mean) ** 2, 0) / l.length) / mean };
+  };
+  const a = stats(sharp), b = stats(rough);
+  check('rougher mips are smoother, with about the same light', b.spread < a.spread * 0.7 && Math.abs(b.mean / a.mean - 1) < 0.35,
+    `spread ${a.spread.toFixed(3)} → ${b.spread.toFixed(3)}, mean ${a.mean.toFixed(3)} → ${b.mean.toFixed(3)}`);
+  const irr = await readCube(env.irradiance, 0, 32);
+  const up = lum(irr[2][16][16]), down = lum(irr[3][16][16]);
+  check('irradiance comes from the bright sky, not the dark ground', up > down * 3 && Number.isFinite(up), `up ${up.toFixed(3)} down ${down.toFixed(3)}`);
+
+  const err = await device.popErrorScope();
+  check('image-based lighting bakes without errors', !err, err?.message);
+
+  // A second look at the table, through a small compute readback of its corners.
+  {
+    const module = device.createShaderModule({ code: `
+      @group(0) @binding(0) var lut: texture_2d<f32>;
+      @group(0) @binding(1) var<storage, read_write> out: array<vec4f, 3>;
+      @compute @workgroup_size(1) fn main() {
+        out[0] = textureLoad(lut, vec2u(63u, 0u), 0);
+        out[1] = textureLoad(lut, vec2u(63u, 63u), 0);
+        out[2] = textureLoad(lut, vec2u(0u, 63u), 0);
+      }` });
+    const pipe = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'main' } });
+    const buf = device.createBuffer({ size: 48, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+    const read = device.createBuffer({ size: 48, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const e = device.createCommandEncoder();
+    const p = e.beginComputePass();
+    p.setPipeline(pipe);
+    p.setBindGroup(0, device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: env.brdfView }, { binding: 1, resource: { buffer: buf } }] }));
+    p.dispatchWorkgroups(1);
+    p.end();
+    e.copyBufferToBuffer(buf, 0, read, 0, 48);
+    device.queue.submit([e.finish()]);
+    await read.mapAsync(GPUMapMode.READ);
+    const v = new Float32Array(read.getMappedRange().slice(0));
+    read.destroy();
+    const [smooth, roughHead, roughGrazing] = [[v[0], v[1]], [v[4], v[5]], [v[8], v[9]]];
+    check('the BRDF table: a smooth surface seen head-on reflects F0 as is', smooth[0] > 0.9 && smooth[1] < 0.05, smooth.map((x) => x.toFixed(3)).join());
+    // Reference values from integrating the same BRDF numerically (Monte Carlo, 200k samples) at those texel centers.
+    const near = (got: number[], want: number[]) => got.every((x, i) => Math.abs(x - want[i]) < 0.02);
+    check('…and a rough one as numerical integration says, head-on and at grazing angles', near(roughHead, [0.315, 0]) && near(roughGrazing, [0.594, 0.02]),
+      `${roughHead.map((x) => x.toFixed(3))} / ${roughGrazing.map((x) => x.toFixed(3))}`);
+  }
+
+  // The picture: the sun low behind the camera's right shoulder.
+  sun.transform.rotation = quat.lookRotation(vec3.normalize([-0.5, -0.45, -0.75]));
+  s.updateMatrices();
+  renderer.render(s, cam, { time: 0 });
+  const bpr = Math.ceil((W * 4) / 256) * 256;
+  const out = device.createBuffer({ size: bpr * H, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  const e = device.createCommandEncoder();
+  e.copyTextureToBuffer({ texture: current! }, { buffer: out, bytesPerRow: bpr }, [W, H]);
+  device.queue.submit([e.finish()]);
+  await out.mapAsync(GPUMapMode.READ);
+  const px = new Uint8Array(out.getMappedRange().slice(0));
+  out.destroy();
+  const bgra = (fakeContext as any).format === 'bgra8unorm';
+  const raw = Buffer.alloc((W * 4 + 1) * H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const o = y * bpr + x * 4, d = y * (W * 4 + 1) + 1 + x * 4;
+      raw[d] = px[o + (bgra ? 2 : 0)];
+      raw[d + 1] = px[o + 1];
+      raw[d + 2] = px[o + (bgra ? 0 : 2)];
+      raw[d + 3] = 255;
+    }
+  }
+  writeFileSync(`${OUT}/ibl.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]));
+}
+
+// ---- post-processing: bloom spreads light brighter than its threshold; TAA antialiases over frames, stays stable on
+// a still view and doesn't leave trails behind moving objects. Saved as bloom.png, taa.png and taa-motion.png.
+{
+  const { Material, createSphere, createCube } = engine;
+  const device = renderer.device;
+  const bpr = Math.ceil((W * 4) / 256) * 256;
+  const bgra = (fakeContext as any).format === 'bgra8unorm';
+  const readFrame = async () => {
+    const out = device.createBuffer({ size: bpr * H, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const e = device.createCommandEncoder();
+    e.copyTextureToBuffer({ texture: current! }, { buffer: out, bytesPerRow: bpr }, [W, H]);
+    device.queue.submit([e.finish()]);
+    await out.mapAsync(GPUMapMode.READ);
+    const px = new Uint8Array(out.getMappedRange()).slice();
+    out.destroy();
+    return px;
+  };
+  const savePNG = (px: Uint8Array, name: string) => {
+    const raw = Buffer.alloc((W * 4 + 1) * H);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const o = y * bpr + x * 4, d = y * (W * 4 + 1) + 1 + x * 4;
+        raw[d] = px[o + (bgra ? 2 : 0)];
+        raw[d + 1] = px[o + 1];
+        raw[d + 2] = px[o + (bgra ? 0 : 2)];
+        raw[d + 3] = 255;
+      }
+    }
+    writeFileSync(`${OUT}/${name}`, Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]));
+  };
+  const cam = new Camera();
+  cam.position = [0, 0, 10];
+  cam.target = [0, 0, 0];
+  const green = (px: Uint8Array, p: [number, number, number]) => {
+    const [x, y] = cam.worldToScreen(p, W, H)!;
+    return px[Math.round(y) * bpr + Math.round(x) * 4 + 1];
+  };
+  const brightness = (px: Uint8Array, x: number, y: number) => px[y * bpr + x * 4 + 1];
+
+  // Bloom: a small, very bright sphere on black.
+  const s = new Scene();
+  s.background = [0, 0, 0];
+  const orb = new GameObject('Orb');
+  orb.mesh = createSphere(0.5);
+  orb.material = new Material('orb', { baseColor: [0, 0, 0, 1], unlit: true, emissive: [1, 0.8, 0.4], emissiveStrength: 20 });
+  s.add(orb);
+  const dim = new GameObject('Dim');
+  dim.mesh = createSphere(0.5);
+  dim.material = new Material('dim', { baseColor: [0.4, 0.4, 0.4, 1], unlit: true });
+  dim.transform.position = [-4, 0, 0];
+  s.add(dim);
+  s.updateMatrices();
+  device.pushErrorScope('validation');
+  renderer.render(s, cam, { time: 0 });
+  const plain = await readFrame();
+  s.post.bloom = 1;
+  const bloomStats = { ...renderer.render(s, cam, { time: 0 }) };
+  const bloomed = await readFrame();
+  s.post.bloomThreshold = 50;
+  renderer.render(s, cam, { time: 0 });
+  const high = await readFrame();
+  s.post.bloomThreshold = 1;
+  s.post.antialiasing = 'taa';
+  renderer.render(s, cam, { time: 0 });
+  const bloomErr = await device.popErrorScope();
+  check('bloom renders, with MSAA and with TAA', !bloomErr && bloomStats.drawCalls === 2, bloomErr?.message ?? JSON.stringify(bloomStats));
+  const near: [number, number, number] = [1.1, 0, 0], beside: [number, number, number] = [-4, 1, 0];
+  check('without bloom, the space around a bright light is dark', green(plain, near) < 3, String(green(plain, near)));
+  check('with bloom, it glows over its surroundings', green(bloomed, near) > 25 && green(bloomed, [2.5, 0, 0]) > green(plain, [2.5, 0, 0]),
+    `${green(bloomed, near)} near, ${green(bloomed, [2.5, 0, 0])} farther`);
+  // Beside the dim sphere there's only the bright one's glow: as much as on the other side, as far from it.
+  const mirror: [number, number, number] = [4, 1, 0];
+  check('surfaces below the threshold don\'t glow', Math.abs(green(bloomed, beside) - green(bloomed, mirror)) < 3 && Math.abs(green(plain, [-4, 0, 0]) - green(bloomed, [-4, 0, 0])) < 8,
+    `${green(bloomed, beside)} beside it, ${green(bloomed, mirror)} opposite`);
+  check('a threshold above everything leaves the frame as it was', green(high, near) < 3, String(green(high, near)));
+  savePNG(bloomed, 'bloom.png');
+
+  // TAA on a still view: a white box turned on its corner, unlit on black, so every edge is slanted.
+  const t = new Scene();
+  t.background = [0, 0, 0];
+  const box = new GameObject('Box');
+  box.mesh = createCube(3);
+  box.material = new Material('white', { baseColor: [1, 1, 1, 1], unlit: true });
+  box.transform.setEulerDeg(0, 0, 33);
+  t.add(box);
+  t.updateMatrices();
+  // Pixels between black and white along the edges: antialiasing.
+  const partial = (px: Uint8Array) => {
+    let n = 0;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (brightness(px, x, y) > 40 && brightness(px, x, y) < 190) n++;
+    return n;
+  };
+  device.pushErrorScope('validation');
+  renderer.render(t, cam, { time: 0 });
+  const msaa = await readFrame();
+  t.post.antialiasing = 'taa';
+  renderer.render(t, cam, { time: 0 });
+  const firstFrame = await readFrame();
+  for (let i = 0; i < 24; i++) renderer.render(t, cam, { time: 0 });
+  const settled = await readFrame();
+  renderer.render(t, cam, { time: 0 });
+  const next = await readFrame();
+  let diff = 0;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) diff += Math.abs(brightness(settled, x, y) - brightness(next, x, y));
+  check('the first TAA frame is aliased (nothing to blend with yet)', partial(firstFrame) < partial(msaa) * 0.4, `${partial(firstFrame)} vs ${partial(msaa)} with MSAA`);
+  check('after a few frames its edges are antialiased', partial(settled) > partial(msaa) * 0.6, `${partial(settled)} vs ${partial(msaa)} with MSAA`);
+  check('and a still view stays still', diff / (W * H) < 0.5, `${(diff / (W * H)).toFixed(3)} mean change per pixel`);
+  check('the inside of a flat surface keeps its color', brightness(settled, W >> 1, H >> 1) === brightness(msaa, W >> 1, H >> 1),
+    `${brightness(settled, W >> 1, H >> 1)} vs ${brightness(msaa, W >> 1, H >> 1)}`);
+  savePNG(settled, 'taa.png');
+
+  // TAA with motion: the box slides right; no trail where it was.
+  box.transform.position = [-3, 0, 0];
+  box.transform.scale = [0.5, 0.5, 0.5];
+  for (let i = 0; i <= 20; i++) {
+    box.transform.position = [-3 + i * 0.3, 0, 0];
+    t.updateMatrices();
+    renderer.render(t, cam, { time: i / 60 });
+  }
+  const moved = await readFrame();
+  const taaErr = await device.popErrorScope();
+  check('TAA renders without errors', !taaErr, taaErr?.message ?? '');
+  check('a moving object leaves no trail and stays solid', green(moved, [-3, 0, 0]) < 5 && green(moved, [1.5, 0, 0]) < 5 && green(moved, [3, 0, 0]) > 200,
+    `start ${green(moved, [-3, 0, 0])}, behind ${green(moved, [1.5, 0, 0])}, at ${green(moved, [3, 0, 0])}`);
+  savePNG(moved, 'taa-motion.png');
+}
+
 // ---- profiler: CPU sections from the renderer, and GPU time per frame graph pass where the device can time them
 {
   const { profiler } = engine;
@@ -943,7 +1487,8 @@ writeFileSync(`${OUT}/frame.png`, Buffer.concat([Buffer.from([137, 80, 78, 71, 1
     profErr?.message ?? `${names.join()} ${profiler.cpuMs.toFixed(2)} ms`);
   const gpuNames = profiler.gpu.map((g: any) => g.name).join();
   if (profiler.gpuSupported) {
-    check('profiler: GPU time per pass', gpuNames === 'shadow,main,tonemap,overlay' && profiler.gpu.every((g: any) => g.ms >= 0) && profiler.gpuMs > 0,
+    check('profiler: GPU time per pass', gpuNames === 'shadow 0,shadow 1,shadow 2,shadow 3,light shadow 0,main,bloom prefilter,' +
+      'bloom down 1,bloom down 2,bloom down 3,bloom down 4,bloom down 5,bloom up 4,bloom up 3,bloom up 2,bloom up 1,bloom up 0,tonemap,overlay' && profiler.gpu.every((g: any) => g.ms >= 0) && profiler.gpuMs > 0,
       profiler.gpu.map((g: any) => `${g.name} ${g.ms.toFixed(3)} ms`).join(', '));
   } else {
     console.log('SKIP profiler: GPU time per pass (no timestamp-query on this device)');

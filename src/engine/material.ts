@@ -42,10 +42,18 @@ export type TextureSlot = (typeof TEXTURE_SLOTS)[number];
 /** Slots whose textures hold data rather than colors, so they're sampled without sRGB decoding. */
 export const LINEAR_TEXTURE_SLOTS: ReadonlySet<TextureSlot> = new Set(['normalTexture', 'metallicRoughnessTexture', 'occlusionTexture']);
 
+/**
+ * How a material's pixels meet what's behind them. `opaque` covers it (with `alphaCutoff`, in a cut-out). `alpha`
+ * mixes by the base color's alpha (glass, smoke); `additive` adds on top, scaled by alpha (fire, beams). Blended
+ * materials are drawn after everything opaque, sorted back to front, don't write depth and cast no shadows.
+ */
+export type BlendMode = 'opaque' | 'alpha' | 'additive';
+export const BLEND_MODES: readonly BlendMode[] = ['opaque', 'alpha', 'additive'];
+
 /** Fields saved with a scene (textures are saved separately, as refs). Keep in sync with clone(). */
 export const MATERIAL_FIELDS = [
   'name', 'baseColor', 'metallic', 'roughness', 'emissive', 'emissiveStrength', 'normalScale', 'occlusionStrength', 'alphaCutoff', 'doubleSided',
-  'unlit',
+  'unlit', 'blend',
 ] as const;
 
 /** Metallic-roughness PBR material (glTF 2.0 compatible subset). All colors are linear. */
@@ -75,9 +83,14 @@ export class Material {
   doubleSided = false;
   /** Skips lighting entirely; outputs base color + emissive. */
   unlit = false;
+  /** See BlendMode. Anything but `opaque` makes the base color's alpha the opacity. */
+  blend: BlendMode = 'opaque';
   gpu: MaterialGPU | null = null;
 
-  constructor(name = 'Material', init: Partial<Pick<Material, 'baseColor' | 'metallic' | 'roughness' | 'emissive' | 'emissiveStrength' | 'unlit' | 'doubleSided'>> = {}) {
+  constructor(
+    name = 'Material',
+    init: Partial<Pick<Material, 'baseColor' | 'metallic' | 'roughness' | 'emissive' | 'emissiveStrength' | 'unlit' | 'doubleSided' | 'blend'>> = {},
+  ) {
     this.name = name;
     Object.assign(this, init);
   }
@@ -95,6 +108,7 @@ export class Material {
     m.alphaCutoff = this.alphaCutoff;
     m.doubleSided = this.doubleSided;
     m.unlit = this.unlit;
+    m.blend = this.blend;
     return m;
   }
 }
@@ -120,9 +134,9 @@ export function materialHash(m: Material): number {
   h = mix(h, m.normalScale);
   h = mix(h, m.occlusionStrength);
   h = mix(h, m.alphaCutoff);
-  let flags = (m.doubleSided ? 1 : 0) | (m.unlit ? 2 : 0);
+  let flags = (m.doubleSided ? 1 : 0) | (m.unlit ? 2 : 0) | (BLEND_MODES.indexOf(m.blend) << 2);
   TEXTURE_SLOTS.forEach((slot, i) => {
-    if (m[slot]) flags |= 4 << i;
+    if (m[slot]) flags |= 16 << i;
   });
   return mix(h, flags);
 }
@@ -140,6 +154,7 @@ export function materialsEqual(a: Material, b: Material): boolean {
     a.occlusionStrength === b.occlusionStrength &&
     a.alphaCutoff === b.alphaCutoff &&
     a.doubleSided === b.doubleSided &&
-    a.unlit === b.unlit
+    a.unlit === b.unlit &&
+    a.blend === b.blend
   );
 }

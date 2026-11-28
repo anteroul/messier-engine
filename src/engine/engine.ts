@@ -176,8 +176,7 @@ export class Engine {
     // After the update, so a camera moved by a behaviour is rendered where it is now.
     const camObj = this.useSceneCamera ? scene.activeCamera() : null;
     this.viewObject = camObj;
-    // Shadows are centered on view.target: put it where the shadow box covers most of what the camera sees.
-    camObj?.camera!.applyTo(this.sceneView, camObj.worldMatrix, scene.shadowExtent * 0.6);
+    camObj?.camera!.applyTo(this.sceneView, camObj.worldMatrix);
     const view = this.view;
     const canvas = this.renderer.canvas;
     // Hidden viewport (e.g. the editor's Scripts tab): keep simulating, skip drawing.

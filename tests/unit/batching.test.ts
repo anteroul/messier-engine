@@ -70,6 +70,7 @@ const at = (x: number, y: number, z: number, scale = 1, rotation = quat.identity
     ['alphaCutoff', (m) => (m.alphaCutoff = 0.5)],
     ['doubleSided', (m) => (m.doubleSided = !m.doubleSided)],
     ['unlit', (m) => (m.unlit = !m.unlit)],
+    ['blend', (m) => (m.blend = 'alpha')],
     ['baseColorTexture', (m) => (m.baseColorTexture = null)],
     ['normalTexture', (m) => (m.normalTexture = tex)],
     ['emissiveTexture', (m) => (m.emissiveTexture = tex)],
@@ -121,38 +122,82 @@ const at = (x: number, y: number, z: number, scale = 1, rotation = quat.identity
   const describe = (list: DrawList, batches: typeof list.main) =>
     batches.map((b) => `${b.mesh === cubeMesh ? 'cube' : 'sphere'}/${b.material.name}@${b.first}: ${names(b.first, b.count, list).join(', ')}`);
 
+  const eye = camera().position;
   const list = new DrawList();
-  list.build(renderers, camera().viewProjection(), lightViewProj);
+  list.build(renderers, camera().viewProjection(), eye, [lightViewProj]);
   eq('main batches: one per mesh and look, in order of first appearance, instances side by side', describe(list, list.main), [
     'cube/red@0: cube 0, cube 1, cube 2',
     'sphere/red@3: sphere',
     'cube/blue@4: blue cube',
     'cube/red@5: leaf',
   ]);
-  eq('shadow batches ignore the material unless it\'s alpha tested, and skip non-casters', describe(list, list.shadow), [
+  eq('shadow batches ignore the material unless it\'s alpha tested, and skip non-casters', describe(list, list.shadows[0]), [
     'cube/red@6: cube 0, cube 1, cube 2',
     'sphere/red@9: sphere',
     'cube/red@10: leaf',
   ]);
-  check('the alpha-tested shadow batch keeps its material', list.shadow[2].material === leaf);
+  check('the alpha-tested shadow batch keeps its material', list.shadows[0][2].material === leaf);
   eq('counts', [list.mainInstances, list.shadowInstances, list.objectCount, list.culled], [6, 5, 11, 1]);
   check('look-alikes share one material', list.materials.size === 3 && list.materials.has(red) && list.materials.has(leaf));
   const cube1 = renderers.find((r) => r.gameObject.name === 'cube 1')!;
   eq('an instance holds its model and normal matrix',
-    [[...list.objects.subarray(OBJECT_FLOATS, OBJECT_FLOATS + 16)], [...list.objects.subarray(OBJECT_FLOATS + 16, OBJECT_FLOATS * 2)]],
+    [[...list.objects.subarray(OBJECT_FLOATS, OBJECT_FLOATS + 16)], [...list.objects.subarray(OBJECT_FLOATS + 16, OBJECT_FLOATS + 32)]],
     [[...cube1.transform.worldMatrix], [...cube1.transform.normalMatrix]]);
+  eq('without a previous pose, it didn\'t move', [...list.objects.subarray(OBJECT_FLOATS + 32, OBJECT_FLOATS * 2)], [...cube1.transform.worldMatrix]);
+  const before = at(0, 3, 0);
+  list.previousWorld = (r) => (r === cube1 ? before : null);
+  list.build(renderers, camera().viewProjection(), eye, [lightViewProj]);
+  eq('…and with one, the previous model matrix follows', [...list.objects.subarray(OBJECT_FLOATS + 32, OBJECT_FLOATS * 2)], [...before]);
+  list.previousWorld = null;
 
-  list.build(renderers, camera().viewProjection(), lightViewProj, false);
+  list.build(renderers, camera().viewProjection(), eye, [lightViewProj], false);
   eq('with culling off everything is drawn', [list.mainInstances, list.shadowInstances, list.culled, list.main[0].count], [7, 6, 0, 4]);
-  list.build(renderers, camera().viewProjection(), null);
-  eq('no shadow map, no shadow batches', [list.shadow.length, list.shadowInstances, list.objectCount], [0, 0, 6]);
+  list.build(renderers, camera().viewProjection(), eye);
+  eq('no shadow views, no shadow batches', [list.shadows.length, list.shadowInstances, list.objectCount], [0, 0, 6]);
+  // A second view that only sees x > 1: cube 1, the leaf (its edge), not the blue cube (it casts no shadow).
+  const narrow = mat4.multiply(mat4.ortho(1.6, 8, -8, 8, 0.1, 40), mat4.lookAt([0, 20, 0], [0, 0, 0], [0, 0, -1]));
+  list.build(renderers, camera().viewProjection(), eye, [lightViewProj, narrow]);
+  eq('every shadow view gets its own casters, after the previous view\'s', [list.shadows.length, ...describe(list, list.shadows[1])],
+    [2, 'cube/red@11: cube 1']);
+  eq('and they all count', [list.shadowInstances, list.objectCount], [6, 12]);
+
+  // Blended materials: out of the opaque batches, back to front, no shadows.
+  const glass = new Material('glass', { baseColor: [0.5, 0.8, 1, 0.4], blend: 'alpha' });
+  const glow = new Material('glow', { baseColor: [1, 0.5, 0, 1], blend: 'additive' });
+  const pane = (name: string, material: Material, z: number) => {
+    const o = add(name, cubeMesh, material, 0);
+    o.transform.position = [0, 0, z];
+    return o;
+  };
+  const panes = [pane('near', glass, 4), pane('far', glass.clone(), -6), pane('glow', glow, -2), pane('mid', glass, 1), pane('hidden', glass, 30)];
+  scene.updateMatrices();
+  const withPanes = scene.query(MeshRenderer);
+  const paneNames = (l: DrawList) => l.transparent.map((b) => {
+    const out: string[] = [];
+    for (let i = b.first; i < b.first + b.count; i++) {
+      const z = l.objects[i * OBJECT_FLOATS + 14];
+      out.push(panes.find((p) => p.transform.position[2] === z)!.name);
+    }
+    return `${b.material.name}@${b.first}: ${out.join(', ')}`;
+  });
+  list.build(withPanes, camera().viewProjection(), eye, [lightViewProj]);
+  eq('blended meshes are drawn back to front, neighbours that look alike batched', paneNames(list),
+    ['glass@6: far', 'glow@7: glow', 'glass@8: mid, near']);
+  eq('they stay out of the opaque batches and cast no shadows', [list.main.length, list.mainInstances, list.shadowInstances, list.culled], [4, 10, 5, 2]);
+  const behind = new Camera();
+  Object.assign(behind, { position: [0, 0, -12], target: [0, 0, 0], fovDeg: 60, aspect: 1, near: 0.1, far: 100 });
+  list.build(withPanes, behind.viewProjection(), behind.position, []);
+  // From behind, the pane the first camera couldn't see is in view, and the farthest.
+  eq('the order follows the eye', paneNames(list), ['glass@6: hidden, near, mid', 'glow@9: glow', 'glass@10: far']);
+  for (const p of panes) scene.remove(p);
+  scene.updateMatrices();
 
   // More instances than the array starts with.
   for (let i = 0; i < 200; i++) add(`extra ${i}`, cubeMesh, red, (i % 5) - 2);
   scene.updateMatrices();
   const many = scene.query(MeshRenderer);
-  list.build(many, camera().viewProjection(), lightViewProj);
+  list.build(many, camera().viewProjection(), eye, [lightViewProj]);
   eq('the object array grows', [list.main[0].count, list.objectCount, list.objects.length >= list.objectCount * OBJECT_FLOATS], [203, 411, true]);
-  list.build([], camera().viewProjection(), lightViewProj);
-  eq('an empty scene has no batches', [list.main.length, list.shadow.length, list.objectCount], [0, 0, 0]);
+  list.build([], camera().viewProjection(), eye, [lightViewProj]);
+  eq('an empty scene has no batches', [list.main.length, list.transparent.length, list.shadows[0].length, list.objectCount], [0, 0, 0, 0]);
 }

@@ -4,6 +4,7 @@ export * from './mesh';
 export * from './material';
 export * from './light';
 export * from './sky';
+export * from './postProcessing';
 export * from './transform';
 export * from './component';
 export * from './meshRenderer';

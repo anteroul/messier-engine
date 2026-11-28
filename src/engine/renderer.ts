@@ -8,6 +8,8 @@ import shape2dWGSL from './shaders/shape2d.wgsl?raw';
 import skyWGSL from './shaders/sky.wgsl?raw';
 import meshDataWGSL from './shaders/meshData.wgsl?raw';
 import tonemapWGSL from './shaders/tonemap.wgsl?raw';
+import bloomWGSL from './shaders/bloom.wgsl?raw';
+import taaWGSL from './shaders/taa.wgsl?raw';
 import { mat4, vec3, type Mat4, type Vec3 } from './math';
 import { VERTEX_STRIDE_BYTES, type Mesh } from './mesh';
 import { LINEAR_TEXTURE_SLOTS, TEXTURE_SLOTS, type Material, type Texture } from './material';
@@ -20,23 +22,44 @@ import { Batch2D, VERTEX2D_FLOATS, type Draw2D } from './draw2d';
 import { ATLAS_SIZE, fontAtlas } from './font';
 import { Renderer2D } from './shapes2d';
 import type { SkyMode } from './sky';
-import { FrameGraph, type RenderTarget } from './frameGraph';
+import { FrameGraph, type RenderTarget, type TextureHandle } from './frameGraph';
 import { DrawList, OBJECT_FLOATS, type MeshBatch } from './batching';
 import { GpuTimer } from './gpuTimer';
 import { profiler } from './profiler';
+import { MAX_LOCAL_SHADOW_LAYERS, MAX_SHADOW_CASCADES, assignLocalShadows, computeCascades, type LocalShadowLight } from './shadows';
+import { frustumPlanes } from './culling';
+import { EnvironmentMaps, type EnvironmentHandles } from './environment';
 import { MeshPipelines, allMeshVariantKeys, meshVariantKey, type MeshPass, type MeshVariantKey } from './pipelines';
+import type { Antialiasing, PostProcessing } from './postProcessing';
 
 export const MAX_LIGHTS = 128;
+/** Texels across each cascade's layer of the shadow map. */
 const SHADOW_MAP_SIZE = 2048;
+/** Texels across each layer of the point and spot light shadow map. */
+const LOCAL_SHADOW_MAP_SIZE = 1024;
+/**
+ * Each shadow view's matrix sits at its own offset of the shadow frame buffer (uniform offsets align to 256): the
+ * cascades first, then the point and spot light layers.
+ */
+const SHADOW_SLOT_SIZE = 256;
+const SHADOW_SLOTS = MAX_SHADOW_CASCADES + MAX_LOCAL_SHADOW_LAYERS;
 /** One instance in the object storage buffer (model + normal matrix). */
 const OBJECT_SIZE = OBJECT_FLOATS * 4;
-const FRAME_UNIFORM_SIZE = 336;
+const FRAME_UNIFORM_SIZE = 672;
 const MATERIAL_UNIFORM_SIZE = 64;
 const LIGHT_FLOATS = 16;
 /** Main pass uses reversed-Z: clear to 0, 'greater' passes nearer fragments. */
 const DEPTH_FORMAT: GPUTextureFormat = 'depth32float';
 /** Meshes and the sky render linear radiance into this; the tonemap pass turns it into display colors. */
 const HDR_FORMAT: GPUTextureFormat = 'rgba16float';
+/** Temporal antialiasing: each opaque surface's screen-space motion since the previous frame (UV units). */
+const VELOCITY_FORMAT: GPUTextureFormat = 'rg16float';
+/** Temporal antialiasing: how much of each new frame goes into the history (the rest is the reprojected past). */
+const TAA_CURRENT_WEIGHT = 0.1;
+/** Subpixel jitter positions (Halton 2, 3) before the sequence repeats. */
+const TAA_SAMPLES = 8;
+/** Bloom: at most this many levels, each half the size of the one before, from half resolution down. */
+const MAX_BLOOM_LEVELS = 6;
 const SHADOW_FORMAT: GPUTextureFormat = 'depth32float';
 const TEXTURE_FORMAT: GPUTextureFormat = 'rgba8unorm-srgb';
 /** For textures that hold data (normals, metallic-roughness, occlusion), not colors. */
@@ -66,7 +89,7 @@ export interface RenderStats {
   /** Mesh renderers skipped because they're outside the view. */
   culled: number;
   lights: number;
-  /** Mesh instances drawn into the shadow map. */
+  /** Mesh instances drawn into the shadow map, over all its cascades. */
   shadowCasters: number;
   /** Shape2D/Text2D components drawn. */
   elements2D: number;
@@ -76,15 +99,27 @@ export interface RenderStats {
 
 const SKY_MODE_INDEX: Record<SkyMode, number> = { color: 0, gradient: 1, image: 2 };
 
+/** The radical inverse of `i` in `base`: a low-discrepancy sequence in 0…1. */
+function halton(i: number, base: number): number {
+  let f = 1, r = 0;
+  for (let n = i; n > 0; n = Math.floor(n / base)) {
+    f /= base;
+    r += f * (n % base);
+  }
+  return r;
+}
+
 const ALPHA_BLEND: GPUBlendState = {
   color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
   alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
 };
 
 /**
- * Forward renderer: a shadow pass (one directional light), a 4x MSAA HDR main pass (lit meshes, the sky), a tonemap
- * pass, then the display-space overlay pass (editor grid, 2D, overlay helpers) resolved into the canvas. Each frame
- * declares its passes on a FrameGraph, which orders them and owns their transient textures.
+ * Forward renderer: shadow passes (a cascade each for one directional light, a layer each for point and spot
+ * lights), an HDR main pass (lit meshes, the sky; 4x MSAA, or one jittered sample per pixel and a TAA resolve against
+ * the previous frames), bloom, a tonemap pass, then the display-space overlay pass (editor grid, 2D, overlay helpers),
+ * always 4x MSAA, resolved into the canvas. Each frame declares its passes on a FrameGraph, which orders them and owns
+ * their transient textures.
  */
 export class Renderer {
   readonly device: GPUDevice;
@@ -94,7 +129,7 @@ export class Renderer {
   width = 0;
   height = 0;
   readonly stats: RenderStats = { drawCalls: 0, triangles: 0, instances: 0, culled: 0, lights: 0, shadowCasters: 0, elements2D: 0, pipelineBuilds: 0 };
-  /** Skip meshes outside the camera's view (and, in the shadow pass, outside the shadow map). */
+  /** Skip meshes outside the camera's view (and, in the shadow passes, outside their cascade). */
   frustumCulling = true;
 
   private readonly context: GPUCanvasContext;
@@ -114,14 +149,36 @@ export class Renderer {
   private readonly overlayDepthPipeline: GPURenderPipeline;
   private readonly overlayTopPipeline: GPURenderPipeline;
   private readonly mipPipelines: Record<'srgb' | 'linear', GPURenderPipeline>;
-  private readonly skyPipeline: GPURenderPipeline;
-  private readonly tonemapPipeline: GPURenderPipeline;
-  private readonly tonemapLayout: GPUBindGroupLayout;
+  /** The sky into the main pass's targets: 4x MSAA, or one sample with the (unwritten) velocity target for TAA. */
+  private readonly skyPipelines: Record<Antialiasing, GPURenderPipeline>;
+  /** Per sample from the multisampled HDR target (MSAA), or per pixel from the TAA output, writing depth too. */
+  private readonly tonemapPipelines: Record<Antialiasing, GPURenderPipeline>;
   private readonly tonemapBuffer: GPUBuffer;
-  /** The HDR texture `tonemapGroup` reads (the graph's pool may hand out another one). */
-  private tonemapSource: GPUTexture | null = null;
-  private tonemapGroup: GPUBindGroup | null = null;
-  private readonly tonemapData = new Float32Array(4);
+  private readonly tonemapData = new Float32Array(8);
+  private readonly taaPipeline: GPURenderPipeline;
+  private readonly taaBuffer: GPUBuffer;
+  private readonly taaData = new Float32Array(20);
+  /** Ping-pong history of the TAA resolve: one is read (the previous frame), the other written. */
+  private history: [GPUTexture, GPUTexture] | null = null;
+  private historyIndex = 0;
+  /** False until the history holds a frame of the current view (first frame, resize, new scene or camera). */
+  private historyValid = false;
+  private historyScene: Scene | null = null;
+  private historyCamera: Camera | null = null;
+  /** The previous frame's (unjittered) view-projection, for motion vectors. */
+  private readonly prevViewProj = mat4.create();
+  /** Each mesh renderer's world matrix when it was last drawn with TAA, and in which frame. */
+  private readonly prevWorld = new WeakMap<MeshRenderer, { matrix: Mat4; frame: number }>();
+  private frameCount = 0;
+  private readonly bloomPipelines: Record<'prefilterMS' | 'prefilter' | 'down' | 'up', GPURenderPipeline>;
+  private readonly bloomBuffer: GPUBuffer;
+  private readonly bloomData = new Float32Array(4);
+  /** Linear, clamped: bloom, the TAA history, and bloom's composite. */
+  private readonly clampSampler: GPUSampler;
+  /** What the tonemap pass samples when bloom is off. */
+  private readonly blackTextureView: GPUTextureView;
+  /** Bind groups over transient textures, remade when the pool hands out different ones (see bindGroup()). */
+  private readonly bindGroups = new Map<string, { textures: GPUTexture[]; group: GPUBindGroup }>();
   private readonly world2DPipeline: GPURenderPipeline;
   private readonly screen2DPipeline: GPURenderPipeline;
 
@@ -130,12 +187,23 @@ export class Renderer {
   private readonly shadowFrameBuffer: GPUBuffer;
   private readonly shadowMap: GPUTexture;
   private readonly shadowMapView: GPUTextureView;
+  /** Point and spot light shadows: a layer per spot light, six per point light (see shadows.ts). */
+  private readonly localShadowMap: GPUTexture;
+  private readonly localShadowMapView: GPUTextureView;
+  /** Each local shadow layer's matrix, for the main pass. */
+  private readonly localShadowBuffer: GPUBuffer;
+  private readonly localShadowData = new Float32Array(MAX_LOCAL_SHADOW_LAYERS * 16);
+  private readonly viewPlanes = new Float32Array(24);
   private frameBindGroup: GPUBindGroup;
-  /** The sky texture `frameBindGroup` was made with (null: the white placeholder). */
+  /** The sky texture `frameBindGroup` was made with (null: the white placeholder), and its view. */
   private frameSky: Texture | null = null;
+  private frameSkyView!: GPUTextureView;
+  /** The sky prefiltered for image-based lighting (see environment.ts). */
+  private readonly environment: EnvironmentMaps;
   private readonly shadowSampler: GPUSampler;
   private readonly skySampler: GPUSampler;
-  private readonly shadowFrameBindGroup: GPUBindGroup;
+  /** One per shadow view (SHADOW_SLOTS): its matrix. */
+  private readonly shadowFrameBindGroups: GPUBindGroup[];
   private readonly textureSampler: GPUSampler;
   private readonly mipSampler: GPUSampler;
   private readonly whiteTextureView: GPUTextureView;
@@ -201,10 +269,16 @@ export class Renderer {
       entries: [
         { binding: 0, visibility: VS | FS, buffer: { type: 'uniform' } },
         { binding: 1, visibility: FS, buffer: { type: 'read-only-storage' } },
-        { binding: 2, visibility: FS, texture: { sampleType: 'depth' } },
+        { binding: 2, visibility: FS, texture: { sampleType: 'depth', viewDimension: '2d-array' } },
         { binding: 3, visibility: FS, sampler: { type: 'comparison' } },
         { binding: 4, visibility: FS, texture: { sampleType: 'float' } },
         { binding: 5, visibility: FS, sampler: { type: 'filtering' } },
+        { binding: 6, visibility: FS, texture: { sampleType: 'depth', viewDimension: '2d-array' } },
+        { binding: 7, visibility: FS, buffer: { type: 'read-only-storage' } },
+        { binding: 8, visibility: FS, texture: { sampleType: 'float', viewDimension: 'cube' } },
+        { binding: 9, visibility: FS, texture: { sampleType: 'float', viewDimension: 'cube' } },
+        { binding: 10, visibility: FS, texture: { sampleType: 'float' } },
+        { binding: 11, visibility: FS, sampler: { type: 'filtering' } },
       ],
     });
     this.materialLayout = device.createBindGroupLayout({
@@ -278,34 +352,59 @@ export class Renderer {
     this.overlayTopPipeline = makeOverlayPipeline('always');
 
     const skyModule = device.createShaderModule({ label: 'sky', code: commonWGSL + skyWGSL });
-    this.skyPipeline = device.createRenderPipeline({
-      label: 'sky',
-      layout: frameOnlyLayout,
-      vertex: { module: skyModule, entryPoint: 'vs_main' },
-      fragment: { module: skyModule, entryPoint: 'fs_main', targets: [{ format: HDR_FORMAT }] },
-      primitive: { topology: 'triangle-list' },
-      // At depth 0 (the far plane): passes only where the depth buffer still holds its clear value.
-      depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: false, depthCompare: 'greater-equal' },
-      multisample,
-    });
+    const makeSkyPipeline = (label: string, targets: GPUColorTargetState[], count: number) =>
+      device.createRenderPipeline({
+        label,
+        layout: frameOnlyLayout,
+        vertex: { module: skyModule, entryPoint: 'vs_main' },
+        fragment: { module: skyModule, entryPoint: 'fs_main', targets },
+        primitive: { topology: 'triangle-list' },
+        // At depth 0 (the far plane): passes only where the depth buffer still holds its clear value.
+        depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: false, depthCompare: 'greater-equal' },
+        multisample: { count },
+      });
+    this.skyPipelines = {
+      msaa: makeSkyPipeline('sky', [{ format: HDR_FORMAT }], this.sampleCount),
+      // The TAA pass reprojects the sky by the camera's motion, from its depth: no velocity written.
+      taa: makeSkyPipeline('sky-taa', [{ format: HDR_FORMAT }, { format: VELOCITY_FORMAT, writeMask: 0 }], 1),
+    };
 
-    this.tonemapLayout = device.createBindGroupLayout({
-      label: 'tonemap',
-      entries: [
-        { binding: 0, visibility: FS, texture: { sampleType: 'unfilterable-float', multisampled: true } },
-        { binding: 1, visibility: FS, buffer: { type: 'uniform' } },
-      ],
-    });
     const tonemapModule = device.createShaderModule({ label: 'tonemap', code: tonemapWGSL });
-    this.tonemapPipeline = device.createRenderPipeline({
-      label: 'tonemap',
-      layout: device.createPipelineLayout({ bindGroupLayouts: [this.tonemapLayout] }),
-      vertex: { module: tonemapModule, entryPoint: 'vs_main' },
-      fragment: { module: tonemapModule, entryPoint: 'fs_main', targets: [{ format: this.format }] },
-      primitive: { topology: 'triangle-list' },
-      multisample,
-    });
-    this.tonemapBuffer = device.createBuffer({ label: 'tonemap', size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const makeTonemapPipeline = (entryPoint: string, depthStencil?: GPUDepthStencilState) =>
+      device.createRenderPipeline({
+        label: `tonemap ${entryPoint}`,
+        layout: 'auto',
+        vertex: { module: tonemapModule, entryPoint: 'vs_main' },
+        fragment: { module: tonemapModule, entryPoint, targets: [{ format: this.format }] },
+        primitive: { topology: 'triangle-list' },
+        ...(depthStencil ? { depthStencil } : {}),
+        multisample,
+      });
+    this.tonemapPipelines = {
+      msaa: makeTonemapPipeline('fs_msaa'),
+      // Copies the scene's depth into the multisampled display depth for the overlay pass.
+      taa: makeTonemapPipeline('fs_resolved', { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'always' }),
+    };
+    this.tonemapBuffer = device.createBuffer({ label: 'tonemap', size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+    const fullscreen = (module: GPUShaderModule, entryPoint: string, format: GPUTextureFormat) =>
+      device.createRenderPipeline({
+        label: `${module.label} ${entryPoint}`,
+        layout: 'auto',
+        vertex: { module, entryPoint: 'vs_main' },
+        fragment: { module, entryPoint, targets: [{ format }] },
+        primitive: { topology: 'triangle-list' },
+      });
+    this.taaPipeline = fullscreen(device.createShaderModule({ label: 'taa', code: taaWGSL }), 'fs_main', HDR_FORMAT);
+    this.taaBuffer = device.createBuffer({ label: 'taa', size: this.taaData.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const bloomModule = device.createShaderModule({ label: 'bloom', code: bloomWGSL });
+    this.bloomPipelines = {
+      prefilterMS: fullscreen(bloomModule, 'fs_prefilter_ms', HDR_FORMAT),
+      prefilter: fullscreen(bloomModule, 'fs_prefilter', HDR_FORMAT),
+      down: fullscreen(bloomModule, 'fs_down', HDR_FORMAT),
+      up: fullscreen(bloomModule, 'fs_up', HDR_FORMAT),
+    };
+    this.bloomBuffer = device.createBuffer({ label: 'bloom', size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
     const mipModule = device.createShaderModule({ label: 'mipmap', code: mipmapWGSL });
     const makeMipPipeline = (format: GPUTextureFormat) =>
@@ -358,14 +457,31 @@ export class Renderer {
     // --- Static resources ---------------------------------------------------
     this.frameBuffer = device.createBuffer({ label: 'frame', size: FRAME_UNIFORM_SIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.lightBuffer = device.createBuffer({ label: 'lights', size: MAX_LIGHTS * LIGHT_FLOATS * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-    this.shadowFrameBuffer = device.createBuffer({ label: 'shadow-frame', size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.shadowFrameBuffer = device.createBuffer({
+      label: 'shadow-frame',
+      size: SHADOW_SLOTS * SHADOW_SLOT_SIZE,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    // A layer per cascade.
     this.shadowMap = device.createTexture({
       label: 'shadow-map',
-      size: [SHADOW_MAP_SIZE, SHADOW_MAP_SIZE],
+      size: [SHADOW_MAP_SIZE, SHADOW_MAP_SIZE, MAX_SHADOW_CASCADES],
       format: SHADOW_FORMAT,
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
-    this.shadowMapView = this.shadowMap.createView();
+    this.shadowMapView = this.shadowMap.createView({ dimension: '2d-array' });
+    this.localShadowMap = device.createTexture({
+      label: 'local-shadow-map',
+      size: [LOCAL_SHADOW_MAP_SIZE, LOCAL_SHADOW_MAP_SIZE, MAX_LOCAL_SHADOW_LAYERS],
+      format: SHADOW_FORMAT,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this.localShadowMapView = this.localShadowMap.createView({ dimension: '2d-array' });
+    this.localShadowBuffer = device.createBuffer({
+      label: 'local-shadow-matrices',
+      size: MAX_LOCAL_SHADOW_LAYERS * 64,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
     this.shadowSampler = device.createSampler({ compare: 'less', magFilter: 'linear', minFilter: 'linear' });
     // Equirectangular: wraps around horizontally, not over the poles.
     this.skySampler = device.createSampler({
@@ -384,10 +500,14 @@ export class Renderer {
       maxAnisotropy: 8,
     });
     this.mipSampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+    this.clampSampler = device.createSampler({ label: 'clamp', magFilter: 'linear', minFilter: 'linear' });
 
     const white = device.createTexture({ size: [1, 1], format: TEXTURE_FORMAT, usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
     device.queue.writeTexture({ texture: white }, new Uint8Array([255, 255, 255, 255]), { bytesPerRow: 4 }, [1, 1]);
     this.whiteTextureView = white.createView();
+    const black = device.createTexture({ label: 'black', size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+    device.queue.writeTexture({ texture: black }, new Uint8Array([0, 0, 0, 255]), { bytesPerRow: 4 }, [1, 1]);
+    this.blackTextureView = black.createView();
 
     this.atlasTexture = device.createTexture({
       label: 'font-atlas',
@@ -415,18 +535,22 @@ export class Renderer {
     this.view2DBuffers = [worldBuf, screenBuf];
     this.view2DGroups = [worldGroup, screenGroup];
 
+    this.environment = new EnvironmentMaps(device, commonWGSL);
     this.frameBindGroup = this.makeFrameBindGroup(null);
-    this.shadowFrameBindGroup = device.createBindGroup({
-      label: 'shadow-frame',
-      layout: this.shadowFrameLayout,
-      entries: [{ binding: 0, resource: { buffer: this.shadowFrameBuffer } }],
-    });
+    this.shadowFrameBindGroups = Array.from({ length: SHADOW_SLOTS }, (_, i) =>
+      device.createBindGroup({
+        label: `shadow-frame ${i}`,
+        layout: this.shadowFrameLayout,
+        entries: [{ binding: 0, resource: { buffer: this.shadowFrameBuffer, offset: i * SHADOW_SLOT_SIZE, size: 64 } }],
+      }));
   }
 
   // -------------------------------------------------------------------------
 
   private makeFrameBindGroup(sky: Texture | null): GPUBindGroup {
     this.frameSky = sky;
+    this.frameSkyView = sky ? this.ensureTexture(sky).createView() : this.whiteTextureView;
+    const env = this.environment;
     return this.device.createBindGroup({
       label: 'frame',
       layout: this.frameLayout,
@@ -435,8 +559,14 @@ export class Renderer {
         { binding: 1, resource: { buffer: this.lightBuffer } },
         { binding: 2, resource: this.shadowMapView },
         { binding: 3, resource: this.shadowSampler },
-        { binding: 4, resource: sky ? this.ensureTexture(sky).createView() : this.whiteTextureView },
+        { binding: 4, resource: this.frameSkyView },
         { binding: 5, resource: this.skySampler },
+        { binding: 6, resource: this.localShadowMapView },
+        { binding: 7, resource: { buffer: this.localShadowBuffer } },
+        { binding: 8, resource: env.irradianceView },
+        { binding: 9, resource: env.specularView },
+        { binding: 10, resource: env.brdfView },
+        { binding: 11, resource: env.sampler },
       ],
     });
   }
@@ -552,7 +682,7 @@ export class Renderer {
     d[11] = m.normalTexture ? 1 : 0;
     d[12] = m.normalScale;
     d[13] = m.occlusionStrength;
-    d[14] = 0;
+    d[14] = m.blend === 'opaque' ? 0 : 1;
     d[15] = 0;
     this.device.queue.writeBuffer(m.gpu.uniformBuffer, 0, d);
     return m.gpu.bindGroup;
@@ -655,22 +785,6 @@ export class Renderer {
     return [worldFloats / VERTEX2D_FLOATS, screenFloats / VERTEX2D_FLOATS];
   }
 
-  private computeShadowMatrix(dir: Vec3, focus: Vec3, extent: number): Mat4 {
-    const up: Vec3 = Math.abs(dir[1]) > 0.99 ? [1, 0, 0] : [0, 1, 0];
-    // Snap the focus point to shadow-map texels to avoid shimmering when the camera moves.
-    const texel = (extent * 2) / SHADOW_MAP_SIZE;
-    const lightView0 = mat4.lookAt([0, 0, 0], dir, up);
-    const ls = vec3.transformPoint(lightView0, focus);
-    ls[0] = Math.round(ls[0] / texel) * texel;
-    ls[1] = Math.round(ls[1] / texel) * texel;
-    const inv = mat4.invert(lightView0) ?? mat4.create();
-    const snapped = vec3.transformPoint(inv, ls);
-    const eye = vec3.addScaled(snapped, dir, -extent * 3);
-    const view = mat4.lookAt(eye, snapped, up);
-    const proj = mat4.ortho(-extent, extent, -extent, extent, 0.1, extent * 6);
-    return mat4.multiply(proj, view);
-  }
-
   /** Renders one frame. World matrices must be up to date (Scene.updateMatrices). */
   render(scene: Scene, camera: Camera, options: RenderOptions = {}): RenderStats {
     profiler.begin('prepare');
@@ -688,6 +802,25 @@ export class Renderer {
     const lights = scene.query(Light);
     const lightObjects = lights.length > MAX_LIGHTS ? lights.slice(0, MAX_LIGHTS) : lights;
 
+    const viewProj = camera.viewProjection();
+    // Temporal antialiasing: a subpixel offset per frame (meshes only: viewProj stays unjittered for the helpers drawn
+    // after the resolve), and the history starts over on a new size, scene or camera.
+    const post = scene.post;
+    const taa = post.antialiasing === 'taa';
+    let jitterX = 0, jitterY = 0;
+    if (taa) {
+      this.ensureHistory();
+      if (scene !== this.historyScene || camera !== this.historyCamera) this.historyValid = false;
+      this.historyScene = scene;
+      this.historyCamera = camera;
+      const i = (this.frameCount % TAA_SAMPLES) + 1;
+      jitterX = ((halton(i, 2) - 0.5) * 2) / this.width;
+      jitterY = ((halton(i, 3) - 0.5) * 2) / this.height;
+    } else {
+      this.releaseHistory();
+    }
+    const prevViewProj = this.historyValid ? this.prevViewProj : viewProj;
+
     // Lights.
     let shadowIndex = -1;
     let shadowDir: Vec3 = [0, -1, 0];
@@ -695,6 +828,7 @@ export class Renderer {
     let sun: Light | null = null;
     let sunDir: Vec3 = [0, -1, 0];
     const ld = this.lightData;
+    const localRequests: (LocalShadowLight | null)[] = [];
     lightObjects.forEach((light, i) => {
       const world = light.transform.worldMatrix;
       const pos = mat4.getTranslation(world);
@@ -705,7 +839,8 @@ export class Renderer {
       ld[o + 8] = light.color[0]; ld[o + 9] = light.color[1]; ld[o + 10] = light.color[2]; ld[o + 11] = light.intensity;
       const outer = Math.min(89, Math.max(0.5, light.outerAngle));
       const inner = Math.min(outer - 0.01, Math.max(0, light.innerAngle));
-      ld[o + 12] = Math.cos((inner * Math.PI) / 180); ld[o + 13] = Math.cos((outer * Math.PI) / 180); ld[o + 14] = 0; ld[o + 15] = 0;
+      ld[o + 12] = Math.cos((inner * Math.PI) / 180); ld[o + 13] = Math.cos((outer * Math.PI) / 180); ld[o + 14] = -1; ld[o + 15] = 0;
+      localRequests.push(light.castShadows && light.type !== 'directional' ? { type: light.type, position: pos, direction: dir, range: light.range, outerAngle: outer } : null);
       if (shadowIndex < 0 && light.type === 'directional' && light.castShadows) {
         shadowIndex = i;
         shadowDir = dir;
@@ -716,55 +851,92 @@ export class Renderer {
         sunDir = dir;
       }
     });
+    // Point and spot shadows: layers for the lights that reach into the view, nearest first. A light's params.z is its
+    // first layer (-1: none), params.w the texel size per unit of distance (common.wgsl).
+    const localShadows = assignLocalShadows(localRequests, camera.position, frustumPlanes(viewProj, this.viewPlanes), MAX_LOCAL_SHADOW_LAYERS, LOCAL_SHADOW_MAP_SIZE);
+    const localViews: Mat4[] = [];
+    localShadows.forEach((ls, i) => {
+      if (!ls) return;
+      ld[i * LIGHT_FLOATS + 14] = ls.layer;
+      ld[i * LIGHT_FLOATS + 15] = ls.texelPerDistance;
+      ls.views.forEach((v, f) => {
+        localViews[ls.layer + f] = v;
+        this.localShadowData.set(v, (ls.layer + f) * 16);
+      });
+    });
+    if (localViews.length > 0) device.queue.writeBuffer(this.localShadowBuffer, 0, this.localShadowData, 0, localViews.length * 16);
     if (lightObjects.length > 0) device.queue.writeBuffer(this.lightBuffer, 0, ld, 0, lightObjects.length * LIGHT_FLOATS);
     stats.lights = lightObjects.length;
 
-    const lightViewProj = shadowIndex >= 0 ? this.computeShadowMatrix(shadowDir, camera.target, scene.shadowExtent) : mat4.create();
-    if (shadowIndex >= 0) device.queue.writeBuffer(this.shadowFrameBuffer, 0, lightViewProj);
+    const cascades = shadowIndex >= 0 ? computeCascades(camera, shadowDir, scene.shadowDistance, scene.shadowCascades, SHADOW_MAP_SIZE) : [];
+    cascades.forEach((c, i) => device.queue.writeBuffer(this.shadowFrameBuffer, i * SHADOW_SLOT_SIZE, c.viewProj));
+    localViews.forEach((v, i) => device.queue.writeBuffer(this.shadowFrameBuffer, (MAX_SHADOW_CASCADES + i) * SHADOW_SLOT_SIZE, v));
 
     // Frame uniforms (layout: shaders/common.wgsl).
     const fv = new Float32Array(this.frameData);
     const fi = new Int32Array(this.frameData);
     const fu = new Uint32Array(this.frameData);
-    const viewProj = camera.viewProjection();
     fv.set(viewProj, 0);
-    fv.set(lightViewProj, 16);
-    fv.set([camera.position[0], camera.position[1], camera.position[2], 1], 32);
+    fv.set([camera.position[0], camera.position[1], camera.position[2], 1], 16);
     const amb = vec3.scale(scene.ambientColor, scene.ambientIntensity);
-    fv.set([amb[0], amb[1], amb[2], scene.exposure], 36);
-    fu[40] = lightObjects.length;
-    fi[41] = shadowIndex;
-    fv[42] = options.time ?? 0;
-    fv[43] = 1 / SHADOW_MAP_SIZE;
+    fv.set([amb[0], amb[1], amb[2], scene.exposure], 20);
+    fu[24] = lightObjects.length;
+    fi[25] = shadowIndex;
+    fv[26] = options.time ?? 0;
+    fv[27] = 1 / SHADOW_MAP_SIZE;
     const sky = scene.sky;
     const skyMode = sky.effectiveMode;
     const skyTexture = skyMode === 'image' ? sky.texture : null;
     if (skyTexture !== this.frameSky) this.frameBindGroup = this.makeFrameBindGroup(skyTexture);
-    fv.set(mat4.invert(viewProj) ?? mat4.create(), 44);
-    fv.set([sky.top[0], sky.top[1], sky.top[2], sky.intensity], 60);
-    fv.set([sky.horizon[0], sky.horizon[1], sky.horizon[2], 0], 64);
-    fv.set([sky.ground[0], sky.ground[1], sky.ground[2], 0], 68);
+    fv.set(mat4.invert(viewProj) ?? mat4.create(), 28);
+    fv.set([sky.top[0], sky.top[1], sky.top[2], sky.intensity], 44);
+    fv.set([sky.horizon[0], sky.horizon[1], sky.horizon[2], 0], 48);
+    fv.set([sky.ground[0], sky.ground[1], sky.ground[2], 0], 52);
     // Assigned in the forEach above, which TypeScript's narrowing doesn't follow.
     const sunLight = sun as Light | null;
     const sunRadius = (Math.max(0, sky.sunSize) * Math.PI) / 360;
-    fv.set([-sunDir[0], -sunDir[1], -sunDir[2], sunLight && sky.sunSize > 0 ? Math.cos(sunRadius) : 2], 72);
+    fv.set([-sunDir[0], -sunDir[1], -sunDir[2], sunLight && sky.sunSize > 0 ? Math.cos(sunRadius) : 2], 56);
     const sunColor = sunLight ? vec3.scale(sunLight.color, sunLight.intensity) : [0, 0, 0];
-    fv.set([sunColor[0], sunColor[1], sunColor[2], sunLight ? sky.sunGlow : 0], 76);
+    fv.set([sunColor[0], sunColor[1], sunColor[2], sunLight ? sky.sunGlow : 0], 60);
     const mips = skyTexture?.gpu?.mipLevelCount ?? 1;
-    fv.set([SKY_MODE_INDEX[skyMode], sky.lighting, (sky.rotation * Math.PI) / 180, mips], 80);
+    fv.set([SKY_MODE_INDEX[skyMode], sky.lighting, (sky.rotation * Math.PI) / 180, mips], 64);
+    // Cascades: where each ends, its texel size and a depth bias of about two texels, both turned into its depth range.
+    const forward = vec3.normalize(vec3.sub(camera.target, camera.position));
+    fv.set([forward[0], forward[1], forward[2], cascades.length], 68);
+    for (let i = 0; i < MAX_SHADOW_CASCADES; i++) {
+      const c = cascades[i];
+      fv[72 + i] = c ? c.far : 0;
+      fv[76 + i] = c ? c.texel : 0;
+      fv[80 + i] = c ? (c.texel * 2) / c.depthRange : 0;
+      if (c) fv.set(c.viewProj, 84 + i * 16);
+    }
+    fv.set(prevViewProj, 148);
+    fv.set([jitterX, jitterY, 0, 0], 164);
     device.queue.writeBuffer(this.frameBuffer, 0, this.frameData);
 
     // Cull against the view and the shadow map, batch what's left into instanced draws, and upload every instance's
     // matrices into one storage buffer.
     profiler.begin('cull + batch');
     const list = this.drawList;
-    list.build(draws, viewProj, shadowIndex >= 0 ? lightViewProj : null, this.frustumCulling);
+    // Shadow views: the cascades, then the local layers (list.shadows follows that order).
+    list.previousWorld = taa && this.historyValid ? this.previousWorldOf : null;
+    list.build(draws, viewProj, camera.position, [...cascades.map((c) => c.viewProj), ...localViews], this.frustumCulling);
+    if (taa) {
+      // Where each renderer was this frame, for the next frame's motion vectors.
+      for (const r of draws) {
+        let e = this.prevWorld.get(r);
+        if (!e) this.prevWorld.set(r, (e = { matrix: mat4.create(), frame: 0 }));
+        e.matrix.set(r.transform.worldMatrix);
+        e.frame = this.frameCount;
+      }
+    }
     profiler.end();
     stats.culled = list.culled;
     this.ensureObjectCapacity(list.objectCount);
     if (list.objectCount > 0) device.queue.writeBuffer(this.objectBuffer!, 0, list.objects, 0, list.objectCount * OBJECT_FLOATS);
     for (const b of list.main) this.ensureMesh(b.mesh);
-    for (const b of list.shadow) this.ensureMesh(b.mesh);
+    for (const b of list.transparent) this.ensureMesh(b.mesh);
+    for (const casters of list.shadows) for (const b of casters) this.ensureMesh(b.mesh);
 
     const materialGroups = new Map<Material, GPUBindGroup>();
     for (const m of list.materials) materialGroups.set(m, this.prepareMaterial(m));
@@ -776,41 +948,103 @@ export class Renderer {
     const [world2DCount, screen2DCount] = this.prepare2D(scene, camera, viewProj, options);
     profiler.end();
 
-    // The frame: a shadow pass into the persistent shadow map (when a directional light casts shadows), the main pass
-    // (meshes and sky as linear radiance into a multisampled HDR target), the tonemap pass (into the multisampled
-    // display target), then the display-space overlay pass (grid, 2D, editor helpers), resolved into the canvas.
+    // The frame: a shadow pass per cascade into its layer of the persistent shadow map (when a directional light casts
+    // shadows), the main pass (meshes and sky as linear radiance into a multisampled HDR target), the tonemap pass (into
+    // the multisampled display target), then the display-space overlay pass (grid, 2D, editor helpers), resolved into
+    // the canvas.
     const g = this.graph;
     const shadowMap = g.importTexture('shadow map', this.shadowMap);
     const output = g.importTexture('canvas', this.context.getCurrentTexture());
-    if (shadowIndex >= 0) {
-      g.addRenderPass('shadow', (pass) => {
-        pass.depthAttachment(shadowMap, { depthClearValue: 1, depthLoadOp: 'clear' });
-        return (encoder, res) => this.drawShadowCasters(encoder, list.shadow, materialGroups, res.target!);
-      });
+    // A changed gradient or image sky is baked again for image-based lighting before the main pass reads it. The key
+    // is the frame's sky values (layout: common.wgsl), without how strongly it lights the scene (applied when read).
+    let environment: EnvironmentHandles | null = null;
+    if (skyMode !== 'color') {
+      const key = fv.slice(44, 68);
+      key[21] = 0;
+      if (this.environment.needsBake(key, skyTexture)) {
+        environment = this.environment.bake(g, key, skyTexture, this.frameBuffer, this.frameSkyView, this.skySampler);
+      }
     }
-    const hdr = g.createTexture('hdr color', { format: HDR_FORMAT, sampleCount: this.sampleCount });
-    const depth = g.createTexture('main depth', { format: DEPTH_FORMAT, sampleCount: this.sampleCount });
+    cascades.forEach((_, i) => {
+      g.addRenderPass(`shadow ${i}`, (pass) => {
+        pass.depthAttachment(shadowMap, { depthClearValue: 1, depthLoadOp: 'clear', layer: i });
+        return (encoder, res) => this.drawShadowCasters(encoder, i, list.shadows[i], materialGroups, res.target!);
+      });
+    });
+    const localShadowMap = localViews.length > 0 ? g.importTexture('local shadow map', this.localShadowMap) : null;
+    localViews.forEach((_, i) => {
+      const slot = cascades.length + i;
+      g.addRenderPass(`light shadow ${i}`, (pass) => {
+        pass.depthAttachment(localShadowMap!, { depthClearValue: 1, depthLoadOp: 'clear', layer: i });
+        return (encoder, res) => this.drawShadowCasters(encoder, MAX_SHADOW_CASCADES + i, list.shadows[slot], materialGroups, res.target!);
+      });
+    });
+    // With TAA the main pass draws one sample per pixel (the resolve antialiases it) and its motion; the display-space
+    // passes stay multisampled either way.
+    const mainSamples = taa ? 1 : this.sampleCount;
+    const hdr = g.createTexture('hdr color', { format: HDR_FORMAT, sampleCount: mainSamples });
+    const velocity = taa ? g.createTexture('velocity', { format: VELOCITY_FORMAT }) : null;
+    const depth = g.createTexture('main depth', { format: DEPTH_FORMAT, sampleCount: mainSamples });
     const display = g.createTexture('display color', { format: this.format, sampleCount: this.sampleCount });
     g.addRenderPass('main', (pass) => {
       pass.read(shadowMap); // through the frame bind group
+      if (localShadowMap) pass.read(localShadowMap);
+      if (environment) {
+        pass.read(environment.specular);
+        pass.read(environment.irradiance);
+      }
       // Alpha 0 marks pixels nothing covers (meshes and the sky write 1): the tonemap pass shows the background there.
       pass.colorAttachment(hdr, { clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear' });
+      if (velocity) pass.colorAttachment(velocity, { clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear' });
       pass.depthAttachment(depth, { depthClearValue: 0, depthLoadOp: 'clear' });
-      return (encoder, res) => this.drawScene(encoder, list.main, materialGroups, skyMode, res.target!);
+      return (encoder, res) => this.drawScene(encoder, list, materialGroups, skyMode, post.antialiasing, res.target!);
     });
+    // The image the post passes read: the HDR target, or with TAA this frame's history (the resolve's output).
+    let sceneColor = hdr;
+    if (taa && velocity) {
+      const [current, previous] = this.historyIndex === 0 ? this.history! : [this.history![1], this.history![0]];
+      const out = g.importTexture('taa history', current);
+      const past = g.importTexture('taa previous', previous);
+      const td = this.taaData;
+      td.set(mat4.multiply(prevViewProj, mat4.invert(viewProj) ?? mat4.create()), 0);
+      td[16] = this.historyValid ? 1 : 0;
+      td[17] = TAA_CURRENT_WEIGHT;
+      device.queue.writeBuffer(this.taaBuffer, 0, td);
+      g.addRenderPass('taa', (pass) => {
+        pass.read(hdr);
+        pass.read(velocity);
+        pass.read(depth);
+        pass.read(past);
+        pass.colorAttachment(out, { clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear' });
+        return (encoder, res) => this.drawTaa(encoder, res.texture(hdr), res.texture(velocity), res.texture(depth), previous);
+      });
+      sceneColor = out;
+      this.historyIndex ^= 1;
+      this.historyValid = true;
+    }
+    const bloom = post.bloom > 0 ? this.addBloom(g, sceneColor, !taa, post, scene.exposure) : null;
     // With a sky, the background only shows where the sky pass doesn't draw (nowhere).
     const bg = skyMode === 'color' ? scene.background : [0, 0, 0];
     const td = this.tonemapData;
     td[0] = bg[0]; td[1] = bg[1]; td[2] = bg[2]; td[3] = scene.exposure;
+    td[4] = 1 / this.width; td[5] = 1 / this.height; td[6] = bloom ? post.bloom : 0; td[7] = 0;
     device.queue.writeBuffer(this.tonemapBuffer, 0, td);
+    // TAA: the overlay pass gets the scene's depth through the tonemap pass, as its own multisampled depth target.
+    const displayDepth = taa ? g.createTexture('display depth', { format: DEPTH_FORMAT, sampleCount: this.sampleCount }) : null;
     g.addRenderPass('tonemap', (pass) => {
-      pass.read(hdr);
+      pass.read(sceneColor);
+      if (bloom) pass.read(bloom);
+      if (displayDepth) {
+        pass.read(depth);
+        pass.depthAttachment(displayDepth, { depthClearValue: 0, depthLoadOp: 'clear' });
+      }
       pass.colorAttachment(display, { clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear' });
-      return (encoder, res) => this.drawTonemap(encoder, res.texture(hdr));
+      return (encoder, res) =>
+        this.drawTonemap(encoder, post.antialiasing, res.texture(sceneColor), bloom ? res.texture(bloom) : null, displayDepth ? res.texture(depth) : null);
     });
     g.addRenderPass('overlay', (pass) => {
       pass.colorAttachment(display, { loadOp: 'load', resolveTarget: output });
-      pass.depthAttachment(depth, { depthLoadOp: 'load' });
+      pass.depthAttachment(displayDepth ?? depth, { depthLoadOp: 'load' });
       return (encoder) => this.drawDisplay(encoder, { grid: !!options.grid, overlay, world2DCount, screen2DCount });
     });
     g.timer = profiler.enabled ? this.gpuTimer : null;
@@ -818,20 +1052,170 @@ export class Renderer {
     g.execute();
     profiler.end();
     stats.pipelineBuilds = this.meshPipelines.builds - builds;
+    this.prevViewProj.set(viewProj);
+    this.frameCount++;
     return stats;
   }
 
-  /** The attachments the mesh passes draw into, as the frame graph declares them: what mesh variants are made for. */
-  meshTargets(): Record<MeshPass, RenderTarget> {
+  /** Starts temporal antialiasing over from this frame, as after a cut (call when the view jumps). */
+  resetHistory(): void {
+    this.historyValid = false;
+  }
+
+  private readonly previousWorldOf = (r: MeshRenderer): Mat4 | null => {
+    const e = this.prevWorld.get(r);
+    return e && e.frame === this.frameCount - 1 ? e.matrix : null;
+  };
+
+  /** The TAA history textures, at the output size. */
+  private ensureHistory(): void {
+    const h = this.history;
+    if (h && h[0].width === this.width && h[0].height === this.height) return;
+    this.releaseHistory();
+    const make = (i: number) =>
+      this.device.createTexture({
+        label: `taa history ${i}`,
+        size: [this.width, this.height],
+        format: HDR_FORMAT,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      });
+    this.history = [make(0), make(1)];
+  }
+
+  private releaseHistory(): void {
+    this.history?.forEach((t) => t.destroy());
+    this.history = null;
+    this.historyValid = false;
+  }
+
+  /**
+   * A bind group over textures that can change between frames (transients from the graph's pool, the TAA history):
+   * the one made last time while they're the same, else a new one.
+   */
+  private bindGroup(key: string, textures: (GPUTexture | null)[], make: () => GPUBindGroup): GPUBindGroup {
+    const deps = textures.filter((t): t is GPUTexture => !!t);
+    const c = this.bindGroups.get(key);
+    if (c && c.textures.length === deps.length && c.textures.every((t, i) => t === deps[i])) return c.group;
+    const group = make();
+    this.bindGroups.set(key, { textures: deps, group });
+    return group;
+  }
+
+  /**
+   * Declares the bloom passes over `source` (multisampled with MSAA): the prefilter into half resolution, the
+   * downsample chain, then the upsample chain back to half resolution. Returns the result, which the tonemap pass adds.
+   */
+  private addBloom(g: FrameGraph, source: TextureHandle, multisampled: boolean, post: PostProcessing, exposure: number): TextureHandle {
+    const w = Math.max(1, this.width >> 1), h = Math.max(1, this.height >> 1);
+    const levels = Math.max(1, Math.min(MAX_BLOOM_LEVELS, Math.floor(Math.log2(Math.min(w, h))) - 2));
+    // The threshold applies after exposure; the prefilter sees radiance before it.
+    const threshold = post.bloomThreshold / Math.max(exposure, 1e-4);
+    this.bloomData.set([threshold, threshold * 0.5, post.bloomScatter, 0]);
+    this.device.queue.writeBuffer(this.bloomBuffer, 0, this.bloomData);
+    const size = (i: number): [number, number] => [Math.max(1, w >> i), Math.max(1, h >> i)];
+    const down = Array.from({ length: levels }, (_, i) => g.createTexture(`bloom ${i}`, { format: HDR_FORMAT, size: size(i) }));
+    const p = this.bloomPipelines;
+    g.addRenderPass('bloom prefilter', (pass) => {
+      pass.read(source);
+      pass.colorAttachment(down[0]);
+      return (encoder, res) => {
+        const pipeline = multisampled ? p.prefilterMS : p.prefilter;
+        const tex = res.texture(source);
+        const group = this.bindGroup(`bloom prefilter ${multisampled}`, [tex], () =>
+          this.device.createBindGroup({
+            label: 'bloom prefilter',
+            layout: pipeline.getBindGroupLayout(0),
+            entries: [{ binding: multisampled ? 0 : 1, resource: tex.createView() }, { binding: 4, resource: { buffer: this.bloomBuffer } }],
+          }));
+        this.drawFullscreen(encoder, pipeline, group);
+      };
+    });
+    for (let i = 1; i < levels; i++) {
+      const from = down[i - 1], to = down[i];
+      g.addRenderPass(`bloom down ${i}`, (pass) => {
+        pass.read(from);
+        pass.colorAttachment(to);
+        return (encoder, res) => {
+          const tex = res.texture(from);
+          const group = this.bindGroup(`bloom down ${i}`, [tex], () =>
+            this.device.createBindGroup({
+              label: `bloom down ${i}`,
+              layout: p.down.getBindGroupLayout(0),
+              entries: [{ binding: 2, resource: tex.createView() }, { binding: 3, resource: this.clampSampler }],
+            }));
+          this.drawFullscreen(encoder, p.down, group);
+        };
+      });
+    }
+    let low = down[levels - 1];
+    for (let i = levels - 2; i >= 0; i--) {
+      const from = low, own = down[i];
+      const to = g.createTexture(`bloom up ${i}`, { format: HDR_FORMAT, size: size(i) });
+      g.addRenderPass(`bloom up ${i}`, (pass) => {
+        pass.read(from);
+        pass.read(own);
+        pass.colorAttachment(to);
+        return (encoder, res) => {
+          const a = res.texture(from), b = res.texture(own);
+          const group = this.bindGroup(`bloom up ${i}`, [a, b], () =>
+            this.device.createBindGroup({
+              label: `bloom up ${i}`,
+              layout: p.up.getBindGroupLayout(0),
+              entries: [
+                { binding: 2, resource: a.createView() },
+                { binding: 3, resource: this.clampSampler },
+                { binding: 4, resource: { buffer: this.bloomBuffer } },
+                { binding: 5, resource: b.createView() },
+              ],
+            }));
+          this.drawFullscreen(encoder, p.up, group);
+        };
+      });
+      low = to;
+    }
+    return low;
+  }
+
+  private drawFullscreen(pass: GPURenderPassEncoder, pipeline: GPURenderPipeline, group: GPUBindGroup): void {
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, group);
+    pass.draw(3);
+  }
+
+  /** The TAA resolve: this frame's samples blended into the reprojected history (see taa.wgsl). */
+  private drawTaa(pass: GPURenderPassEncoder, hdr: GPUTexture, velocity: GPUTexture, depth: GPUTexture, history: GPUTexture): void {
+    const group = this.bindGroup('taa', [hdr, velocity, depth, history], () =>
+      this.device.createBindGroup({
+        label: 'taa',
+        layout: this.taaPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: hdr.createView() },
+          { binding: 1, resource: velocity.createView() },
+          { binding: 2, resource: depth.createView() },
+          { binding: 3, resource: history.createView() },
+          { binding: 4, resource: this.clampSampler },
+          { binding: 5, resource: { buffer: this.taaBuffer } },
+        ],
+      }));
+    this.drawFullscreen(pass, this.taaPipeline, group);
+  }
+
+  /**
+   * The attachments the mesh passes draw into, as the frame graph declares them: what mesh variants are made for. The
+   * main pass's depend on the antialiasing.
+   */
+  meshTargets(antialiasing: Antialiasing = 'msaa'): Record<MeshPass, RenderTarget> {
     return {
-      main: { colorFormats: [HDR_FORMAT], depthFormat: DEPTH_FORMAT, sampleCount: this.sampleCount },
+      main: antialiasing === 'taa'
+        ? { colorFormats: [HDR_FORMAT, VELOCITY_FORMAT], depthFormat: DEPTH_FORMAT, sampleCount: 1 }
+        : { colorFormats: [HDR_FORMAT], depthFormat: DEPTH_FORMAT, sampleCount: this.sampleCount },
       shadow: { colorFormats: [], depthFormat: SHADOW_FORMAT, sampleCount: 1 },
     };
   }
 
   /** Every mesh pipeline variant this renderer can need. */
   meshVariantKeys(): MeshVariantKey[] {
-    return allMeshVariantKeys(this.meshTargets());
+    return allMeshVariantKeys({ main: [this.meshTargets('msaa').main, this.meshTargets('taa').main], shadow: this.meshTargets().shadow });
   }
 
   /**
@@ -839,7 +1223,7 @@ export class Renderer {
    * built in the middle of a frame. Call after a scene or an asset loads.
    */
   prewarm(scene: Scene): Promise<void> {
-    const targets = this.meshTargets();
+    const targets = this.meshTargets(scene.post.antialiasing);
     const keys: MeshVariantKey[] = [];
     for (const r of scene.query(MeshRenderer)) {
       if (!r.material) continue;
@@ -850,12 +1234,19 @@ export class Renderer {
   }
 
   /**
-   * The shadow pass: depth only, on its own group 0 (the frame group holds the shadow map it's drawing into). The
-   * alpha-tested variant reads the material from group 2.
+   * A shadow pass (one view: a cascade or a point/spot light layer): depth only, on its own group 0 (the frame group
+   * holds the shadow map it's drawing into), the view's matrix at `slot`. The alpha-tested variant reads the material
+   * from group 2.
    */
-  private drawShadowCasters(pass: GPURenderPassEncoder, batches: MeshBatch[], materialGroups: Map<Material, GPUBindGroup>, target: RenderTarget): void {
+  private drawShadowCasters(
+    pass: GPURenderPassEncoder,
+    slot: number,
+    batches: MeshBatch[],
+    materialGroups: Map<Material, GPUBindGroup>,
+    target: RenderTarget,
+  ): void {
     const stats = this.stats;
-    pass.setBindGroup(0, this.shadowFrameBindGroup);
+    pass.setBindGroup(0, this.shadowFrameBindGroups[slot]);
     if (batches.length > 0) pass.setBindGroup(1, this.objectBindGroup!);
     let currentPipeline: GPURenderPipeline | null = null;
     for (const b of batches) {
@@ -875,19 +1266,20 @@ export class Renderer {
     }
   }
 
-  /** The main pass: lit meshes, then the sky behind them, as linear radiance. */
+  /** The main pass, as linear radiance: opaque meshes, the sky behind them, then blended meshes back to front. */
   private drawScene(
     pass: GPURenderPassEncoder,
-    batches: MeshBatch[],
+    list: DrawList,
     materialGroups: Map<Material, GPUBindGroup>,
     skyMode: SkyMode,
+    antialiasing: Antialiasing,
     target: RenderTarget,
   ): void {
     const stats = this.stats;
     pass.setBindGroup(0, this.frameBindGroup);
-    if (batches.length > 0) pass.setBindGroup(2, this.objectBindGroup!);
+    if (list.mainInstances > 0) pass.setBindGroup(2, this.objectBindGroup!);
     let currentPipeline: GPURenderPipeline | null = null;
-    for (const b of batches) {
+    const draw = (b: MeshBatch) => {
       const pipeline = this.meshPipelines.get(meshVariantKey('main', b.material, b.mesh, target));
       if (pipeline !== currentPipeline) {
         pass.setPipeline(pipeline);
@@ -901,31 +1293,36 @@ export class Renderer {
       stats.drawCalls++;
       stats.instances += b.count;
       stats.triangles += b.mesh.triangleCount * b.count;
-    }
+    };
+    for (const b of list.main) draw(b);
 
     if (skyMode !== 'color') {
-      pass.setPipeline(this.skyPipeline);
+      pass.setPipeline(this.skyPipelines[antialiasing]);
       pass.draw(3);
       stats.drawCalls++;
+      currentPipeline = null;
     }
+    for (const b of list.transparent) draw(b);
   }
 
-  /** The tonemap pass: HDR radiance to display colors, per sample (see tonemap.wgsl). */
-  private drawTonemap(pass: GPURenderPassEncoder, hdr: GPUTexture): void {
-    if (hdr !== this.tonemapSource) {
-      this.tonemapSource = hdr;
-      this.tonemapGroup = this.device.createBindGroup({
-        label: 'tonemap',
-        layout: this.tonemapLayout,
-        entries: [
-          { binding: 0, resource: hdr.createView() },
-          { binding: 1, resource: { buffer: this.tonemapBuffer } },
-        ],
-      });
-    }
-    pass.setPipeline(this.tonemapPipeline);
-    pass.setBindGroup(0, this.tonemapGroup!);
-    pass.draw(3);
+  /**
+   * The tonemap pass: HDR radiance plus bloom to display colors, per sample with MSAA, per pixel from the TAA output
+   * (which also writes `depth` into the display depth). See tonemap.wgsl.
+   */
+  private drawTonemap(pass: GPURenderPassEncoder, antialiasing: Antialiasing, source: GPUTexture, bloom: GPUTexture | null, depth: GPUTexture | null): void {
+    const pipeline = this.tonemapPipelines[antialiasing];
+    const group = this.bindGroup(`tonemap ${antialiasing} ${!!bloom}`, [source, bloom, depth], () => {
+      const shared: GPUBindGroupEntry[] = [
+        { binding: 1, resource: { buffer: this.tonemapBuffer } },
+        { binding: 2, resource: bloom?.createView() ?? this.blackTextureView },
+        { binding: 3, resource: this.clampSampler },
+      ];
+      const own: GPUBindGroupEntry[] = antialiasing === 'taa'
+        ? [{ binding: 4, resource: source.createView() }, { binding: 5, resource: depth!.createView() }]
+        : [{ binding: 0, resource: source.createView() }];
+      return this.device.createBindGroup({ label: 'tonemap', layout: pipeline.getBindGroupLayout(0), entries: [...own, ...shared] });
+    });
+    this.drawFullscreen(pass, pipeline, group);
   }
 
   /** The overlay pass, display space: grid, world 2D, depth-tested overlay, screen 2D (HUD), then the overlay on top. */
